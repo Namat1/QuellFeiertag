@@ -5,34 +5,14 @@ import json
 import math
 from datetime import datetime
 from html import escape
-from typing import Dict, List
+from typing import List
 
-import numpy as np
 import pandas as pd
-import streamlit as st
-
-try:
-    import pgeocode
-except ImportError:
-    pgeocode = None
-
-st.set_page_config(page_title="Feiertags-Tourenplaner – HTML Generator", page_icon="🧭", layout="wide")
 
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 DAY_LABELS = {"Mo": "Montag", "Die": "Dienstag", "Mitt": "Mittwoch", "Don": "Donnerstag", "Fr": "Freitag", "Sam": "Samstag"}
 DEFAULT_DEPOT_PLZ = {"DIREKT": "24539", "MK": "24539", "HUPA_NMS": "24539", "HUPA_MALCHOW": "17213"}
-
-st.markdown(
-    """
-<style>
-.block-container{max-width:1200px;padding-top:1.4rem}
-.small{color:#9ca3af;font-size:.9rem}
-div[data-testid="stMetricValue"]{font-size:1.5rem}
-</style>
-""",
-    unsafe_allow_html=True,
-)
 
 
 def clean_plz(series: pd.Series) -> pd.Series:
@@ -40,7 +20,6 @@ def clean_plz(series: pd.Series) -> pd.Series:
     return s.str.zfill(5)
 
 
-@st.cache_data(show_spinner=False)
 def read_source(file_bytes: bytes) -> pd.DataFrame:
     xl = pd.ExcelFile(io.BytesIO(file_bytes))
     missing = [s for s in SHEETS if s not in xl.sheet_names]
@@ -57,6 +36,7 @@ def read_source(file_bytes: bytes) -> pd.DataFrame:
                 df[col] = pd.NA
         df = df[cols].copy()
         df["Quelle"] = sheet
+        df["source_row"] = range(1, len(df) + 1)
         frames.append(df)
 
     out = pd.concat(frames, ignore_index=True)
@@ -68,27 +48,23 @@ def read_source(file_bytes: bytes) -> pd.DataFrame:
 
     out = out.dropna(subset=["SAP", "Name", "Plz"]).copy()
     out["uid"] = out.apply(
-        lambda r: f"{r['Quelle']}::{int(r['SAP'])}::{int(r['CSB']) if pd.notna(r['CSB']) else 'x'}",
+        lambda r: f"{r['Quelle']}::{int(r['SAP'])}::{int(r['CSB']) if pd.notna(r['CSB']) else 'x'}::{int(r['source_row'])}",
         axis=1,
     )
     return out
 
 
-@st.cache_resource(show_spinner=False)
-def get_geocoder():
-    if pgeocode is None:
-        return None
-    return pgeocode.Nominatim("de")
+def geocode_postcodes(postcodes: list[str]) -> pd.DataFrame:
+    try:
+        import pgeocode
+    except ImportError as exc:
+        raise RuntimeError("Das Paket 'pgeocode' fehlt. Bitte requirements.txt installieren.") from exc
 
-
-@st.cache_data(show_spinner=False)
-def geocode_plz(postcodes: tuple[str, ...]) -> pd.DataFrame:
-    geo = get_geocoder()
-    if geo is None:
-        return pd.DataFrame(columns=["Plz", "lat", "lon"])
-    vals = sorted({str(x).zfill(5) for x in postcodes if x and x != "<NA>"})
+    vals = sorted({str(x).zfill(5) for x in postcodes if x and str(x) != "<NA>"})
     if not vals:
         return pd.DataFrame(columns=["Plz", "lat", "lon"])
+
+    geo = pgeocode.Nominatim("de")
     r = geo.query_postal_code(vals)
     if isinstance(r, pd.Series):
         r = r.to_frame().T
@@ -100,12 +76,12 @@ def geocode_plz(postcodes: tuple[str, ...]) -> pd.DataFrame:
 
 
 def enrich_geo(df: pd.DataFrame) -> pd.DataFrame:
-    coords = geocode_plz(tuple(df["Plz"].dropna().astype(str).unique().tolist()))
+    coords = geocode_postcodes(df["Plz"].dropna().astype(str).unique().tolist())
     return df.merge(coords, on="Plz", how="left")
 
 
 def coord_for_plz(plz: str) -> dict:
-    x = geocode_plz((str(plz).zfill(5),))
+    x = geocode_postcodes([str(plz).zfill(5)])
     if x.empty or x[["lat", "lon"]].isna().any(axis=None):
         return {"lat": None, "lon": None}
     return {"lat": float(x.iloc[0]["lat"]), "lon": float(x.iloc[0]["lon"])}
@@ -114,15 +90,16 @@ def coord_for_plz(plz: str) -> dict:
 def json_ready(v):
     if pd.isna(v):
         return None
-    if isinstance(v, (np.integer,)):
-        return int(v)
-    if isinstance(v, (np.floating,)):
-        return float(v)
+    if hasattr(v, "item"):
+        try:
+            return v.item()
+        except Exception:
+            pass
     return v
 
 
 def make_payload(df: pd.DataFrame) -> list[dict]:
-    keep = ["uid", "Quelle", "CSB", "SAP", "Name", "Strasse", "Plz", "Ort", *DAY_COLUMNS, "lat", "lon"]
+    keep = ["uid", "Quelle", "source_row", "CSB", "SAP", "Name", "Strasse", "Plz", "Ort", *DAY_COLUMNS, "lat", "lon"]
     rows = []
     for rec in df[keep].to_dict("records"):
         rows.append({k: json_ready(v) for k, v in rec.items()})
@@ -142,180 +119,172 @@ def build_html(customers: list[dict], depot_cfg: dict, source_name: str) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Feiertags-Tourenplaner</title>
 <style>
-:root{{--bg:#101114;--panel:#181a20;--panel2:#20232b;--line:#30343d;--text:#f2f3f5;--muted:#9ca3af;--accent:#9d6cff;--accent2:#ff9a3c;--good:#66bb6a;--bad:#ef6464}}
-*{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}}
-header{{position:sticky;top:0;z-index:20;background:rgba(16,17,20,.95);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}}
-.wrap{{max-width:1800px;margin:auto;padding:18px 22px}} h1{{font-size:25px;margin:0 0 3px}} .sub{{color:var(--muted)}}
-.controls{{display:grid;grid-template-columns:1.3fr 1.2fr .8fr .9fr auto auto;gap:12px;align-items:end;margin-top:15px}} .box{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px}}
-label.title{{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}} .checks{{display:flex;gap:8px;flex-wrap:wrap}} .chip{{display:inline-flex;gap:5px;align-items:center;background:#242730;border:1px solid #343844;border-radius:999px;padding:5px 8px}}
-input[type=number],input[type=date]{{width:100%;background:#111318;border:1px solid #3a3e48;color:var(--text);border-radius:8px;padding:8px}}
-button{{background:#2a2d36;border:1px solid #404550;color:var(--text);border-radius:9px;padding:9px 12px;cursor:pointer;font-weight:650}} button:hover{{filter:brightness(1.12)}} button.primary{{background:var(--accent);border-color:var(--accent)}} button.warn{{background:#3a2528;border-color:#5a3035;color:#ffb6bd}}
-main{{max-width:1800px;margin:auto;padding:18px 22px 50px}} .metrics{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}} .metric{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px}} .metric b{{display:block;font-size:20px}} .metric span{{color:var(--muted);font-size:12px}}
-.tabs{{display:flex;gap:7px;margin:8px 0 14px}} .tabbtn.active{{background:var(--accent)}} .tab{{display:none}} .tab.active{{display:block}}
-.board{{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px;align-items:start}} .route{{background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden;min-height:150px}} .routeHead{{padding:10px 11px;background:var(--panel2);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;align-items:center}} .routeTitle{{font-weight:800}} .stats{{color:var(--muted);font-size:12px;margin-top:2px}} .routeBtns{{display:flex;gap:5px}} .routeBtns button{{padding:5px 7px;font-size:12px}}
-.dropzone{{min-height:90px;padding:8px}} .cust{{background:#262933;border:1px solid #383d48;border-radius:9px;padding:8px 9px;margin:6px 0;cursor:grab;display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:start}} .cust.dragging{{opacity:.35}} .handle{{color:#7f8693;font-weight:900;letter-spacing:-1px}} .cust strong{{font-size:13px}} .meta{{color:var(--muted);font-size:11px;margin-top:2px}} .del{{padding:2px 6px;border-radius:7px;background:transparent;border-color:#4a3b40;color:#d99}}
-.route.unplanned{{border-color:#5a3a40}} .route.unplanned .routeHead{{background:#2b1e22}}
-.toolbar{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}} .note{{color:var(--muted);font-size:12px;margin:8px 0}}
-svg{{width:100%;height:640px;background:#14161b;border:1px solid var(--line);border-radius:14px}} .legend{{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}} .legend i{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}}
-table{{width:100%;border-collapse:collapse;background:var(--panel);border-radius:12px;overflow:hidden}} th,td{{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;font-size:12px}} th{{position:sticky;top:0;background:#242730}} .tablewrap{{max-height:700px;overflow:auto;border:1px solid var(--line);border-radius:12px}}
-@media(max-width:1050px){{.controls{{grid-template-columns:1fr 1fr}} .metrics{{grid-template-columns:repeat(2,1fr)}}}} @media(max-width:650px){{.wrap,main{{padding-left:10px;padding-right:10px}} .controls{{grid-template-columns:1fr}} .metrics{{grid-template-columns:1fr 1fr}}}}
-@media print{{header,.tabs,.toolbar,.routeBtns,.del{{display:none!important}} body{{background:#fff;color:#000}} .route,.metric,table{{border:1px solid #bbb;background:#fff}} .routeHead,.cust{{background:#fff;color:#000}} .cust{{break-inside:avoid}}}}
+:root{{--bg:#f4f4f6;--surface:#ffffff;--surface2:#f8f8fa;--ink:#202126;--muted:#737680;--line:#dedfe4;--line2:#ececf0;--purple:#7256a8;--purpleSoft:#eee9f8;--green:#287a4b;--greenBg:#e8f5ed;--amber:#9a6500;--amberBg:#fff4d6;--red:#a43b3b;--redBg:#fdeaea;--shadow:0 8px 24px rgba(27,28,33,.07)}}
+*{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}}
+button,input{{font:inherit}}button{{cursor:pointer}}
+.top{{position:sticky;top:0;z-index:30;background:rgba(244,244,246,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}}
+.topin{{max-width:1900px;margin:auto;padding:16px 22px 14px}}.brandrow{{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}}h1{{font-size:24px;line-height:1.1;margin:0;font-weight:800;letter-spacing:-.02em}}.subtitle{{color:var(--muted);font-size:12px;margin-top:5px}}.filepill{{white-space:nowrap;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:6px 10px;color:var(--muted);font-size:12px}}
+.controlbar{{display:grid;grid-template-columns:1.05fr 1.6fr minmax(190px,.8fr) auto;gap:10px;align-items:end;margin-top:14px}}.control{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:9px 10px}}.label{{display:block;font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:7px}}.chips{{display:flex;gap:6px;flex-wrap:wrap}}.chip{{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--surface2);border:1px solid var(--line2);border-radius:999px;font-size:12px}}.chip input{{accent-color:var(--purple)}}
+.dayseg{{display:flex;gap:5px}}.daybtn{{border:1px solid var(--line);background:var(--surface2);border-radius:8px;padding:6px 9px;color:#555861;font-weight:700}}.daybtn.active{{background:var(--purple);border-color:var(--purple);color:white}}.search{{width:100%;border:1px solid var(--line);background:var(--surface2);border-radius:8px;padding:7px 9px;outline:none}}.search:focus{{border-color:#a995cd;box-shadow:0 0 0 3px var(--purpleSoft)}}
+.actions{{display:flex;gap:7px;align-items:center}}.btn{{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:8px 11px;color:#35373e;font-weight:700}}.btn:hover{{background:#fafafa}}.btn.primary{{background:var(--purple);border-color:var(--purple);color:#fff}}.btn.danger{{color:var(--red);background:#fff}}
+main{{max-width:1900px;margin:auto;padding:16px 22px 50px}}.notice{{background:#fff;border:1px solid var(--line);border-left:4px solid var(--purple);border-radius:10px;padding:10px 12px;margin-bottom:12px;color:#575a63;font-size:12px}}.notice b{{color:var(--ink)}}
+.metrics{{display:grid;grid-template-columns:repeat(5,minmax(125px,1fr));gap:9px;margin-bottom:12px}}.metric{{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:9px 11px}}.metric .v{{font-size:19px;font-weight:800;letter-spacing:-.02em}}.metric .k{{font-size:11px;color:var(--muted);margin-top:1px}}
+.toolbar{{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin:7px 0 12px}}.spacer{{flex:1}}.toggle{{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}}.toggle input{{accent-color:var(--purple)}}
+.board{{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px;align-items:start}}.route{{background:var(--surface);border:1px solid var(--line);border-radius:13px;overflow:hidden;box-shadow:0 1px 0 rgba(0,0,0,.02)}}.route.changed{{box-shadow:0 0 0 2px rgba(114,86,168,.16),var(--shadow)}}.route.parking{{border-style:dashed;background:#fffafa}}.routehead{{padding:10px 11px;border-bottom:1px solid var(--line2);display:flex;justify-content:space-between;align-items:flex-start;gap:10px;background:linear-gradient(180deg,#fff,#fbfbfc)}}.rtitle{{font-size:15px;font-weight:850;display:flex;align-items:center;gap:7px}}.sourcebadge{{font-size:9px;font-weight:800;color:#615f67;background:#efeff2;border-radius:999px;padding:3px 6px}}.rmeta{{font-size:11px;color:var(--muted);margin-top:2px}}.rdelta{{font-weight:800}}.rdelta.plus{{color:var(--green)}}.rdelta.minus{{color:var(--red)}}
+.dropzone{{min-height:74px;padding:5px 7px 8px}}.dropzone.over{{background:var(--purpleSoft)}}.cust{{position:relative;background:var(--surface);border:1px solid var(--line2);border-radius:9px;padding:7px 8px;margin:5px 0;display:grid;grid-template-columns:16px 1fr auto;gap:6px;align-items:start;cursor:grab;transition:border-color .12s,box-shadow .12s,transform .12s}}.cust:hover{{border-color:#cfc8dc;box-shadow:0 4px 12px rgba(31,31,38,.06)}}.cust.dragging{{opacity:.35;transform:scale(.99)}}.cust.moved{{border-left:4px solid var(--purple)}}.grip{{color:#b0b1b7;font-weight:900;padding-top:2px;user-select:none}}.cname{{font-weight:760;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.csub{{font-size:10px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.original{{font-size:10px;color:#705b96;margin-top:3px}}.remove{{border:0;background:transparent;color:#b2b3b8;border-radius:6px;padding:2px 5px;font-size:15px;line-height:1}}.remove:hover{{color:var(--red);background:var(--redBg)}}
+.fitrow{{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:5px}}.fit{{display:inline-flex;align-items:center;border-radius:999px;padding:2px 6px;font-size:9px;font-weight:850}}.fit.good{{background:var(--greenBg);color:var(--green)}}.fit.ok{{background:#edf3e7;color:#57792f}}.fit.warn{{background:var(--amberBg);color:var(--amber)}}.fit.bad{{background:var(--redBg);color:var(--red)}}.fit.unknown{{background:#ededf0;color:#737680}}.fitdetail{{font-size:9px;color:var(--muted)}}.crosssource{{font-size:9px;color:var(--amber);font-weight:800}}
+.empty{{color:#a0a2aa;font-size:11px;text-align:center;padding:18px 8px}}.hidden{{display:none!important}}
+.drawer{{position:fixed;right:18px;bottom:18px;z-index:60;width:min(420px,calc(100vw - 36px));background:#26232b;color:#fff;border-radius:14px;padding:13px 14px;box-shadow:0 18px 50px rgba(0,0,0,.24);transform:translateY(140%);transition:transform .2s ease}}.drawer.show{{transform:translateY(0)}}.drawer .dtop{{display:flex;justify-content:space-between;gap:10px;align-items:center}}.drawer .dbadge{{font-weight:850}}.drawer .small{{font-size:11px;color:#c7c1cf;margin-top:5px}}.drawer.good{{border-left:5px solid #4bb47a}}.drawer.ok{{border-left:5px solid #89a85b}}.drawer.warn{{border-left:5px solid #e4aa3d}}.drawer.bad{{border-left:5px solid #e36b6b}}
+.panel{{display:none;margin-top:12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}}.panel.open{{display:block}}table{{width:100%;border-collapse:collapse}}th,td{{font-size:11px;text-align:left;padding:7px 8px;border-bottom:1px solid var(--line2)}}th{{background:#fafafd;color:#666871;position:sticky;top:0}}.tablewrap{{max-height:560px;overflow:auto}}
+@media(max-width:1050px){{.controlbar{{grid-template-columns:1fr 1fr}}.metrics{{grid-template-columns:repeat(3,1fr)}}}}@media(max-width:650px){{.topin,main{{padding-left:10px;padding-right:10px}}.brandrow{{display:block}}.filepill{{display:inline-block;margin-top:8px}}.controlbar{{grid-template-columns:1fr}}.metrics{{grid-template-columns:1fr 1fr}}.board{{grid-template-columns:1fr}}}}
+@media print{{.top,.toolbar,.notice,.remove,.drawer{{display:none!important}}body{{background:#fff}}main{{max-width:none;padding:0}}.route{{break-inside:avoid;box-shadow:none}}}}
 </style>
 </head>
 <body>
-<header><div class="wrap"><h1>🧭 Feiertags-Tourenplaner</h1><div class="sub">Quelle: {src} · erzeugt {generated} · Berechnung läuft vollständig in dieser HTML-Datei</div>
-<div class="controls">
-  <div class="box"><label class="title">Liefertage</label><div id="days" class="checks"></div></div>
-  <div class="box"><label class="title">Bereiche</label><div id="sources" class="checks"></div></div>
-  <div class="box"><label class="title">Max. Stopps je Tour</label><input id="maxStops" type="number" min="2" max="30" value="8"></div>
-  <div class="box"><label class="title">Optionen</label><div class="checks"><label class="chip"><input id="sepSources" type="checkbox" checked> getrennt</label><label class="chip"><input id="returnDepot" type="checkbox" checked> Rückfahrt</label></div></div>
-  <button class="primary" onclick="buildPlan()">⚡ Touren berechnen</button>
-  <button onclick="addEmptyRoute()">＋ Neue Tour</button>
-</div></div></header>
+<div class="top"><div class="topin">
+  <div class="brandrow"><div><h1>Feiertags-Tourenplaner</h1><div class="subtitle">Bestehende Touren bleiben erhalten. Du verschiebst – die App bewertet die geografische Passung.</div></div><div class="filepill">{src} · erzeugt {generated}</div></div>
+  <div class="controlbar">
+    <div class="control"><span class="label">Liefertag</span><div class="dayseg" id="days"></div></div>
+    <div class="control"><span class="label">Bereiche</span><div class="chips" id="sources"></div></div>
+    <div class="control"><span class="label">Suche</span><input id="search" class="search" placeholder="SAP, Name, Ort, Tour …"></div>
+    <div class="actions"><button class="btn primary" onclick="loadOriginalPlan()">Touren laden</button><button class="btn" onclick="resetPlan()">Zurücksetzen</button></div>
+  </div>
+</div></div>
 <main>
-<div class="metrics"><div class="metric"><b id="mCustomers">0</b><span>Kunden ausgewählt</span></div><div class="metric"><b id="mRoutes">0</b><span>Touren</span></div><div class="metric"><b id="mPlanned">0</b><span>eingeplant</span></div><div class="metric"><b id="mUnplanned">0</b><span>nicht eingeplant</span></div><div class="metric"><b id="mKm">0 km</b><span>Geo-km gesamt</span></div></div>
-<div class="tabs"><button class="tabbtn active" onclick="showTab('plan',this)">Touren</button><button class="tabbtn" onclick="showTab('map',this)">Geo-Ansicht</button><button class="tabbtn" onclick="showTab('table',this)">Tabelle</button></div>
-<section id="tab-plan" class="tab active"><div class="toolbar"><button onclick="optimizeAll()">↻ Alle Reihenfolgen optimieren</button><button onclick="exportCsv()">⬇ CSV exportieren</button><button onclick="window.print()">🖨 Drucken</button><button class="warn" onclick="clearPlan()">Planung leeren</button></div><div class="note">Kunden mit der Maus zwischen Touren ziehen. ✕ verschiebt einen Kunden nach „Nicht eingeplant“. Geo-km sind Luftlinie; „Straßen-km ~“ ist nur eine grobe Schätzung (× 1,25).</div><div id="board" class="board"></div></section>
-<section id="tab-map" class="tab"><svg id="geoSvg" viewBox="0 0 1200 640" preserveAspectRatio="xMidYMid meet"></svg><div id="legend" class="legend"></div><div class="note">Die Geo-Ansicht ist bewusst ohne Online-Kartenanbieter und funktioniert daher auch offline.</div></section>
-<section id="tab-table" class="tab"><div class="tablewrap"><table><thead><tr><th>Neue Tour</th><th>Pos.</th><th>Bereich</th><th>CSB</th><th>SAP</th><th>Name</th><th>PLZ</th><th>Ort</th><th>bisherige Tour(en)</th></tr></thead><tbody id="tbody"></tbody></table></div></section>
+  <div class="notice"><b>Bewertung:</b> Nur verschobene Kunden werden bewertet. Entscheidend sind Nähe zu Kunden der Ziel-Tour und die geschätzten zusätzlichen Geo-km. Die Rechnung nutzt PLZ-Mittelpunkte/Luftlinie – sie ersetzt kein LKW-Straßenrouting.</div>
+  <div class="metrics">
+    <div class="metric"><div class="v" id="mRoutes">–</div><div class="k">bestehende Touren</div></div>
+    <div class="metric"><div class="v" id="mCustomers">–</div><div class="k">Kunden</div></div>
+    <div class="metric"><div class="v" id="mMoved">–</div><div class="k">verschoben</div></div>
+    <div class="metric"><div class="v" id="mGood">–</div><div class="k">davon passend</div></div>
+    <div class="metric"><div class="v" id="mOut">–</div><div class="k">ausgeplant</div></div>
+  </div>
+  <div class="toolbar">
+    <label class="toggle"><input type="checkbox" id="onlyChanged" onchange="renderAll()"> nur geänderte Touren</label>
+    <label class="toggle"><input type="checkbox" id="onlyMoved" onchange="renderAll()"> nur verschobene Kunden</label>
+    <div class="spacer"></div>
+    <button class="btn" onclick="toggleTable()">Änderungsliste</button>
+    <button class="btn" onclick="downloadCSV()">CSV exportieren</button>
+    <button class="btn" onclick="window.print()">Drucken</button>
+  </div>
+  <div class="board" id="board"></div>
+  <div class="panel" id="changePanel"><div class="tablewrap"><table><thead><tr><th>SAP</th><th>Kunde</th><th>Von</th><th>Nach</th><th>Bewertung</th><th>Nächster Kunde</th><th>Distanz</th><th>+ Geo-km</th></tr></thead><tbody id="changeBody"></tbody></table></div></div>
 </main>
+<div class="drawer" id="drawer"><div class="dtop"><div class="dbadge" id="drawerTitle"></div><button onclick="hideDrawer()" style="border:0;background:transparent;color:#fff;font-size:18px">×</button></div><div class="small" id="drawerText"></div></div>
 <script>
 const CUSTOMERS={data_json};
 const DEPOTS={dep_json};
 const DAYS={{Mo:'Montag',Die:'Dienstag',Mitt:'Mittwoch',Don:'Donnerstag',Fr:'Freitag',Sam:'Samstag'}};
 const SOURCES=['DIREKT','MK','HUPA_NMS','HUPA_MALCHOW'];
-const COLORS=['#9d6cff','#ff9a3c','#6fc276','#ee6363','#cf85ff','#ffc457','#84a9ff','#cd719d','#90beb2','#e6915c','#70d6ff','#ffd670'];
-let selected=[]; let routes=[]; let dragUid=null;
-
-function init(){{
-  document.getElementById('days').innerHTML=Object.entries(DAYS).map(([k,v])=>`<label class="chip"><input type="checkbox" value="${{k}}" ${{k==='Fr'?'checked':''}}>${{v}}</label>`).join('');
-  document.getElementById('sources').innerHTML=SOURCES.map(s=>`<label class="chip"><input type="checkbox" value="${{s}}" checked>${{s.replace('HUPA_','HUPA ')}}</label>`).join('');
-  document.querySelectorAll('#days input,#sources input').forEach(x=>x.addEventListener('change',previewCount));
-  previewCount();
-}}
-function checked(sel){{return [...document.querySelectorAll(sel+':checked')].map(x=>x.value)}}
-function previewCount(){{
-  const ds=checked('#days input'), ss=checked('#sources input');
-  const n=CUSTOMERS.filter(c=>ss.includes(c.Quelle)&&ds.some(d=>c[d]!=null)).length;
-  document.getElementById('mCustomers').textContent=n;
-}}
-function oldTours(c,ds){{return ds.filter(d=>c[d]!=null).map(d=>DAYS[d].slice(0,2)+' '+c[d]).join(' / ')}}
-function hav(a,b){{const R=6371.0088,rad=x=>x*Math.PI/180; const dlat=rad(b.lat-a.lat),dlon=rad(b.lon-a.lon); const h=Math.sin(dlat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dlon/2)**2; return R*2*Math.asin(Math.sqrt(h));}}
-function depotFor(src){{const d=DEPOTS[src]; return d&&Number.isFinite(d.lat)&&Number.isFinite(d.lon)?d:null}}
-function routeKm(items,src){{if(!items.length)return 0; const back=document.getElementById('returnDepot').checked; const dep=src==='MIX'?null:depotFor(src); let km=0; if(dep)km+=hav(dep,items[0]); for(let i=1;i<items.length;i++)km+=hav(items[i-1],items[i]); if(dep&&back)km+=hav(items[items.length-1],dep); return km}}
-function proj(c,mlat){{return [c.lon*Math.cos(mlat*Math.PI/180),c.lat]}}
-function clusterBalanced(arr,maxSize){{
-  const n=arr.length;if(!n)return[];const k=Math.max(1,Math.ceil(n/maxSize));if(k===1)return Array(n).fill(0);
-  const mlat=arr.reduce((s,c)=>s+c.lat,0)/n, pts=arr.map(c=>proj(c,mlat));
-  const center=[pts.reduce((s,p)=>s+p[0],0)/n,pts.reduce((s,p)=>s+p[1],0)/n];
-  const dist=(p,q)=>Math.hypot(p[0]-q[0],p[1]-q[1]);
-  let seeds=[pts.map((p,i)=>[dist(p,center),i]).sort((a,b)=>b[0]-a[0])[0][1]];
-  while(seeds.length<k){{let best=-1,bi=-1;for(let i=0;i<n;i++){{if(seeds.includes(i))continue;let md=Math.min(...seeds.map(s=>dist(pts[i],pts[s])));if(md>best){{best=md;bi=i}}}}seeds.push(bi)}}
-  let centers=seeds.map(i=>pts[i].slice()), assign=Array(n).fill(-1); const base=Math.floor(n/k),rem=n%k,target=Array.from({{length:k}},(_,i)=>base+(i<rem?1:0));
-  for(let iter=0;iter<22;iter++){{
-    const D=pts.map(p=>centers.map(c=>dist(p,c))); const regret=D.map(ds=>{{let x=ds.slice().sort((a,b)=>a-b);return x[1]-x[0]}}); const order=[...Array(n).keys()].sort((a,b)=>regret[b]-regret[a]);
-    const na=Array(n).fill(-1),used=Array(k).fill(0); for(const i of order){{const prefs=[...Array(k).keys()].sort((a,b)=>D[i][a]-D[i][b]);for(const c of prefs)if(used[c]<target[c]){{na[i]=c;used[c]++;break}}}}
-    const same=na.every((x,i)=>x===assign[i]); assign=na; centers=centers.map((c,j)=>{{const ids=assign.map((x,i)=>x===j?i:-1).filter(i=>i>=0);return ids.length?[ids.reduce((s,i)=>s+pts[i][0],0)/ids.length,ids.reduce((s,i)=>s+pts[i][1],0)/ids.length]:c}}); if(same)break;
-  }} return assign;
-}}
-function nearestOrder(arr,src){{
-  if(arr.length<2)return arr.slice(); const rem=new Set(arr.map((_,i)=>i)),dep=src==='MIX'?null:depotFor(src); let start;
-  if(dep)start=[...rem].sort((a,b)=>hav(dep,arr[a])-hav(dep,arr[b]))[0]; else{{const ctr={{lat:arr.reduce((s,c)=>s+c.lat,0)/arr.length,lon:arr.reduce((s,c)=>s+c.lon,0)/arr.length}};start=[...rem].sort((a,b)=>hav(ctr,arr[a])-hav(ctr,arr[b]))[0]}}
-  const ids=[start];rem.delete(start);while(rem.size){{const cur=arr[ids[ids.length-1]],nx=[...rem].sort((a,b)=>hav(cur,arr[a])-hav(cur,arr[b]))[0];ids.push(nx);rem.delete(nx)}} let out=ids.map(i=>arr[i]);
-  if(out.length>=4){{let best=routeKm(out,src),changed=true,round=0;while(changed&&round++<4){{changed=false;for(let i=0;i<out.length-2;i++)for(let j=i+2;j<out.length;j++){{const cand=out.slice(0,i).concat(out.slice(i,j).reverse(),out.slice(j));const d=routeKm(cand,src);if(d+.01<best){{out=cand;best=d;changed=true}}}}}}}}
-  return out;
-}}
-function buildPlan(){{
-  const ds=checked('#days input'),ss=checked('#sources input'),max=Math.max(2,parseInt(document.getElementById('maxStops').value||8)),sep=document.getElementById('sepSources').checked;
-  if(!ds.length||!ss.length){{alert('Bitte Liefertag und Bereich auswählen.');return}}
-  selected=CUSTOMERS.filter(c=>ss.includes(c.Quelle)&&ds.some(d=>c[d]!=null)).map(c=>({{...c,old:oldTours(c,ds)}}));
-  const valid=selected.filter(c=>Number.isFinite(c.lat)&&Number.isFinite(c.lon)), invalid=selected.filter(c=>!Number.isFinite(c.lat)||!Number.isFinite(c.lon)); routes=[]; let num=1;
-  const groups=sep?SOURCES.filter(s=>ss.includes(s)).map(s=>[s,valid.filter(c=>c.Quelle===s)]).filter(x=>x[1].length):[['MIX',valid]];
-  for(const [src,grp] of groups){{const labels=clusterBalanced(grp,max);const k=Math.max(...labels,0)+1;for(let cl=0;cl<k;cl++){{let items=grp.filter((_,i)=>labels[i]===cl);items=nearestOrder(items,src);routes.push({{id:'R'+Date.now()+'_'+num,name:(sep?'FT-'+src.replace('HUPA_','')+'-':'FT-')+String(num).padStart(2,'0'),src,items}});num++}}}}
-  routes.push({{id:'UNPLANNED',name:'NICHT EINGEPLANT',src:'MIX',items:invalid}}); renderAll();
-}}
-function renderAll(){{renderBoard();renderMetrics();renderMap();renderTable()}}
-function customerHtml(c){{return `<div class="cust" draggable="true" data-uid="${{c.uid}}"><div class="handle">⋮⋮</div><div><strong>${{c.SAP}} · ${{esc(c.Ort)}} · ${{esc(c.Name)}}</strong><div class="meta">${{esc(c.Plz+' '+(c.Strasse||''))}} · ${{esc(c.old||'')}} · [${{esc(c.Quelle)}}]</div></div><button class="del" title="Nicht einplanen" onclick="event.stopPropagation();unplan('${{c.uid}}')">✕</button></div>`}}
-function renderBoard(){{
-  const b=document.getElementById('board'); b.innerHTML='';
-  routes.forEach((r,idx)=>{{const el=document.createElement('div');el.className='route'+(r.id==='UNPLANNED'?' unplanned':'');el.dataset.route=r.id;const km=r.id==='UNPLANNED'?0:routeKm(r.items,r.src);const btns=r.id==='UNPLANNED'?'':`<div class="routeBtns"><button onclick="optimizeRoute('${{r.id}}')">↻</button><button onclick="renameRoute('${{r.id}}')">✎</button><button class="warn" onclick="removeRoute('${{r.id}}')">🗑</button></div>`;el.innerHTML=`<div class="routeHead"><div><div class="routeTitle">${{esc(r.name)}}</div><div class="stats">${{r.items.length}} Stopps${{r.id==='UNPLANNED'?'':' · '+km.toFixed(1)+' Geo-km · ~'+(km*1.25).toFixed(0)+' Straßen-km'}}</div></div>${{btns}}</div><div class="dropzone" data-route="${{r.id}}">${{r.items.map(customerHtml).join('')}}</div>`;b.appendChild(el)}}); bindDnD();
-}}
-function bindDnD(){{document.querySelectorAll('.cust').forEach(el=>{{el.addEventListener('dragstart',()=>{{dragUid=el.dataset.uid;el.classList.add('dragging')}});el.addEventListener('dragend',()=>el.classList.remove('dragging'));el.addEventListener('dragover',e=>e.preventDefault());el.addEventListener('drop',e=>{{e.preventDefault();moveUid(dragUid,el.closest('.dropzone').dataset.route,el.dataset.uid)}})}});document.querySelectorAll('.dropzone').forEach(z=>{{z.addEventListener('dragover',e=>e.preventDefault());z.addEventListener('drop',e=>{{if(e.target.closest('.cust'))return;e.preventDefault();moveUid(dragUid,z.dataset.route,null)}})}})}}
-function findAndRemove(uid){{for(const r of routes){{const i=r.items.findIndex(c=>c.uid===uid);if(i>=0)return r.items.splice(i,1)[0]}}return null}}
-function moveUid(uid,toId,beforeUid){{if(!uid)return;const c=findAndRemove(uid),to=routes.find(r=>r.id===toId);if(!c||!to)return;let ix=beforeUid?to.items.findIndex(x=>x.uid===beforeUid):-1;if(ix<0)to.items.push(c);else to.items.splice(ix,0,c);renderAll()}}
-function unplan(uid){{moveUid(uid,'UNPLANNED',null)}}
-function addEmptyRoute(){{if(!routes.length)routes=[{{id:'UNPLANNED',name:'NICHT EINGEPLANT',src:'MIX',items:[]}}];const un=routes.findIndex(r=>r.id==='UNPLANNED');const n=routes.filter(r=>r.id!=='UNPLANNED').length+1;routes.splice(un<0?routes.length:un,0,{{id:'R'+Date.now(),name:'FT-MAN-'+String(n).padStart(2,'0'),src:'MIX',items:[]}});renderAll()}}
-function removeRoute(id){{const i=routes.findIndex(r=>r.id===id),u=routes.find(r=>r.id==='UNPLANNED');if(i<0||!u)return;u.items.push(...routes[i].items);routes.splice(i,1);renderAll()}}
-function renameRoute(id){{const r=routes.find(x=>x.id===id);if(!r)return;const n=prompt('Tourname',r.name);if(n&&n.trim()){{r.name=n.trim();renderAll()}}}}
-function optimizeRoute(id){{const r=routes.find(x=>x.id===id);if(!r||r.id==='UNPLANNED')return;const src=r.items.length&&new Set(r.items.map(x=>x.Quelle)).size===1?r.items[0].Quelle:'MIX';r.src=src;r.items=nearestOrder(r.items,src);renderAll()}}
-function optimizeAll(){{routes.filter(r=>r.id!=='UNPLANNED').forEach(r=>{{const src=r.items.length&&new Set(r.items.map(x=>x.Quelle)).size===1?r.items[0].Quelle:'MIX';r.src=src;r.items=nearestOrder(r.items,src)}});renderAll()}}
-function clearPlan(){{if(!confirm('Aktuelle Planung leeren?'))return;const all=routes.flatMap(r=>r.items),seen=new Set(),uniq=[];for(const c of all)if(!seen.has(c.uid)){{seen.add(c.uid);uniq.push(c)}}routes=[{{id:'UNPLANNED',name:'NICHT EINGEPLANT',src:'MIX',items:uniq}}];renderAll()}}
-function renderMetrics(){{const rs=routes.filter(r=>r.id!=='UNPLANNED'),un=routes.find(r=>r.id==='UNPLANNED');const planned=rs.reduce((s,r)=>s+r.items.length,0),km=rs.reduce((s,r)=>s+routeKm(r.items,r.src),0);document.getElementById('mCustomers').textContent=selected.length;document.getElementById('mRoutes').textContent=rs.length;document.getElementById('mPlanned').textContent=planned;document.getElementById('mUnplanned').textContent=un?un.items.length:0;document.getElementById('mKm').textContent=km.toFixed(0)+' km'}}
-function renderTable(){{const tb=document.getElementById('tbody');let html='';routes.forEach(r=>r.items.forEach((c,i)=>html+=`<tr><td>${{esc(r.name)}}</td><td>${{i+1}}</td><td>${{esc(c.Quelle)}}</td><td>${{c.CSB??''}}</td><td>${{c.SAP??''}}</td><td>${{esc(c.Name)}}</td><td>${{esc(c.Plz)}}</td><td>${{esc(c.Ort)}}</td><td>${{esc(c.old||'')}}</td></tr>`));tb.innerHTML=html}}
-function renderMap(){{
-  const svg=document.getElementById('geoSvg'),pts=routes.filter(r=>r.id!=='UNPLANNED').flatMap(r=>r.items.map(c=>({{c,r}}))).filter(x=>Number.isFinite(x.c.lat)&&Number.isFinite(x.c.lon)); if(!pts.length){{svg.innerHTML='<text x="40" y="60" fill="#aaa">Keine Geo-Daten vorhanden</text>';return}}
-  const lats=pts.map(x=>x.c.lat),lons=pts.map(x=>x.c.lon),minLa=Math.min(...lats),maxLa=Math.max(...lats),minLo=Math.min(...lons),maxLo=Math.max(...lons),pad=45,W=1200,H=640; const X=lo=>pad+(lo-minLo)/Math.max(.0001,maxLo-minLo)*(W-2*pad),Y=la=>H-pad-(la-minLa)/Math.max(.0001,maxLa-minLa)*(H-2*pad);
-  let h='';const rs=routes.filter(r=>r.id!=='UNPLANNED');rs.forEach((r,ri)=>{{const col=COLORS[ri%COLORS.length],p=r.items.filter(c=>Number.isFinite(c.lat)&&Number.isFinite(c.lon));if(p.length>1)h+=`<polyline points="${{p.map(c=>X(c.lon)+','+Y(c.lat)).join(' ')}}" fill="none" stroke="${{col}}" stroke-width="3" opacity=".75"/>`;p.forEach((c,i)=>h+=`<circle cx="${{X(c.lon)}}" cy="${{Y(c.lat)}}" r="6" fill="${{col}}"><title>${{esc(r.name+' '+(i+1)+' · '+c.SAP+' · '+c.Ort+' · '+c.Name)}}</title></circle>`);}});svg.innerHTML=h;document.getElementById('legend').innerHTML=rs.map((r,i)=>`<span><i style="background:${{COLORS[i%COLORS.length]}}"></i>${{esc(r.name)}}</span>`).join('')
-}}
-function showTab(name,btn){{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tabbtn').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');btn.classList.add('active');if(name==='map')renderMap();if(name==='table')renderTable()}}
-function exportCsv(){{let rows=[['Neue Tour','Reihenfolge','Quelle','CSB','SAP','Name','Strasse','PLZ','Ort','Bisherige Touren']];routes.forEach(r=>r.items.forEach((c,i)=>rows.push([r.name,i+1,c.Quelle,c.CSB??'',c.SAP??'',c.Name,c.Strasse??'',c.Plz,c.Ort,c.old??''])));const csv='\ufeff'+rows.map(r=>r.map(v=>'"'+String(v??'').replaceAll('"','""')+'"').join(';')).join('\\r\\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{{type:'text/csv;charset=utf-8'}}));a.download='Feiertagstouren.csv';a.click();URL.revokeObjectURL(a.href)}}
-function esc(v){{return String(v??'').replace(/[&<>"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]))}}
-init();
+let activeDay='Mo', routes=[], selected=[], dragUid=null, originalSnapshot={{}}, searchText='';
+const esc=s=>String(s??'').replace(/[&<>\"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m]));
+function hav(a,b){{if(!a||!b||!Number.isFinite(a.lat)||!Number.isFinite(a.lon)||!Number.isFinite(b.lat)||!Number.isFinite(b.lon))return Infinity;const R=6371,toR=x=>x*Math.PI/180,dla=toR(b.lat-a.lat),dlo=toR(b.lon-a.lon),la1=toR(a.lat),la2=toR(b.lat);const h=Math.sin(dla/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dlo/2)**2;return 2*R*Math.asin(Math.sqrt(h))}}
+function median(a){{const x=a.filter(Number.isFinite).sort((p,q)=>p-q);if(!x.length)return NaN;const m=Math.floor(x.length/2);return x.length%2?x[m]:(x[m-1]+x[m])/2}}
+function depotFor(src){{const d=DEPOTS[src];return d&&Number.isFinite(d.lat)&&Number.isFinite(d.lon)?d:null}}
+function greedyOrder(arr,src){{if(arr.length<2)return arr.slice();const left=arr.slice(),dep=depotFor(src);let cur=dep||left[0],out=[];while(left.length){{let bi=0,bd=Infinity;left.forEach((x,i)=>{{const d=hav(cur,x);if(d<bd){{bd=d;bi=i}}}});const n=left.splice(bi,1)[0];out.push(n);cur=n}}return out}}
+function openKm(arr,src){{const x=greedyOrder(arr.filter(c=>Number.isFinite(c.lat)&&Number.isFinite(c.lon)),src);if(!x.length)return 0;let km=0,dep=depotFor(src);if(dep)km+=hav(dep,x[0]);for(let i=1;i<x.length;i++)km+=hav(x[i-1],x[i]);return Number.isFinite(km)?km:0}}
+function typicalSpacing(peers){{const p=peers.filter(c=>Number.isFinite(c.lat)&&Number.isFinite(c.lon));if(p.length<2)return NaN;const ds=p.map((c,i)=>Math.min(...p.filter((_,j)=>j!==i).map(o=>hav(c,o))));return median(ds)}}
+function bestInsertionExtra(c,peers,src){{const p=peers.filter(x=>Number.isFinite(x.lat)&&Number.isFinite(x.lon));if(!Number.isFinite(c.lat)||!Number.isFinite(c.lon)||!p.length)return NaN;const base=openKm(p,src),ord=greedyOrder(p,src);let best=Infinity;for(let i=0;i<=ord.length;i++){{const cand=ord.slice();cand.splice(i,0,c);best=Math.min(best,openKm(cand,src)-base)}}return Math.max(0,best)}}
+function getRoute(id){{return routes.find(r=>r.id===id)}}
+function currentRouteOf(uid){{return routes.find(r=>r.items.some(c=>c.uid===uid))}}
+function originalRouteId(c){{return c.originalRouteId}}
+function fitFor(c,r){{if(!r||r.parking)return {{key:'unknown',label:'ausgeplant',nearest:NaN,nearName:'',extra:NaN,note:''}};const peers=r.items.filter(x=>x.uid!==c.uid&&Number.isFinite(x.lat)&&Number.isFinite(x.lon));if(!Number.isFinite(c.lat)||!Number.isFinite(c.lon)||!peers.length)return {{key:'unknown',label:'nicht bewertbar',nearest:NaN,nearName:'',extra:NaN,note:'zu wenig Geo-Daten'}};let nearest=Infinity,near=null;peers.forEach(p=>{{const d=hav(c,p);if(d<nearest){{nearest=d;near=p}}}});const typ=typicalSpacing(peers),extra=bestInsertionExtra(c,peers,r.source);const ref=Number.isFinite(typ)?Math.max(12,typ*1.45):18;let key,label;if((nearest<=14||nearest<=ref*.8)&&(extra<=14||extra<=ref)){{key='good';label='passt sehr gut'}}else if((nearest<=28||nearest<=ref*1.55)&&(extra<=25||extra<=ref*1.8)){{key='ok';label='passt gut'}}else if((nearest<=48||nearest<=ref*2.4)&&(extra<=42||extra<=ref*3)){{key='warn';label='grenzwertig'}}else{{key='bad';label='eher nicht'}}const cross=c.Quelle!==r.source;return {{key,label,nearest,nearName:near?`${{near.SAP}} · ${{near.Ort}}`:'',extra,note:cross?'anderer Bereich':''}}}}
+function fmt(x){{return Number.isFinite(x)?x.toFixed(1):'–'}}
+function initControls(){{const d=document.getElementById('days');Object.entries(DAYS).forEach(([k,v])=>{{const b=document.createElement('button');b.className='daybtn'+(k===activeDay?' active':'');b.textContent=v.slice(0,2);b.title=v;b.onclick=()=>{{activeDay=k;document.querySelectorAll('.daybtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');loadOriginalPlan()}};d.appendChild(b)}});const s=document.getElementById('sources');SOURCES.forEach(src=>{{const id='src_'+src;const l=document.createElement('label');l.className='chip';l.innerHTML=`<input id="${{id}}" type="checkbox" checked value="${{src}}"><span>${{src.replace('HUPA_','HUPA ')}}</span>`;s.appendChild(l)}});document.getElementById('search').addEventListener('input',e=>{{searchText=e.target.value.trim().toLowerCase();renderBoard()}})}}
+function activeSources(){{return SOURCES.filter(s=>document.getElementById('src_'+s)?.checked)}}
+function routeId(source,tour){{return source+'::'+String(tour)}}
+function loadOriginalPlan(){{const sources=activeSources();selected=CUSTOMERS.filter(c=>sources.includes(c.Quelle)&&c[activeDay]!=null).map(c=>({{...c}}));const map=new Map();selected.forEach(c=>{{const tour=String(c[activeDay]),id=routeId(c.Quelle,tour);c.originalRouteId=id;c.originalTour=tour;if(!map.has(id))map.set(id,{{id,tour,source:c.Quelle,items:[],originalCount:0,parking:false}});map.get(id).items.push(c)}});routes=[...map.values()].sort((a,b)=>Number(a.tour)-Number(b.tour)||a.source.localeCompare(b.source));routes.forEach(r=>{{r.items.sort((a,b)=>(a.source_row??0)-(b.source_row??0));r.originalCount=r.items.length}});routes.push({{id:'PARKING',tour:'AUSGEPLANT',source:'-',items:[],originalCount:0,parking:true}});originalSnapshot={{}};selected.forEach(c=>originalSnapshot[c.uid]=c.originalRouteId);renderAll()}}
+function resetPlan(){{if(routes.length&& !confirm('Alle manuellen Änderungen zurücksetzen?'))return;loadOriginalPlan()}}
+function routeDelta(r){{if(r.parking)return 0;return r.items.length-r.originalCount}}
+function routeChanged(r){{if(r.parking)return r.items.length>0;return routeDelta(r)!==0||r.items.some(c=>c.originalRouteId!==r.id)}}
+function customerMatches(c,r){{if(!searchText)return true;return [c.SAP,c.CSB,c.Name,c.Ort,c.Plz,c.Strasse,r.tour,r.source].some(v=>String(v??'').toLowerCase().includes(searchText))}}
+function custHtml(c,r){{const moved=!r.parking&&c.originalRouteId!==r.id;const fit=moved?fitFor(c,r):null;const cross=moved&&fit?.note;const visible=customerMatches(c,r);if(!visible)return '';let fitHtml='';if(moved)fitHtml=`<div class="fitrow"><span class="fit ${{fit.key}}">${{fit.label}}</span><span class="fitdetail">${{fmt(fit.nearest)}} km zum nächsten · +${{fmt(fit.extra)}} Geo-km</span>${{cross?'<span class="crosssource">anderer Bereich</span>':''}}</div>`;return `<div class="cust ${{moved?'moved':''}}" draggable="true" data-uid="${{c.uid}}"><div class="grip">⋮⋮</div><div><div class="cname">${{c.SAP}} · ${{esc(c.Name)}}</div><div class="csub">${{esc(c.Plz)}} ${{esc(c.Ort)}} · ${{esc(c.Strasse||'')}}</div>${{moved?`<div class="original">von Tour ${{esc(c.originalTour)}} · ${{esc(c.Quelle)}}</div>`:''}}${{fitHtml}}</div><button class="remove" title="Ausplanen" onclick="event.stopPropagation();moveUid('${{c.uid}}','PARKING',null)">×</button></div>`}}
+function renderBoard(){{const b=document.getElementById('board');const onlyChanged=document.getElementById('onlyChanged').checked,onlyMoved=document.getElementById('onlyMoved').checked;b.innerHTML='';routes.forEach(r=>{{if(onlyChanged&&!routeChanged(r))return;let cards=r.items.map(c=>{{if(onlyMoved&&c.originalRouteId===r.id&&!r.parking)return '';return custHtml(c,r)}}).join('');if(searchText&&!cards&&!r.parking)return;const d=routeDelta(r),delta=!r.parking&&d!==0?`<span class="rdelta ${{d>0?'plus':'minus'}}">${{d>0?'+':''}}${{d}}</span>`:'';const movedIn=r.parking?0:r.items.filter(c=>c.originalRouteId!==r.id).length;const movedOut=r.parking?0:Math.max(0,r.originalCount-r.items.filter(c=>c.originalRouteId===r.id).length);const meta=r.parking?`${{r.items.length}} Kunden entfernt`:`${{r.items.length}} Kunden · ursprünglich ${{r.originalCount}}${{movedIn||movedOut?` · ${{movedIn}} rein / ${{movedOut}} raus`:''}}`;const el=document.createElement('section');el.className='route'+(routeChanged(r)?' changed':'')+(r.parking?' parking':'');el.dataset.route=r.id;el.innerHTML=`<div class="routehead"><div><div class="rtitle">${{r.parking?'AUSGEPLANT':'Tour '+esc(r.tour)}} ${{delta}} ${{r.parking?'':`<span class="sourcebadge">${{esc(r.source.replace('HUPA_','HUPA '))}}</span>`}}</div><div class="rmeta">${{meta}}</div></div></div><div class="dropzone" data-route="${{r.id}}">${{cards||'<div class="empty">Kunden hierher ziehen</div>'}}</div>`;b.appendChild(el)}});bindDnD()}}
+function bindDnD(){{document.querySelectorAll('.cust').forEach(el=>{{el.addEventListener('dragstart',e=>{{dragUid=el.dataset.uid;el.classList.add('dragging');e.dataTransfer.effectAllowed='move'}});el.addEventListener('dragend',()=>{{el.classList.remove('dragging');document.querySelectorAll('.dropzone').forEach(z=>z.classList.remove('over'))}});el.addEventListener('dragover',e=>e.preventDefault());el.addEventListener('drop',e=>{{e.preventDefault();e.stopPropagation();moveUid(dragUid,el.closest('.dropzone').dataset.route,el.dataset.uid)}})}});document.querySelectorAll('.dropzone').forEach(z=>{{z.addEventListener('dragover',e=>{{e.preventDefault();z.classList.add('over')}});z.addEventListener('dragleave',()=>z.classList.remove('over'));z.addEventListener('drop',e=>{{if(e.target.closest('.cust'))return;e.preventDefault();z.classList.remove('over');moveUid(dragUid,z.dataset.route,null)}})}})}}
+function findRemove(uid){{for(const r of routes){{const i=r.items.findIndex(c=>c.uid===uid);if(i>=0)return {{c:r.items.splice(i,1)[0],from:r}}}}return null}}
+function moveUid(uid,toId,beforeUid){{if(!uid)return;const found=findRemove(uid),to=getRoute(toId);if(!found||!to)return;let ix=beforeUid?to.items.findIndex(x=>x.uid===beforeUid):-1;if(ix<0)to.items.push(found.c);else to.items.splice(ix,0,found.c);renderAll();if(!to.parking&&found.c.originalRouteId!==to.id)showMoveResult(found.c,to);else if(to.parking)showParking(found.c)}}
+function showMoveResult(c,r){{const f=fitFor(c,r),d=document.getElementById('drawer');d.className='drawer show '+f.key;document.getElementById('drawerTitle').textContent=`Tour ${{r.tour}}: ${{f.label}}`;document.getElementById('drawerText').textContent=`${{c.SAP}} · ${{c.Ort}} → nächster Kunde: ${{f.nearName||'–'}} (${{fmt(f.nearest)}} km), geschätzter Zusatz: +${{fmt(f.extra)}} Geo-km.${{f.note?' Hinweis: '+f.note+'.':''}}`;clearTimeout(window.__dt);window.__dt=setTimeout(hideDrawer,6500)}}
+function showParking(c){{const d=document.getElementById('drawer');d.className='drawer show warn';document.getElementById('drawerTitle').textContent='Kunde ausgeplant';document.getElementById('drawerText').textContent=`${{c.SAP}} · ${{c.Name}} liegt jetzt im Bereich AUSGEPLANT und kann jederzeit wieder in eine Tour gezogen werden.`;clearTimeout(window.__dt);window.__dt=setTimeout(hideDrawer,4500)}}
+function hideDrawer(){{document.getElementById('drawer').className='drawer'}}
+function renderMetrics(){{const rs=routes.filter(r=>!r.parking),park=routes.find(r=>r.parking);let moved=0,good=0;rs.forEach(r=>r.items.forEach(c=>{{if(c.originalRouteId!==r.id){{moved++;const f=fitFor(c,r);if(f.key==='good'||f.key==='ok')good++}}}}));document.getElementById('mRoutes').textContent=rs.length;document.getElementById('mCustomers').textContent=selected.length;document.getElementById('mMoved').textContent=moved;document.getElementById('mGood').textContent=good;document.getElementById('mOut').textContent=park?.items.length||0}}
+function renderChanges(){{const tb=document.getElementById('changeBody');let h='';routes.forEach(r=>r.items.forEach(c=>{{if(r.parking){{h+=`<tr><td>${{c.SAP}}</td><td>${{esc(c.Name)}}</td><td>${{esc(c.originalTour)}}</td><td>AUSGEPLANT</td><td>–</td><td>–</td><td>–</td><td>–</td></tr>`;return}}if(c.originalRouteId!==r.id){{const f=fitFor(c,r);h+=`<tr><td>${{c.SAP}}</td><td>${{esc(c.Name)}}</td><td>${{esc(c.originalTour)}}</td><td>${{esc(r.tour)}}</td><td>${{esc(f.label)}}</td><td>${{esc(f.nearName)}}</td><td>${{fmt(f.nearest)}} km</td><td>+${{fmt(f.extra)}} km</td></tr>`}}}}));tb.innerHTML=h||'<tr><td colspan="8" style="color:#888">Noch keine Änderungen.</td></tr>'}}
+function toggleTable(){{const p=document.getElementById('changePanel');p.classList.toggle('open');if(p.classList.contains('open'))renderChanges()}}
+function renderAll(){{renderBoard();renderMetrics();if(document.getElementById('changePanel').classList.contains('open'))renderChanges()}}
+function csvCell(v){{const s=String(v??'');const q=s.includes(';')||s.includes('\"')||s.indexOf(String.fromCharCode(10))>=0||s.indexOf(String.fromCharCode(13))>=0;return q?'\"'+s.replace(/\"/g,'\"\"')+'\"':s}}
+function downloadCSV(){{const rows=[['Tag','Bereich','Tour','Pos','CSB','SAP','Name','PLZ','Ort','Straße','Originaltour','Status','Bewertung','Nächster Kunde','Distanz km','Zusatz Geo-km']];routes.forEach(r=>r.items.forEach((c,i)=>{{const moved=!r.parking&&c.originalRouteId!==r.id,f=moved?fitFor(c,r):null;rows.push([DAYS[activeDay],c.Quelle,r.parking?'AUSGEPLANT':r.tour,i+1,c.CSB??'',c.SAP??'',c.Name,c.Plz,c.Ort,c.Strasse||'',c.originalTour,r.parking?'ausgeplant':moved?'verschoben':'unverändert',f?.label||'',f?.nearName||'',Number.isFinite(f?.nearest)?f.nearest.toFixed(1):'',Number.isFinite(f?.extra)?f.extra.toFixed(1):''])}}));const blob=new Blob(['\ufeff'+rows.map(r=>r.map(csvCell).join(';')).join(String.fromCharCode(13,10))],{{type:'text/csv;charset=utf-8'}}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Feiertagsplanung_'+DAYS[activeDay]+'.csv';a.click();URL.revokeObjectURL(a.href)}}
+initControls();loadOriginalPlan();
 </script>
 </body></html>'''
 
 
-st.title("🧭 Feiertags-Tourenplaner – HTML Generator")
-st.write("Aktuelle Quelldatei hochladen → Daten der ersten vier Blätter werden übernommen → fertige **HTML-Datei herunterladen**. Die Tourenberechnung und das Verschieben der Kunden erfolgen anschließend direkt in der HTML.")
+def main():
+    import streamlit as st
 
-uploaded = st.file_uploader("Aktuelle Quelldatei hochladen", type=["xlsx"])
+    st.set_page_config(page_title="Feiertags-Tourenplaner – HTML Generator", page_icon="🧭", layout="wide")
+    st.markdown(
+        """
+        <style>
+        .block-container{max-width:1150px;padding-top:1.5rem}
+        [data-testid="stFileUploader"]{background:#fafafa;border-radius:12px;padding:8px}
+        .small{color:#777;font-size:.88rem}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-with st.expander("Startpunkte / Depot-PLZ für die spätere Reihenfolge", expanded=False):
-    depot_plz: Dict[str, str] = {}
+    st.title("Feiertags-Tourenplaner – HTML Generator")
+    st.caption("Aktuelle Excel hochladen → Kunden geocodieren → eigenständige HTML herunterladen. In der HTML bleiben die vorhandenen Touren zunächst unverändert.")
+
+    upload = st.file_uploader("Aktuelle Quelldatei (.xlsx)", type=["xlsx"])
+    if upload is None:
+        st.info("Benötigt werden die ersten vier Blätter: DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
+        return
+
+    file_bytes = upload.getvalue()
+    try:
+        df = read_source(file_bytes)
+    except Exception as exc:
+        st.error(f"Datei konnte nicht gelesen werden: {exc}")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Kunden", f"{len(df):,}".replace(",", "."))
+    c2.metric("DIREKT", int((df["Quelle"] == "DIREKT").sum()))
+    c3.metric("HUPA NMS", int((df["Quelle"] == "HUPA_NMS").sum()))
+    c4.metric("HUPA Malchow", int((df["Quelle"] == "HUPA_MALCHOW").sum()))
+
+    st.subheader("Depot-PLZ für die Geo-Bewertung")
     cols = st.columns(4)
-    for i, s in enumerate(SHEETS):
-        depot_plz[s] = cols[i].text_input(s, value=DEFAULT_DEPOT_PLZ[s], max_chars=5)
+    depot_plz = {}
+    labels = {"DIREKT": "DIREKT", "MK": "MK", "HUPA_NMS": "HUPA NMS", "HUPA_MALCHOW": "HUPA Malchow"}
+    for col, src in zip(cols, SHEETS):
+        depot_plz[src] = col.text_input(labels[src], value=DEFAULT_DEPOT_PLZ[src], max_chars=5)
 
-if uploaded is None:
-    st.info("Bitte die aktuelle Quelldatei hochladen. Erwartet werden die Blätter DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
-    st.stop()
+    st.markdown("<div class='small'>Die Depot-PLZ beeinflusst nur die Schätzung der zusätzlichen Geo-km. Die Bewertung nutzt PLZ-Mittelpunkte und keine echten Straßenkilometer.</div>", unsafe_allow_html=True)
 
-if pgeocode is None:
-    st.error("`pgeocode` fehlt. Bitte requirements.txt verwenden bzw. `pgeocode` installieren.")
-    st.stop()
+    if st.button("HTML erzeugen", type="primary", use_container_width=True):
+        try:
+            with st.spinner("PLZ-Koordinaten werden ergänzt …"):
+                geo_df = enrich_geo(df)
+                depots = {}
+                for src in SHEETS:
+                    c = coord_for_plz(depot_plz[src])
+                    depots[src] = {"plz": str(depot_plz[src]).zfill(5), **c}
+                html = build_html(make_payload(geo_df), depots, upload.name)
+            missing_geo = int(geo_df[["lat", "lon"]].isna().any(axis=1).sum())
+            st.success(f"HTML erstellt. {len(geo_df)-missing_geo} von {len(geo_df)} Kunden haben Geo-Daten.")
+            if missing_geo:
+                st.warning(f"Für {missing_geo} Kunden konnte keine PLZ-Koordinate ermittelt werden. Diese Kunden können verschoben werden, erhalten aber ggf. keine Geo-Bewertung.")
+            st.download_button(
+                "Feiertags_Tourenplaner.html herunterladen",
+                data=html.encode("utf-8"),
+                file_name="Feiertags_Tourenplaner.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        except Exception as exc:
+            st.error(f"HTML konnte nicht erzeugt werden: {exc}")
 
-try:
-    raw = read_source(uploaded.getvalue())
-    with st.spinner("PLZ-Koordinaten werden vorbereitet …"):
-        enriched = enrich_geo(raw)
-        depots = {s: {"plz": depot_plz[s], **coord_for_plz(depot_plz[s])} for s in SHEETS}
-except Exception as exc:
-    st.error(f"Datei konnte nicht verarbeitet werden: {exc}")
-    st.stop()
 
-geo_ok = int(enriched[["lat", "lon"]].notna().all(axis=1).sum())
-geo_bad = int(len(enriched) - geo_ok)
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Kunden", len(enriched))
-c2.metric("Geo erkannt", geo_ok)
-c3.metric("ohne Geo", geo_bad)
-c4.metric("Blätter", 4)
-
-if geo_bad:
-    st.warning(f"{geo_bad} Datensätze konnten über die PLZ nicht geokodiert werden. Sie erscheinen in der HTML zunächst unter ›Nicht eingeplant‹.")
-
-payload = make_payload(enriched)
-html = build_html(payload, depots, uploaded.name)
-
-st.success("HTML ist erstellt. Nach dem Download wird keine Excel-Datei mehr benötigt – die Kundendaten sind in der HTML eingebettet.")
-st.download_button(
-    "⬇ Feiertags-Tourenplaner.html herunterladen",
-    data=html.encode("utf-8"),
-    file_name="Feiertags_Tourenplaner.html",
-    mime="text/html",
-    use_container_width=True,
-    type="primary",
-)
-
-st.caption("In der HTML: Liefertage/Bereiche wählen → Touren berechnen → Kunden per Drag & Drop verschieben → einzelne oder alle Reihenfolgen optimieren → CSV exportieren oder drucken.")
+if __name__ == "__main__":
+    main()

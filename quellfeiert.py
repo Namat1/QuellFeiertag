@@ -1,737 +1,321 @@
 from __future__ import annotations
 
 import io
+import json
 import math
-from dataclasses import dataclass
-from datetime import date
-from typing import Dict, Iterable, List, Optional, Tuple
+from datetime import datetime
+from html import escape
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
-import pydeck as pdk
 import streamlit as st
-from streamlit_sortables import sort_items
 
 try:
     import pgeocode
 except ImportError:
     pgeocode = None
 
-
-# ------------------------------------------------------------
-# Grundeinstellungen
-# ------------------------------------------------------------
-st.set_page_config(
-    page_title="Feiertags-Tourenplaner",
-    page_icon="🧭",
-    layout="wide",
-)
+st.set_page_config(page_title="Feiertags-Tourenplaner – HTML Generator", page_icon="🧭", layout="wide")
 
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
-DAY_LABELS = {
-    "Mo": "Montag",
-    "Die": "Dienstag",
-    "Mitt": "Mittwoch",
-    "Don": "Donnerstag",
-    "Fr": "Freitag",
-    "Sam": "Samstag",
-}
-
-DEFAULT_DEPOT_PLZ = {
-    "DIREKT": "24539",
-    "MK": "24539",
-    "HUPA_NMS": "24539",
-    "HUPA_MALCHOW": "17213",
-}
-
-PALETTE = [
-    [157, 92, 255],
-    [255, 154, 60],
-    [111, 194, 118],
-    [238, 99, 99],
-    [207, 133, 255],
-    [255, 196, 87],
-    [132, 169, 255],
-    [205, 113, 157],
-    [144, 190, 178],
-    [230, 145, 92],
-]
+DAY_LABELS = {"Mo": "Montag", "Die": "Dienstag", "Mitt": "Mittwoch", "Don": "Donnerstag", "Fr": "Freitag", "Sam": "Samstag"}
+DEFAULT_DEPOT_PLZ = {"DIREKT": "24539", "MK": "24539", "HUPA_NMS": "24539", "HUPA_MALCHOW": "17213"}
 
 st.markdown(
     """
 <style>
-.block-container {padding-top: 1.3rem; padding-bottom: 3rem; max-width: 1700px;}
-[data-testid="stMetricValue"] {font-size: 1.65rem;}
-.small-note {color:#9ca3af; font-size:.86rem;}
-.route-pill {display:inline-block; padding:.18rem .55rem; border-radius:999px; background:#29252f; margin-right:.35rem;}
-div[data-testid="stExpander"] {border-radius:12px;}
+.block-container{max-width:1200px;padding-top:1.4rem}
+.small{color:#9ca3af;font-size:.9rem}
+div[data-testid="stMetricValue"]{font-size:1.5rem}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 
-# ------------------------------------------------------------
-# Hilfsfunktionen: Datei / Daten
-# ------------------------------------------------------------
+def clean_plz(series: pd.Series) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce").astype("Int64").astype("string")
+    return s.str.zfill(5)
+
+
 @st.cache_data(show_spinner=False)
-def load_source(file_bytes: bytes) -> pd.DataFrame:
-    frames: List[pd.DataFrame] = []
+def read_source(file_bytes: bytes) -> pd.DataFrame:
     xl = pd.ExcelFile(io.BytesIO(file_bytes))
     missing = [s for s in SHEETS if s not in xl.sheet_names]
     if missing:
-        raise ValueError("Diese Blätter fehlen: " + ", ".join(missing))
+        raise ValueError("Fehlende Blätter: " + ", ".join(missing))
 
+    frames: List[pd.DataFrame] = []
     for sheet in SHEETS:
         df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet)
         df = df.rename(columns={"Straße": "Strasse"})
-        expected = ["CSB", "SAP", "Name", "Strasse", "Plz", "Ort", *DAY_COLUMNS]
-        for col in expected:
+        cols = ["CSB", "SAP", "Name", "Strasse", "Plz", "Ort", *DAY_COLUMNS]
+        for col in cols:
             if col not in df.columns:
-                df[col] = np.nan
-        df = df[expected].copy()
+                df[col] = pd.NA
+        df = df[cols].copy()
         df["Quelle"] = sheet
         frames.append(df)
 
-    all_data = pd.concat(frames, ignore_index=True)
-    all_data["SAP"] = pd.to_numeric(all_data["SAP"], errors="coerce").astype("Int64")
-    all_data["CSB"] = pd.to_numeric(all_data["CSB"], errors="coerce").astype("Int64")
-    all_data["Plz"] = (
-        pd.to_numeric(all_data["Plz"], errors="coerce")
-        .astype("Int64")
-        .astype("string")
-        .str.zfill(5)
-    )
+    out = pd.concat(frames, ignore_index=True)
+    out["SAP"] = pd.to_numeric(out["SAP"], errors="coerce").astype("Int64")
+    out["CSB"] = pd.to_numeric(out["CSB"], errors="coerce").astype("Int64")
+    out["Plz"] = clean_plz(out["Plz"])
     for d in DAY_COLUMNS:
-        all_data[d] = pd.to_numeric(all_data[d], errors="coerce").astype("Int64")
+        out[d] = pd.to_numeric(out[d], errors="coerce").astype("Int64")
 
-    all_data = all_data.dropna(subset=["SAP", "Name", "Plz"]).copy()
-    all_data["uid"] = all_data.apply(
+    out = out.dropna(subset=["SAP", "Name", "Plz"]).copy()
+    out["uid"] = out.apply(
         lambda r: f"{r['Quelle']}::{int(r['SAP'])}::{int(r['CSB']) if pd.notna(r['CSB']) else 'x'}",
         axis=1,
     )
-    return all_data
+    return out
 
 
 @st.cache_resource(show_spinner=False)
-def get_postcode_geocoder():
+def get_geocoder():
     if pgeocode is None:
         return None
     return pgeocode.Nominatim("de")
 
 
 @st.cache_data(show_spinner=False)
-def geocode_postcodes(postcodes: Tuple[str, ...]) -> pd.DataFrame:
-    geo = get_postcode_geocoder()
+def geocode_plz(postcodes: tuple[str, ...]) -> pd.DataFrame:
+    geo = get_geocoder()
     if geo is None:
-        return pd.DataFrame(columns=["Plz", "latitude", "longitude", "place_name"])
-
-    unique = sorted({str(p).zfill(5) for p in postcodes if p and str(p) != "<NA>"})
-    if not unique:
-        return pd.DataFrame(columns=["Plz", "latitude", "longitude", "place_name"])
-
-    result = geo.query_postal_code(unique)
-    if isinstance(result, pd.Series):
-        result = result.to_frame().T
-    out = pd.DataFrame(
-        {
-            "Plz": pd.Series(unique, dtype="string"),
-            "latitude": pd.to_numeric(result["latitude"], errors="coerce").to_numpy(),
-            "longitude": pd.to_numeric(result["longitude"], errors="coerce").to_numpy(),
-            "place_name": result.get("place_name", pd.Series([None] * len(unique))).to_numpy(),
-        }
-    )
-    return out
+        return pd.DataFrame(columns=["Plz", "lat", "lon"])
+    vals = sorted({str(x).zfill(5) for x in postcodes if x and x != "<NA>"})
+    if not vals:
+        return pd.DataFrame(columns=["Plz", "lat", "lon"])
+    r = geo.query_postal_code(vals)
+    if isinstance(r, pd.Series):
+        r = r.to_frame().T
+    return pd.DataFrame({
+        "Plz": pd.Series(vals, dtype="string"),
+        "lat": pd.to_numeric(r["latitude"], errors="coerce").to_numpy(),
+        "lon": pd.to_numeric(r["longitude"], errors="coerce").to_numpy(),
+    })
 
 
-def add_geo(df: pd.DataFrame) -> pd.DataFrame:
-    coords = geocode_postcodes(tuple(df["Plz"].dropna().astype(str).unique().tolist()))
-    return df.merge(coords, how="left", on="Plz")
+def enrich_geo(df: pd.DataFrame) -> pd.DataFrame:
+    coords = geocode_plz(tuple(df["Plz"].dropna().astype(str).unique().tolist()))
+    return df.merge(coords, on="Plz", how="left")
 
 
-def filter_customers(
-    all_data: pd.DataFrame,
-    days: List[str],
-    sources: List[str],
-) -> pd.DataFrame:
-    df = all_data[all_data["Quelle"].isin(sources)].copy()
-    if not days:
-        return df.iloc[0:0].copy()
-
-    mask = pd.Series(False, index=df.index)
-    for d in days:
-        mask |= df[d].notna()
-    df = df[mask].copy()
-
-    def old_tours(row) -> str:
-        parts = []
-        for d in days:
-            if pd.notna(row[d]):
-                parts.append(f"{DAY_LABELS[d][:2]} {int(row[d])}")
-        return " / ".join(parts)
-
-    df["Bisherige_Touren"] = df.apply(old_tours, axis=1)
-    return df
+def coord_for_plz(plz: str) -> dict:
+    x = geocode_plz((str(plz).zfill(5),))
+    if x.empty or x[["lat", "lon"]].isna().any(axis=None):
+        return {"lat": None, "lon": None}
+    return {"lat": float(x.iloc[0]["lat"]), "lon": float(x.iloc[0]["lon"])}
 
 
-# ------------------------------------------------------------
-# Geo / Optimierung
-# ------------------------------------------------------------
-def haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
-    lat1, lon1 = map(math.radians, a)
-    lat2, lon2 = map(math.radians, b)
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 6371.0088 * 2 * math.asin(math.sqrt(h))
-
-
-def projected_xy(df: pd.DataFrame) -> np.ndarray:
-    lat = df["latitude"].astype(float).to_numpy()
-    lon = df["longitude"].astype(float).to_numpy()
-    mlat = np.deg2rad(np.nanmean(lat))
-    return np.column_stack([lon * math.cos(mlat), lat])
-
-
-def farthest_seeds(points: np.ndarray, k: int) -> np.ndarray:
-    if k <= 1:
-        return np.array([int(np.argmin(points[:, 0]))])
-    center = points.mean(axis=0)
-    first = int(np.argmax(np.linalg.norm(points - center, axis=1)))
-    seeds = [first]
-    while len(seeds) < k:
-        dist_to_seed = np.min(
-            np.stack([np.linalg.norm(points - points[s], axis=1) for s in seeds], axis=1),
-            axis=1,
-        )
-        for s in seeds:
-            dist_to_seed[s] = -1
-        seeds.append(int(np.argmax(dist_to_seed)))
-    return np.array(seeds)
-
-
-def balanced_kmeans(df: pd.DataFrame, max_size: int) -> np.ndarray:
-    """Deterministische, kapazitätsbegrenzte Geo-Cluster ohne sklearn."""
-    n = len(df)
-    if n == 0:
-        return np.array([], dtype=int)
-    k = max(1, math.ceil(n / max_size))
-    if k == 1:
-        return np.zeros(n, dtype=int)
-
-    pts = projected_xy(df)
-    seeds = farthest_seeds(pts, k)
-    centers = pts[seeds].copy()
-
-    base = n // k
-    rem = n % k
-    target = np.array([base + (1 if i < rem else 0) for i in range(k)], dtype=int)
-
-    assignment = np.full(n, -1, dtype=int)
-    for _ in range(25):
-        d = np.linalg.norm(pts[:, None, :] - centers[None, :, :], axis=2)
-        sorted_d = np.sort(d, axis=1)
-        regret = sorted_d[:, 1] - sorted_d[:, 0] if k > 1 else np.ones(n)
-        order = np.argsort(-regret)
-
-        new_assign = np.full(n, -1, dtype=int)
-        used = np.zeros(k, dtype=int)
-        for idx in order:
-            for c in np.argsort(d[idx]):
-                if used[c] < target[c]:
-                    new_assign[idx] = int(c)
-                    used[c] += 1
-                    break
-
-        new_centers = centers.copy()
-        for c in range(k):
-            members = pts[new_assign == c]
-            if len(members):
-                new_centers[c] = members.mean(axis=0)
-
-        if np.array_equal(new_assign, assignment):
-            assignment = new_assign
-            break
-        assignment = new_assign
-        centers = new_centers
-
-    return assignment
-
-
-def postcode_coord(plz: str) -> Optional[Tuple[float, float]]:
-    temp = geocode_postcodes((str(plz).zfill(5),))
-    if temp.empty or temp[["latitude", "longitude"]].isna().any(axis=None):
+def json_ready(v):
+    if pd.isna(v):
         return None
-    return float(temp.iloc[0]["latitude"]), float(temp.iloc[0]["longitude"])
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating,)):
+        return float(v)
+    return v
 
 
-def nearest_neighbor_order(df: pd.DataFrame, depot: Optional[Tuple[float, float]]) -> List[int]:
-    if df.empty:
-        return []
-    coords = [(float(r.latitude), float(r.longitude)) for r in df.itertuples()]
-    remaining = set(range(len(coords)))
-
-    if depot is None:
-        centroid = (float(df["latitude"].mean()), float(df["longitude"].mean()))
-        start = min(remaining, key=lambda i: haversine_km(centroid, coords[i]))
-    else:
-        start = min(remaining, key=lambda i: haversine_km(depot, coords[i]))
-
-    order = [start]
-    remaining.remove(start)
-    while remaining:
-        cur = coords[order[-1]]
-        nxt = min(remaining, key=lambda i: haversine_km(cur, coords[i]))
-        order.append(nxt)
-        remaining.remove(nxt)
-    return order
-
-
-def path_distance(df: pd.DataFrame, depot: Optional[Tuple[float, float]], return_to_depot: bool) -> float:
-    if df.empty:
-        return 0.0
-    coords = [(float(r.latitude), float(r.longitude)) for r in df.itertuples()]
-    total = 0.0
-    if depot:
-        total += haversine_km(depot, coords[0])
-    for a, b in zip(coords, coords[1:]):
-        total += haversine_km(a, b)
-    if depot and return_to_depot:
-        total += haversine_km(coords[-1], depot)
-    return total
-
-
-def two_opt(df: pd.DataFrame, depot: Optional[Tuple[float, float]], return_to_depot: bool) -> pd.DataFrame:
-    if len(df) < 4:
-        return df.reset_index(drop=True)
-    best = df.reset_index(drop=True).copy()
-    best_dist = path_distance(best, depot, return_to_depot)
-    improved = True
-    rounds = 0
-    while improved and rounds < 5:
-        improved = False
-        rounds += 1
-        for i in range(0, len(best) - 2):
-            for j in range(i + 2, len(best)):
-                candidate = pd.concat(
-                    [best.iloc[:i], best.iloc[i:j][::-1], best.iloc[j:]],
-                    ignore_index=True,
-                )
-                d = path_distance(candidate, depot, return_to_depot)
-                if d + 0.01 < best_dist:
-                    best = candidate
-                    best_dist = d
-                    improved = True
-    return best
-
-
-def route_order(df: pd.DataFrame, depot: Optional[Tuple[float, float]], return_to_depot: bool) -> pd.DataFrame:
-    idx = nearest_neighbor_order(df, depot)
-    ordered = df.iloc[idx].reset_index(drop=True)
-    return two_opt(ordered, depot, return_to_depot)
-
-
-# ------------------------------------------------------------
-# Plan bauen / Drag-Drop
-# ------------------------------------------------------------
-def make_item_label(row: pd.Series) -> str:
-    sap = int(row["SAP"]) if pd.notna(row["SAP"]) else "-"
-    name = str(row["Name"]).strip()
-    ort = str(row["Ort"]).strip()
-    source = str(row["Quelle"])
-    old = str(row.get("Bisherige_Touren", "")).strip()
-    return f"{sap} · {ort} · {name} · {old} · [{source}]"
-
-
-def build_plan(
-    customers: pd.DataFrame,
-    max_stops: int,
-    separate_sources: bool,
-    depot_plz: Dict[str, str],
-    return_to_depot: bool,
-) -> List[Dict[str, object]]:
-    working = customers.dropna(subset=["latitude", "longitude"]).copy()
-    containers: List[Dict[str, object]] = []
-    route_counter = 1
-
-    groups: Iterable[Tuple[str, pd.DataFrame]]
-    if separate_sources:
-        groups = working.groupby("Quelle", sort=False)
-    else:
-        groups = [("MIX", working)]
-
-    for source, grp in groups:
-        grp = grp.reset_index(drop=True)
-        labels = balanced_kmeans(grp, max_stops)
-        grp = grp.assign(_cluster=labels)
-        dep = postcode_coord(depot_plz.get(source, "")) if source != "MIX" else None
-
-        for cluster_id, route_df in grp.groupby("_cluster", sort=True):
-            route_df = route_df.drop(columns="_cluster").copy()
-            route_df = route_order(route_df, dep, return_to_depot)
-            prefix = source.replace("HUPA_", "") if separate_sources else "FT"
-            header = f"FT-{prefix}-{route_counter:02d}"
-            items = [make_item_label(r) for _, r in route_df.iterrows()]
-            containers.append({"header": header, "items": items})
-            route_counter += 1
-
-    missing_geo = customers[customers[["latitude", "longitude"]].isna().any(axis=1)]
-    containers.append(
-        {
-            "header": "NICHT EINGEPLANT",
-            "items": [make_item_label(r) for _, r in missing_geo.iterrows()],
-        }
-    )
-    return containers
-
-
-def plan_to_assignment(containers: List[Dict[str, object]], label_map: Dict[str, str]) -> Dict[str, Tuple[str, int]]:
-    result: Dict[str, Tuple[str, int]] = {}
-    for container in containers:
-        header = str(container["header"])
-        for pos, label in enumerate(container.get("items", []), start=1):
-            uid = label_map.get(label)
-            if uid:
-                result[uid] = (header, pos)
-    return result
-
-
-def assignment_frame(
-    source_df: pd.DataFrame,
-    containers: List[Dict[str, object]],
-    label_map: Dict[str, str],
-) -> pd.DataFrame:
-    ass = plan_to_assignment(containers, label_map)
+def make_payload(df: pd.DataFrame) -> list[dict]:
+    keep = ["uid", "Quelle", "CSB", "SAP", "Name", "Strasse", "Plz", "Ort", *DAY_COLUMNS, "lat", "lon"]
     rows = []
-    by_uid = source_df.set_index("uid", drop=False)
-    for uid, (route, pos) in ass.items():
-        if uid not in by_uid.index:
-            continue
-        r = by_uid.loc[uid]
-        rows.append(
-            {
-                "Neue Tour": route,
-                "Reihenfolge": pos,
-                "Quelle": r["Quelle"],
-                "CSB": r["CSB"],
-                "SAP": r["SAP"],
-                "Name": r["Name"],
-                "Strasse": r["Strasse"],
-                "PLZ": r["Plz"],
-                "Ort": r["Ort"],
-                "Bisherige Touren": r["Bisherige_Touren"],
-                "latitude": r["latitude"],
-                "longitude": r["longitude"],
-                "uid": uid,
-            }
-        )
-    return pd.DataFrame(rows)
+    for rec in df[keep].to_dict("records"):
+        rows.append({k: json_ready(v) for k, v in rec.items()})
+    return rows
 
 
-def current_route_stats(plan_df: pd.DataFrame, depot_plz: Dict[str, str], return_to_depot: bool) -> pd.DataFrame:
-    rows = []
-    if plan_df.empty:
-        return pd.DataFrame()
-    for route, grp in plan_df[plan_df["Neue Tour"] != "NICHT EINGEPLANT"].groupby("Neue Tour", sort=False):
-        grp = grp.sort_values("Reihenfolge")
-        source = grp["Quelle"].iloc[0] if grp["Quelle"].nunique() == 1 else "MIX"
-        depot = postcode_coord(depot_plz.get(source, "")) if source != "MIX" else None
-        geo_km = path_distance(grp.rename(columns={"PLZ":"Plz"}), depot, return_to_depot)
-        # Luftlinien-basierte Schätzung. Bewusst als Schätzung gekennzeichnet.
-        est_road_km = geo_km * 1.25
-        rows.append(
-            {
-                "Tour": route,
-                "Kunden": len(grp),
-                "Bereich": source,
-                "Geo-km": round(geo_km, 1),
-                "Straßen-km ~": round(est_road_km, 1),
-            }
-        )
-    return pd.DataFrame(rows)
+def build_html(customers: list[dict], depot_cfg: dict, source_name: str) -> str:
+    data_json = json.dumps(customers, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    dep_json = json.dumps(depot_cfg, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    src = escape(source_name)
+    generated = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    return f'''<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Feiertags-Tourenplaner</title>
+<style>
+:root{{--bg:#101114;--panel:#181a20;--panel2:#20232b;--line:#30343d;--text:#f2f3f5;--muted:#9ca3af;--accent:#9d6cff;--accent2:#ff9a3c;--good:#66bb6a;--bad:#ef6464}}
+*{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}}
+header{{position:sticky;top:0;z-index:20;background:rgba(16,17,20,.95);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}}
+.wrap{{max-width:1800px;margin:auto;padding:18px 22px}} h1{{font-size:25px;margin:0 0 3px}} .sub{{color:var(--muted)}}
+.controls{{display:grid;grid-template-columns:1.3fr 1.2fr .8fr .9fr auto auto;gap:12px;align-items:end;margin-top:15px}} .box{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px}}
+label.title{{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}} .checks{{display:flex;gap:8px;flex-wrap:wrap}} .chip{{display:inline-flex;gap:5px;align-items:center;background:#242730;border:1px solid #343844;border-radius:999px;padding:5px 8px}}
+input[type=number],input[type=date]{{width:100%;background:#111318;border:1px solid #3a3e48;color:var(--text);border-radius:8px;padding:8px}}
+button{{background:#2a2d36;border:1px solid #404550;color:var(--text);border-radius:9px;padding:9px 12px;cursor:pointer;font-weight:650}} button:hover{{filter:brightness(1.12)}} button.primary{{background:var(--accent);border-color:var(--accent)}} button.warn{{background:#3a2528;border-color:#5a3035;color:#ffb6bd}}
+main{{max-width:1800px;margin:auto;padding:18px 22px 50px}} .metrics{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}} .metric{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px}} .metric b{{display:block;font-size:20px}} .metric span{{color:var(--muted);font-size:12px}}
+.tabs{{display:flex;gap:7px;margin:8px 0 14px}} .tabbtn.active{{background:var(--accent)}} .tab{{display:none}} .tab.active{{display:block}}
+.board{{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px;align-items:start}} .route{{background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden;min-height:150px}} .routeHead{{padding:10px 11px;background:var(--panel2);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;align-items:center}} .routeTitle{{font-weight:800}} .stats{{color:var(--muted);font-size:12px;margin-top:2px}} .routeBtns{{display:flex;gap:5px}} .routeBtns button{{padding:5px 7px;font-size:12px}}
+.dropzone{{min-height:90px;padding:8px}} .cust{{background:#262933;border:1px solid #383d48;border-radius:9px;padding:8px 9px;margin:6px 0;cursor:grab;display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:start}} .cust.dragging{{opacity:.35}} .handle{{color:#7f8693;font-weight:900;letter-spacing:-1px}} .cust strong{{font-size:13px}} .meta{{color:var(--muted);font-size:11px;margin-top:2px}} .del{{padding:2px 6px;border-radius:7px;background:transparent;border-color:#4a3b40;color:#d99}}
+.route.unplanned{{border-color:#5a3a40}} .route.unplanned .routeHead{{background:#2b1e22}}
+.toolbar{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}} .note{{color:var(--muted);font-size:12px;margin:8px 0}}
+svg{{width:100%;height:640px;background:#14161b;border:1px solid var(--line);border-radius:14px}} .legend{{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}} .legend i{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}}
+table{{width:100%;border-collapse:collapse;background:var(--panel);border-radius:12px;overflow:hidden}} th,td{{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;font-size:12px}} th{{position:sticky;top:0;background:#242730}} .tablewrap{{max-height:700px;overflow:auto;border:1px solid var(--line);border-radius:12px}}
+@media(max-width:1050px){{.controls{{grid-template-columns:1fr 1fr}} .metrics{{grid-template-columns:repeat(2,1fr)}}}} @media(max-width:650px){{.wrap,main{{padding-left:10px;padding-right:10px}} .controls{{grid-template-columns:1fr}} .metrics{{grid-template-columns:1fr 1fr}}}}
+@media print{{header,.tabs,.toolbar,.routeBtns,.del{{display:none!important}} body{{background:#fff;color:#000}} .route,.metric,table{{border:1px solid #bbb;background:#fff}} .routeHead,.cust{{background:#fff;color:#000}} .cust{{break-inside:avoid}}}}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>🧭 Feiertags-Tourenplaner</h1><div class="sub">Quelle: {src} · erzeugt {generated} · Berechnung läuft vollständig in dieser HTML-Datei</div>
+<div class="controls">
+  <div class="box"><label class="title">Liefertage</label><div id="days" class="checks"></div></div>
+  <div class="box"><label class="title">Bereiche</label><div id="sources" class="checks"></div></div>
+  <div class="box"><label class="title">Max. Stopps je Tour</label><input id="maxStops" type="number" min="2" max="30" value="8"></div>
+  <div class="box"><label class="title">Optionen</label><div class="checks"><label class="chip"><input id="sepSources" type="checkbox" checked> getrennt</label><label class="chip"><input id="returnDepot" type="checkbox" checked> Rückfahrt</label></div></div>
+  <button class="primary" onclick="buildPlan()">⚡ Touren berechnen</button>
+  <button onclick="addEmptyRoute()">＋ Neue Tour</button>
+</div></div></header>
+<main>
+<div class="metrics"><div class="metric"><b id="mCustomers">0</b><span>Kunden ausgewählt</span></div><div class="metric"><b id="mRoutes">0</b><span>Touren</span></div><div class="metric"><b id="mPlanned">0</b><span>eingeplant</span></div><div class="metric"><b id="mUnplanned">0</b><span>nicht eingeplant</span></div><div class="metric"><b id="mKm">0 km</b><span>Geo-km gesamt</span></div></div>
+<div class="tabs"><button class="tabbtn active" onclick="showTab('plan',this)">Touren</button><button class="tabbtn" onclick="showTab('map',this)">Geo-Ansicht</button><button class="tabbtn" onclick="showTab('table',this)">Tabelle</button></div>
+<section id="tab-plan" class="tab active"><div class="toolbar"><button onclick="optimizeAll()">↻ Alle Reihenfolgen optimieren</button><button onclick="exportCsv()">⬇ CSV exportieren</button><button onclick="window.print()">🖨 Drucken</button><button class="warn" onclick="clearPlan()">Planung leeren</button></div><div class="note">Kunden mit der Maus zwischen Touren ziehen. ✕ verschiebt einen Kunden nach „Nicht eingeplant“. Geo-km sind Luftlinie; „Straßen-km ~“ ist nur eine grobe Schätzung (× 1,25).</div><div id="board" class="board"></div></section>
+<section id="tab-map" class="tab"><svg id="geoSvg" viewBox="0 0 1200 640" preserveAspectRatio="xMidYMid meet"></svg><div id="legend" class="legend"></div><div class="note">Die Geo-Ansicht ist bewusst ohne Online-Kartenanbieter und funktioniert daher auch offline.</div></section>
+<section id="tab-table" class="tab"><div class="tablewrap"><table><thead><tr><th>Neue Tour</th><th>Pos.</th><th>Bereich</th><th>CSB</th><th>SAP</th><th>Name</th><th>PLZ</th><th>Ort</th><th>bisherige Tour(en)</th></tr></thead><tbody id="tbody"></tbody></table></div></section>
+</main>
+<script>
+const CUSTOMERS={data_json};
+const DEPOTS={dep_json};
+const DAYS={{Mo:'Montag',Die:'Dienstag',Mitt:'Mittwoch',Don:'Donnerstag',Fr:'Freitag',Sam:'Samstag'}};
+const SOURCES=['DIREKT','MK','HUPA_NMS','HUPA_MALCHOW'];
+const COLORS=['#9d6cff','#ff9a3c','#6fc276','#ee6363','#cf85ff','#ffc457','#84a9ff','#cd719d','#90beb2','#e6915c','#70d6ff','#ffd670'];
+let selected=[]; let routes=[]; let dragUid=null;
+
+function init(){{
+  document.getElementById('days').innerHTML=Object.entries(DAYS).map(([k,v])=>`<label class="chip"><input type="checkbox" value="${{k}}" ${{k==='Fr'?'checked':''}}>${{v}}</label>`).join('');
+  document.getElementById('sources').innerHTML=SOURCES.map(s=>`<label class="chip"><input type="checkbox" value="${{s}}" checked>${{s.replace('HUPA_','HUPA ')}}</label>`).join('');
+  document.querySelectorAll('#days input,#sources input').forEach(x=>x.addEventListener('change',previewCount));
+  previewCount();
+}}
+function checked(sel){{return [...document.querySelectorAll(sel+':checked')].map(x=>x.value)}}
+function previewCount(){{
+  const ds=checked('#days input'), ss=checked('#sources input');
+  const n=CUSTOMERS.filter(c=>ss.includes(c.Quelle)&&ds.some(d=>c[d]!=null)).length;
+  document.getElementById('mCustomers').textContent=n;
+}}
+function oldTours(c,ds){{return ds.filter(d=>c[d]!=null).map(d=>DAYS[d].slice(0,2)+' '+c[d]).join(' / ')}}
+function hav(a,b){{const R=6371.0088,rad=x=>x*Math.PI/180; const dlat=rad(b.lat-a.lat),dlon=rad(b.lon-a.lon); const h=Math.sin(dlat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dlon/2)**2; return R*2*Math.asin(Math.sqrt(h));}}
+function depotFor(src){{const d=DEPOTS[src]; return d&&Number.isFinite(d.lat)&&Number.isFinite(d.lon)?d:null}}
+function routeKm(items,src){{if(!items.length)return 0; const back=document.getElementById('returnDepot').checked; const dep=src==='MIX'?null:depotFor(src); let km=0; if(dep)km+=hav(dep,items[0]); for(let i=1;i<items.length;i++)km+=hav(items[i-1],items[i]); if(dep&&back)km+=hav(items[items.length-1],dep); return km}}
+function proj(c,mlat){{return [c.lon*Math.cos(mlat*Math.PI/180),c.lat]}}
+function clusterBalanced(arr,maxSize){{
+  const n=arr.length;if(!n)return[];const k=Math.max(1,Math.ceil(n/maxSize));if(k===1)return Array(n).fill(0);
+  const mlat=arr.reduce((s,c)=>s+c.lat,0)/n, pts=arr.map(c=>proj(c,mlat));
+  const center=[pts.reduce((s,p)=>s+p[0],0)/n,pts.reduce((s,p)=>s+p[1],0)/n];
+  const dist=(p,q)=>Math.hypot(p[0]-q[0],p[1]-q[1]);
+  let seeds=[pts.map((p,i)=>[dist(p,center),i]).sort((a,b)=>b[0]-a[0])[0][1]];
+  while(seeds.length<k){{let best=-1,bi=-1;for(let i=0;i<n;i++){{if(seeds.includes(i))continue;let md=Math.min(...seeds.map(s=>dist(pts[i],pts[s])));if(md>best){{best=md;bi=i}}}}seeds.push(bi)}}
+  let centers=seeds.map(i=>pts[i].slice()), assign=Array(n).fill(-1); const base=Math.floor(n/k),rem=n%k,target=Array.from({{length:k}},(_,i)=>base+(i<rem?1:0));
+  for(let iter=0;iter<22;iter++){{
+    const D=pts.map(p=>centers.map(c=>dist(p,c))); const regret=D.map(ds=>{{let x=ds.slice().sort((a,b)=>a-b);return x[1]-x[0]}}); const order=[...Array(n).keys()].sort((a,b)=>regret[b]-regret[a]);
+    const na=Array(n).fill(-1),used=Array(k).fill(0); for(const i of order){{const prefs=[...Array(k).keys()].sort((a,b)=>D[i][a]-D[i][b]);for(const c of prefs)if(used[c]<target[c]){{na[i]=c;used[c]++;break}}}}
+    const same=na.every((x,i)=>x===assign[i]); assign=na; centers=centers.map((c,j)=>{{const ids=assign.map((x,i)=>x===j?i:-1).filter(i=>i>=0);return ids.length?[ids.reduce((s,i)=>s+pts[i][0],0)/ids.length,ids.reduce((s,i)=>s+pts[i][1],0)/ids.length]:c}}); if(same)break;
+  }} return assign;
+}}
+function nearestOrder(arr,src){{
+  if(arr.length<2)return arr.slice(); const rem=new Set(arr.map((_,i)=>i)),dep=src==='MIX'?null:depotFor(src); let start;
+  if(dep)start=[...rem].sort((a,b)=>hav(dep,arr[a])-hav(dep,arr[b]))[0]; else{{const ctr={{lat:arr.reduce((s,c)=>s+c.lat,0)/arr.length,lon:arr.reduce((s,c)=>s+c.lon,0)/arr.length}};start=[...rem].sort((a,b)=>hav(ctr,arr[a])-hav(ctr,arr[b]))[0]}}
+  const ids=[start];rem.delete(start);while(rem.size){{const cur=arr[ids[ids.length-1]],nx=[...rem].sort((a,b)=>hav(cur,arr[a])-hav(cur,arr[b]))[0];ids.push(nx);rem.delete(nx)}} let out=ids.map(i=>arr[i]);
+  if(out.length>=4){{let best=routeKm(out,src),changed=true,round=0;while(changed&&round++<4){{changed=false;for(let i=0;i<out.length-2;i++)for(let j=i+2;j<out.length;j++){{const cand=out.slice(0,i).concat(out.slice(i,j).reverse(),out.slice(j));const d=routeKm(cand,src);if(d+.01<best){{out=cand;best=d;changed=true}}}}}}}}
+  return out;
+}}
+function buildPlan(){{
+  const ds=checked('#days input'),ss=checked('#sources input'),max=Math.max(2,parseInt(document.getElementById('maxStops').value||8)),sep=document.getElementById('sepSources').checked;
+  if(!ds.length||!ss.length){{alert('Bitte Liefertag und Bereich auswählen.');return}}
+  selected=CUSTOMERS.filter(c=>ss.includes(c.Quelle)&&ds.some(d=>c[d]!=null)).map(c=>({{...c,old:oldTours(c,ds)}}));
+  const valid=selected.filter(c=>Number.isFinite(c.lat)&&Number.isFinite(c.lon)), invalid=selected.filter(c=>!Number.isFinite(c.lat)||!Number.isFinite(c.lon)); routes=[]; let num=1;
+  const groups=sep?SOURCES.filter(s=>ss.includes(s)).map(s=>[s,valid.filter(c=>c.Quelle===s)]).filter(x=>x[1].length):[['MIX',valid]];
+  for(const [src,grp] of groups){{const labels=clusterBalanced(grp,max);const k=Math.max(...labels,0)+1;for(let cl=0;cl<k;cl++){{let items=grp.filter((_,i)=>labels[i]===cl);items=nearestOrder(items,src);routes.push({{id:'R'+Date.now()+'_'+num,name:(sep?'FT-'+src.replace('HUPA_','')+'-':'FT-')+String(num).padStart(2,'0'),src,items}});num++}}}}
+  routes.push({{id:'UNPLANNED',name:'NICHT EINGEPLANT',src:'MIX',items:invalid}}); renderAll();
+}}
+function renderAll(){{renderBoard();renderMetrics();renderMap();renderTable()}}
+function customerHtml(c){{return `<div class="cust" draggable="true" data-uid="${{c.uid}}"><div class="handle">⋮⋮</div><div><strong>${{c.SAP}} · ${{esc(c.Ort)}} · ${{esc(c.Name)}}</strong><div class="meta">${{esc(c.Plz+' '+(c.Strasse||''))}} · ${{esc(c.old||'')}} · [${{esc(c.Quelle)}}]</div></div><button class="del" title="Nicht einplanen" onclick="event.stopPropagation();unplan('${{c.uid}}')">✕</button></div>`}}
+function renderBoard(){{
+  const b=document.getElementById('board'); b.innerHTML='';
+  routes.forEach((r,idx)=>{{const el=document.createElement('div');el.className='route'+(r.id==='UNPLANNED'?' unplanned':'');el.dataset.route=r.id;const km=r.id==='UNPLANNED'?0:routeKm(r.items,r.src);const btns=r.id==='UNPLANNED'?'':`<div class="routeBtns"><button onclick="optimizeRoute('${{r.id}}')">↻</button><button onclick="renameRoute('${{r.id}}')">✎</button><button class="warn" onclick="removeRoute('${{r.id}}')">🗑</button></div>`;el.innerHTML=`<div class="routeHead"><div><div class="routeTitle">${{esc(r.name)}}</div><div class="stats">${{r.items.length}} Stopps${{r.id==='UNPLANNED'?'':' · '+km.toFixed(1)+' Geo-km · ~'+(km*1.25).toFixed(0)+' Straßen-km'}}</div></div>${{btns}}</div><div class="dropzone" data-route="${{r.id}}">${{r.items.map(customerHtml).join('')}}</div>`;b.appendChild(el)}}); bindDnD();
+}}
+function bindDnD(){{document.querySelectorAll('.cust').forEach(el=>{{el.addEventListener('dragstart',()=>{{dragUid=el.dataset.uid;el.classList.add('dragging')}});el.addEventListener('dragend',()=>el.classList.remove('dragging'));el.addEventListener('dragover',e=>e.preventDefault());el.addEventListener('drop',e=>{{e.preventDefault();moveUid(dragUid,el.closest('.dropzone').dataset.route,el.dataset.uid)}})}});document.querySelectorAll('.dropzone').forEach(z=>{{z.addEventListener('dragover',e=>e.preventDefault());z.addEventListener('drop',e=>{{if(e.target.closest('.cust'))return;e.preventDefault();moveUid(dragUid,z.dataset.route,null)}})}})}}
+function findAndRemove(uid){{for(const r of routes){{const i=r.items.findIndex(c=>c.uid===uid);if(i>=0)return r.items.splice(i,1)[0]}}return null}}
+function moveUid(uid,toId,beforeUid){{if(!uid)return;const c=findAndRemove(uid),to=routes.find(r=>r.id===toId);if(!c||!to)return;let ix=beforeUid?to.items.findIndex(x=>x.uid===beforeUid):-1;if(ix<0)to.items.push(c);else to.items.splice(ix,0,c);renderAll()}}
+function unplan(uid){{moveUid(uid,'UNPLANNED',null)}}
+function addEmptyRoute(){{if(!routes.length)routes=[{{id:'UNPLANNED',name:'NICHT EINGEPLANT',src:'MIX',items:[]}}];const un=routes.findIndex(r=>r.id==='UNPLANNED');const n=routes.filter(r=>r.id!=='UNPLANNED').length+1;routes.splice(un<0?routes.length:un,0,{{id:'R'+Date.now(),name:'FT-MAN-'+String(n).padStart(2,'0'),src:'MIX',items:[]}});renderAll()}}
+function removeRoute(id){{const i=routes.findIndex(r=>r.id===id),u=routes.find(r=>r.id==='UNPLANNED');if(i<0||!u)return;u.items.push(...routes[i].items);routes.splice(i,1);renderAll()}}
+function renameRoute(id){{const r=routes.find(x=>x.id===id);if(!r)return;const n=prompt('Tourname',r.name);if(n&&n.trim()){{r.name=n.trim();renderAll()}}}}
+function optimizeRoute(id){{const r=routes.find(x=>x.id===id);if(!r||r.id==='UNPLANNED')return;const src=r.items.length&&new Set(r.items.map(x=>x.Quelle)).size===1?r.items[0].Quelle:'MIX';r.src=src;r.items=nearestOrder(r.items,src);renderAll()}}
+function optimizeAll(){{routes.filter(r=>r.id!=='UNPLANNED').forEach(r=>{{const src=r.items.length&&new Set(r.items.map(x=>x.Quelle)).size===1?r.items[0].Quelle:'MIX';r.src=src;r.items=nearestOrder(r.items,src)}});renderAll()}}
+function clearPlan(){{if(!confirm('Aktuelle Planung leeren?'))return;const all=routes.flatMap(r=>r.items),seen=new Set(),uniq=[];for(const c of all)if(!seen.has(c.uid)){{seen.add(c.uid);uniq.push(c)}}routes=[{{id:'UNPLANNED',name:'NICHT EINGEPLANT',src:'MIX',items:uniq}}];renderAll()}}
+function renderMetrics(){{const rs=routes.filter(r=>r.id!=='UNPLANNED'),un=routes.find(r=>r.id==='UNPLANNED');const planned=rs.reduce((s,r)=>s+r.items.length,0),km=rs.reduce((s,r)=>s+routeKm(r.items,r.src),0);document.getElementById('mCustomers').textContent=selected.length;document.getElementById('mRoutes').textContent=rs.length;document.getElementById('mPlanned').textContent=planned;document.getElementById('mUnplanned').textContent=un?un.items.length:0;document.getElementById('mKm').textContent=km.toFixed(0)+' km'}}
+function renderTable(){{const tb=document.getElementById('tbody');let html='';routes.forEach(r=>r.items.forEach((c,i)=>html+=`<tr><td>${{esc(r.name)}}</td><td>${{i+1}}</td><td>${{esc(c.Quelle)}}</td><td>${{c.CSB??''}}</td><td>${{c.SAP??''}}</td><td>${{esc(c.Name)}}</td><td>${{esc(c.Plz)}}</td><td>${{esc(c.Ort)}}</td><td>${{esc(c.old||'')}}</td></tr>`));tb.innerHTML=html}}
+function renderMap(){{
+  const svg=document.getElementById('geoSvg'),pts=routes.filter(r=>r.id!=='UNPLANNED').flatMap(r=>r.items.map(c=>({{c,r}}))).filter(x=>Number.isFinite(x.c.lat)&&Number.isFinite(x.c.lon)); if(!pts.length){{svg.innerHTML='<text x="40" y="60" fill="#aaa">Keine Geo-Daten vorhanden</text>';return}}
+  const lats=pts.map(x=>x.c.lat),lons=pts.map(x=>x.c.lon),minLa=Math.min(...lats),maxLa=Math.max(...lats),minLo=Math.min(...lons),maxLo=Math.max(...lons),pad=45,W=1200,H=640; const X=lo=>pad+(lo-minLo)/Math.max(.0001,maxLo-minLo)*(W-2*pad),Y=la=>H-pad-(la-minLa)/Math.max(.0001,maxLa-minLa)*(H-2*pad);
+  let h='';const rs=routes.filter(r=>r.id!=='UNPLANNED');rs.forEach((r,ri)=>{{const col=COLORS[ri%COLORS.length],p=r.items.filter(c=>Number.isFinite(c.lat)&&Number.isFinite(c.lon));if(p.length>1)h+=`<polyline points="${{p.map(c=>X(c.lon)+','+Y(c.lat)).join(' ')}}" fill="none" stroke="${{col}}" stroke-width="3" opacity=".75"/>`;p.forEach((c,i)=>h+=`<circle cx="${{X(c.lon)}}" cy="${{Y(c.lat)}}" r="6" fill="${{col}}"><title>${{esc(r.name+' '+(i+1)+' · '+c.SAP+' · '+c.Ort+' · '+c.Name)}}</title></circle>`);}});svg.innerHTML=h;document.getElementById('legend').innerHTML=rs.map((r,i)=>`<span><i style="background:${{COLORS[i%COLORS.length]}}"></i>${{esc(r.name)}}</span>`).join('')
+}}
+function showTab(name,btn){{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tabbtn').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');btn.classList.add('active');if(name==='map')renderMap();if(name==='table')renderTable()}}
+function exportCsv(){{let rows=[['Neue Tour','Reihenfolge','Quelle','CSB','SAP','Name','Strasse','PLZ','Ort','Bisherige Touren']];routes.forEach(r=>r.items.forEach((c,i)=>rows.push([r.name,i+1,c.Quelle,c.CSB??'',c.SAP??'',c.Name,c.Strasse??'',c.Plz,c.Ort,c.old??''])));const csv='\ufeff'+rows.map(r=>r.map(v=>'"'+String(v??'').replaceAll('"','""')+'"').join(';')).join('\\r\\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{{type:'text/csv;charset=utf-8'}}));a.download='Feiertagstouren.csv';a.click();URL.revokeObjectURL(a.href)}}
+function esc(v){{return String(v??'').replace(/[&<>"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]))}}
+init();
+</script>
+</body></html>'''
 
 
-def optimize_containers(
-    containers: List[Dict[str, object]],
-    source_df: pd.DataFrame,
-    label_map: Dict[str, str],
-    depot_plz: Dict[str, str],
-    return_to_depot: bool,
-) -> List[Dict[str, object]]:
-    uid_to_label = {uid: label for label, uid in label_map.items()}
-    by_uid = source_df.set_index("uid", drop=False)
-    out: List[Dict[str, object]] = []
+st.title("🧭 Feiertags-Tourenplaner – HTML Generator")
+st.write("Aktuelle Quelldatei hochladen → Daten der ersten vier Blätter werden übernommen → fertige **HTML-Datei herunterladen**. Die Tourenberechnung und das Verschieben der Kunden erfolgen anschließend direkt in der HTML.")
 
-    for c in containers:
-        header = str(c["header"])
-        labels = list(c.get("items", []))
-        if header == "NICHT EINGEPLANT" or len(labels) < 2:
-            out.append({"header": header, "items": labels})
-            continue
-        uids = [label_map[x] for x in labels if x in label_map and label_map[x] in by_uid.index]
-        route = by_uid.loc[uids].copy()
-        if isinstance(route, pd.Series):
-            route = route.to_frame().T
-        source = route["Quelle"].iloc[0] if route["Quelle"].nunique() == 1 else "MIX"
-        depot = postcode_coord(depot_plz.get(source, "")) if source != "MIX" else None
-        ordered = route_order(route.reset_index(drop=True), depot, return_to_depot)
-        out.append({"header": header, "items": [uid_to_label[u] for u in ordered["uid"].tolist()]})
-    return out
+uploaded = st.file_uploader("Aktuelle Quelldatei hochladen", type=["xlsx"])
 
-
-def plan_excel_bytes(plan_df: pd.DataFrame, planning_date: date, days: List[str]) -> bytes:
-    buffer = io.BytesIO()
-    export = plan_df.copy()
-    export.insert(0, "Planungsdatum", planning_date.strftime("%d.%m.%Y"))
-    export.insert(1, "Ausgangs-Liefertage", ", ".join(DAY_LABELS[d] for d in days))
-    export = export.drop(columns=["latitude", "longitude", "uid"], errors="ignore")
-
-    planned = export[export["Neue Tour"] != "NICHT EINGEPLANT"].copy()
-    unplanned = export[export["Neue Tour"] == "NICHT EINGEPLANT"].copy()
-
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        planned.to_excel(writer, sheet_name="Feiertagstouren", index=False)
-        unplanned.to_excel(writer, sheet_name="Nicht eingeplant", index=False)
-        wb = writer.book
-        for sheet_name, frame in [("Feiertagstouren", planned), ("Nicht eingeplant", unplanned)]:
-            ws = writer.sheets[sheet_name]
-            ws.freeze_panes(1, 0)
-            ws.autofilter(0, 0, max(len(frame), 1), max(len(frame.columns) - 1, 0))
-            header_fmt = wb.add_format({"bold": True, "bg_color": "#332B3E", "font_color": "#FFFFFF", "border": 0})
-            for col_idx, col in enumerate(frame.columns):
-                ws.write(0, col_idx, col, header_fmt)
-                max_len = max([len(str(col))] + [len(str(v)) for v in frame[col].head(300).fillna("")])
-                ws.set_column(col_idx, col_idx, min(max(max_len + 2, 10), 38))
-    return buffer.getvalue()
-
-
-def render_map(plan_df: pd.DataFrame):
-    points = plan_df[(plan_df["Neue Tour"] != "NICHT EINGEPLANT") & plan_df["latitude"].notna()].copy()
-    if points.empty:
-        st.info("Keine geokodierten Kunden für die Karte vorhanden.")
-        return
-
-    route_names = list(points["Neue Tour"].drop_duplicates())
-    color_map = {r: PALETTE[i % len(PALETTE)] for i, r in enumerate(route_names)}
-    points["color"] = points["Neue Tour"].map(color_map)
-    points["tooltip"] = points.apply(
-        lambda r: f"{r['Neue Tour']} · {r['Reihenfolge']}\n{r['SAP']} · {r['Name']}\n{r['PLZ']} {r['Ort']}",
-        axis=1,
-    )
-
-    paths = []
-    for route, grp in points.sort_values(["Neue Tour", "Reihenfolge"]).groupby("Neue Tour", sort=False):
-        path = [[float(x.longitude), float(x.latitude)] for x in grp.itertuples()]
-        if len(path) >= 2:
-            paths.append({"route": route, "path": path, "color": color_map[route]})
-
-    layers = [
-        pdk.Layer(
-            "PathLayer",
-            data=paths,
-            get_path="path",
-            get_color="color",
-            width_min_pixels=3,
-            opacity=0.75,
-        ),
-        pdk.Layer(
-            "ScatterplotLayer",
-            data=points,
-            get_position="[longitude, latitude]",
-            get_fill_color="color",
-            get_radius=3500,
-            radius_min_pixels=5,
-            radius_max_pixels=10,
-            pickable=True,
-        ),
-    ]
-
-    view = pdk.ViewState(
-        latitude=float(points["latitude"].mean()),
-        longitude=float(points["longitude"].mean()),
-        zoom=6.0,
-    )
-    st.pydeck_chart(
-        pdk.Deck(
-            layers=layers,
-            initial_view_state=view,
-            tooltip={"text": "{tooltip}"},
-            map_style=None,
-        ),
-        use_container_width=True,
-    )
-
-
-# ------------------------------------------------------------
-# UI
-# ------------------------------------------------------------
-st.title("🧭 Feiertags-Tourenplaner")
-st.caption("Die App baut einen Geo-Vorschlag. Danach kannst du Kunden frei zwischen Touren verschieben, die Reihenfolge ändern oder sie in ›Nicht eingeplant‹ ablegen.")
-
-uploaded = st.file_uploader("Quelldatei hochladen", type=["xlsx", "xls"])
+with st.expander("Startpunkte / Depot-PLZ für die spätere Reihenfolge", expanded=False):
+    depot_plz: Dict[str, str] = {}
+    cols = st.columns(4)
+    for i, s in enumerate(SHEETS):
+        depot_plz[s] = cols[i].text_input(s, value=DEFAULT_DEPOT_PLZ[s], max_chars=5)
 
 if uploaded is None:
-    st.info("Bitte deine Quelldatei hochladen. Verwendet werden ausschließlich die ersten vier Bereiche: DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
-    st.stop()
-
-try:
-    raw = load_source(uploaded.getvalue())
-except Exception as exc:
-    st.error(f"Datei konnte nicht gelesen werden: {exc}")
-    st.stop()
-
-with st.sidebar:
-    st.header("Planung")
-    planning_date = st.date_input("Planungs-/Feiertagsdatum", value=date.today())
-    days = st.multiselect(
-        "Welche regulären Liefertage sollen in die Planung?",
-        options=DAY_COLUMNS,
-        default=["Fr"],
-        format_func=lambda x: DAY_LABELS[x],
-    )
-    sources = st.multiselect("Bereiche", SHEETS, default=SHEETS)
-    max_stops = st.slider("Max. Kunden je Tour", min_value=3, max_value=20, value=8, step=1)
-    separate_sources = st.toggle("Bereiche getrennt planen", value=True)
-    return_to_depot = st.toggle("Rückfahrt zum Startpunkt mitrechnen", value=True)
-
-    st.divider()
-    st.subheader("Startpunkt / Depot (PLZ)")
-    depot_plz = {}
-    for s in SHEETS:
-        depot_plz[s] = st.text_input(s, value=DEFAULT_DEPOT_PLZ[s], max_chars=5, key=f"dep_{s}")
-
-selected = filter_customers(raw, days, sources)
-if selected.empty:
-    st.warning("Für diese Auswahl wurden keine Kunden gefunden.")
+    st.info("Bitte die aktuelle Quelldatei hochladen. Erwartet werden die Blätter DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
     st.stop()
 
 if pgeocode is None:
-    st.error("Das Paket `pgeocode` fehlt. Bitte `pip install pgeocode` ausführen bzw. requirements.txt verwenden.")
+    st.error("`pgeocode` fehlt. Bitte requirements.txt verwenden bzw. `pgeocode` installieren.")
     st.stop()
 
-with st.spinner("PLZ-Koordinaten werden vorbereitet …"):
-    selected = add_geo(selected)
+try:
+    raw = read_source(uploaded.getvalue())
+    with st.spinner("PLZ-Koordinaten werden vorbereitet …"):
+        enriched = enrich_geo(raw)
+        depots = {s: {"plz": depot_plz[s], **coord_for_plz(depot_plz[s])} for s in SHEETS}
+except Exception as exc:
+    st.error(f"Datei konnte nicht verarbeitet werden: {exc}")
+    st.stop()
 
-selected["label"] = selected.apply(make_item_label, axis=1)
-label_map = dict(zip(selected["label"], selected["uid"]))
+geo_ok = int(enriched[["lat", "lon"]].notna().all(axis=1).sum())
+geo_bad = int(len(enriched) - geo_ok)
 
-valid_geo = selected[["latitude", "longitude"]].notna().all(axis=1).sum()
-invalid_geo = len(selected) - valid_geo
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Kunden", len(enriched))
+c2.metric("Geo erkannt", geo_ok)
+c3.metric("ohne Geo", geo_bad)
+c4.metric("Blätter", 4)
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Kunden", len(selected))
-m2.metric("Geo erkannt", int(valid_geo))
-m3.metric("ohne Geo", int(invalid_geo))
-if separate_sources:
-    expected_tours = sum(
-        math.ceil(n / max_stops)
-        for n in selected[selected[["latitude", "longitude"]].notna().all(axis=1)].groupby("Quelle").size().tolist()
-    )
-else:
-    expected_tours = max(1, math.ceil(valid_geo / max_stops)) if valid_geo else 0
-m4.metric("voraussichtliche Touren", int(expected_tours))
+if geo_bad:
+    st.warning(f"{geo_bad} Datensätze konnten über die PLZ nicht geokodiert werden. Sie erscheinen in der HTML zunächst unter ›Nicht eingeplant‹.")
 
-st.markdown(
-    "<span class='small-note'>Geo-Basis: PLZ-Mittelpunkt. Die Straßen-km in der Übersicht sind nur eine grobe Schätzung und noch keine echte LKW-Routenberechnung.</span>",
-    unsafe_allow_html=True,
+payload = make_payload(enriched)
+html = build_html(payload, depots, uploaded.name)
+
+st.success("HTML ist erstellt. Nach dem Download wird keine Excel-Datei mehr benötigt – die Kundendaten sind in der HTML eingebettet.")
+st.download_button(
+    "⬇ Feiertags-Tourenplaner.html herunterladen",
+    data=html.encode("utf-8"),
+    file_name="Feiertags_Tourenplaner.html",
+    mime="text/html",
+    use_container_width=True,
+    type="primary",
 )
 
-config_signature = (
-    tuple(days), tuple(sources), int(max_stops), bool(separate_sources), bool(return_to_depot), tuple(sorted(depot_plz.items()))
-)
-
-col_a, col_b, col_c = st.columns([1, 1, 3])
-with col_a:
-    rebuild = st.button("⚡ Touren neu bauen", type="primary", use_container_width=True)
-with col_b:
-    optimize = st.button("↻ Reihenfolge optimieren", use_container_width=True)
-
-if "plan_containers" not in st.session_state or rebuild:
-    st.session_state.plan_containers = build_plan(
-        selected,
-        max_stops=max_stops,
-        separate_sources=separate_sources,
-        depot_plz=depot_plz,
-        return_to_depot=return_to_depot,
-    )
-    st.session_state.plan_signature = config_signature
-    st.session_state.sort_version = st.session_state.get("sort_version", 0) + 1
-
-# Wenn Auswahl geändert wurde, nicht stillschweigend überschreiben.
-if st.session_state.get("plan_signature") != config_signature:
-    st.warning("Die Planungsparameter wurden geändert. Klicke auf **Touren neu bauen**, um den Vorschlag neu zu berechnen. Deine aktuelle manuelle Planung bleibt bis dahin erhalten.")
-
-if optimize:
-    st.session_state.plan_containers = optimize_containers(
-        st.session_state.plan_containers,
-        selected,
-        label_map,
-        depot_plz,
-        return_to_depot,
-    )
-    st.session_state.sort_version = st.session_state.get("sort_version", 0) + 1
-
-st.subheader("Touren per Drag & Drop bearbeiten")
-st.caption("Kunden zwischen Touren ziehen · innerhalb einer Tour Reihenfolge ändern · zum Entfernen aus der Feiertagsplanung nach ›NICHT EINGEPLANT‹ ziehen.")
-
-sortable_style = """
-.sortable-component {font-size: 13px;}
-.sortable-container {background: #17151d; border: 1px solid #3a3542; border-radius: 12px; padding: 8px; margin: 6px; min-width: 300px;}
-.sortable-container-header {background: #2b2533; color: #f4f1f7; border-radius: 8px; padding: 8px 10px; font-weight: 700;}
-.sortable-container-body {background: #17151d; min-height: 55px;}
-.sortable-item {background: #27222e; color: #f2eef6; border: 1px solid #42394d; border-radius: 8px; padding: 7px 9px; margin: 5px 0; cursor: grab;}
-.sortable-item:hover {background: #342c3e;}
-"""
-
-# Der Key wird nur bei bewusstem Neuaufbau/Optimieren geändert. Das umgeht
-# bekannte Component-Probleme beim nachträglichen Ändern des Item-Sets.
-sorted_result = sort_items(
-    st.session_state.plan_containers,
-    multi_containers=True,
-    direction="vertical",
-    custom_style=sortable_style,
-    key=f"route_sort_{st.session_state.get('sort_version', 0)}",
-)
-if sorted_result:
-    st.session_state.plan_containers = sorted_result
-
-plan_df = assignment_frame(selected, st.session_state.plan_containers, label_map)
-
-st.divider()
-st.subheader("Aktuelle Planung")
-
-stats = current_route_stats(plan_df, depot_plz, return_to_depot)
-if not stats.empty:
-    st.dataframe(
-        stats,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Geo-km": st.column_config.NumberColumn(format="%.1f km"),
-            "Straßen-km ~": st.column_config.NumberColumn(format="%.1f km"),
-        },
-    )
-
-planned_count = int((plan_df["Neue Tour"] != "NICHT EINGEPLANT").sum()) if not plan_df.empty else 0
-unplanned_count = int((plan_df["Neue Tour"] == "NICHT EINGEPLANT").sum()) if not plan_df.empty else 0
-st.caption(f"{planned_count} Kunden eingeplant · {unplanned_count} nicht eingeplant")
-
-map_tab, table_tab, export_tab = st.tabs(["🗺️ Karte", "📋 Kundenliste", "⬇️ Export"])
-with map_tab:
-    render_map(plan_df)
-
-with table_tab:
-    show = plan_df.drop(columns=["latitude", "longitude", "uid"], errors="ignore")
-    st.dataframe(show, use_container_width=True, hide_index=True, height=650)
-
-with export_tab:
-    export_bytes = plan_excel_bytes(plan_df, planning_date, days)
-    st.download_button(
-        "Excel mit aktueller Planung herunterladen",
-        data=export_bytes,
-        file_name=f"Feiertagstouren_{planning_date:%Y-%m-%d}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-    st.caption("Der Export enthält die manuell verschobene Reihenfolge und ein eigenes Blatt für nicht eingeplante Kunden.")
+st.caption("In der HTML: Liefertage/Bereiche wählen → Touren berechnen → Kunden per Drag & Drop verschieben → einzelne oder alle Reihenfolgen optimieren → CSV exportieren oder drucken.")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from datetime import datetime
 from html import escape
 from typing import List
@@ -59,6 +60,53 @@ def read_source(file_bytes: bytes) -> pd.DataFrame:
     return out
 
 
+
+TIME_HINT_RE = re.compile(
+    r"(?:\buhr\b|(?:anliefer(?:ung|n)?|liefer(?:ung)?|nicht\s+vor|erst\s+ab|nur\s+bis|zwischen|anlieferverbot|nachtanlieferverbot)[^.;]{0,60}?\b(?:[01]?\d|2[0-3])(?:[.:]\d{2})?\b|^\s*(?:ab|bis|von)\s*(?:[01]?\d|2[0-3])(?:[.:]\d{2})?\b)",
+    re.IGNORECASE,
+)
+
+
+def read_kisoft(file_bytes: bytes) -> pd.DataFrame:
+    df = pd.read_csv(io.BytesIO(file_bytes), sep=";", encoding="utf-8-sig", dtype=str)
+    required = ["Kundennummer", "Lieferinfo"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError("Kisoft_Kunden.csv: fehlende Spalten: " + ", ".join(missing))
+    df["SAP"] = pd.to_numeric(df["Kundennummer"], errors="coerce").astype("Int64")
+    df["Lieferinfo"] = df["Lieferinfo"].fillna("").astype(str).str.strip()
+    df["Zeitkritisch"] = df["Lieferinfo"].map(lambda x: bool(TIME_HINT_RE.search(x)))
+    out = (
+        df.dropna(subset=["SAP"])
+        .groupby("SAP", as_index=False)
+        .agg(
+            Lieferinfo=("Lieferinfo", lambda s: " | ".join(dict.fromkeys(x for x in s if x))),
+            Zeitkritisch=("Zeitkritisch", "max"),
+        )
+    )
+    return out
+
+
+def read_tour_starts(file_bytes: bytes) -> dict[str, list[str]]:
+    df = pd.read_csv(
+        io.BytesIO(file_bytes), sep=";", header=None, names=["Tour", "Start"],
+        encoding="utf-8-sig", dtype=str,
+    )
+    df["Tour"] = df["Tour"].fillna("").str.strip()
+    df["Start"] = df["Start"].fillna("").str.strip()
+    df = df[(df["Tour"] != "") & (df["Start"] != "")]
+    result: dict[str, list[str]] = {}
+    for tour, grp in df.groupby("Tour", sort=False):
+        result[str(tour)] = list(dict.fromkeys(grp["Start"].tolist()))
+    return result
+
+
+def enrich_customer_info(df: pd.DataFrame, kisoft: pd.DataFrame) -> pd.DataFrame:
+    out = df.merge(kisoft, on="SAP", how="left")
+    out["Lieferinfo"] = out["Lieferinfo"].fillna("").astype(str)
+    out["Zeitkritisch"] = out["Zeitkritisch"].fillna(False).astype(bool)
+    return out
+
 def geocode_postcodes(postcodes: list[str]) -> pd.DataFrame:
     try:
         import pgeocode
@@ -102,7 +150,7 @@ def json_ready(v):
 def make_payload(df: pd.DataFrame) -> list[dict]:
     keep = [
         "uid", "Quelle", "source_row", "CSB", "SAP", "Name", "Strasse", "Plz", "Ort",
-        *DAY_COLUMNS, "lat", "lon",
+        *DAY_COLUMNS, "lat", "lon", "Lieferinfo", "Zeitkritisch",
     ]
     rows = []
     for rec in df[keep].to_dict("records"):
@@ -110,9 +158,11 @@ def make_payload(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def build_html(customers: list[dict], source_name: str) -> str:
+def build_html(customers: list[dict], tour_starts: dict[str, list[str]], source_name: str, info_name: str = "", starts_name: str = "") -> str:
     data_json = json.dumps(customers, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     src = escape(source_name)
+    aux = escape(" · ".join(x for x in [info_name, starts_name] if x))
+    starts_json = json.dumps(tour_starts, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     generated = datetime.now().strftime("%d.%m.%Y %H:%M")
 
     return f'''<!doctype html>
@@ -120,7 +170,7 @@ def build_html(customers: list[dict], source_name: str) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Feiertags-Wochenplaner V6</title>
+<title>Feiertags-Wochenplaner V7</title>
 <style>
 :root{{--bg:#f3f4f6;--surface:#fff;--surface2:#f8f9fb;--ink:#22242a;--muted:#727680;--line:#dfe1e6;--line2:#eceef2;--accent:#6f54a6;--accent-soft:#eeeaf7;--good:#247348;--good-bg:#e8f5ed;--ok:#5e6f32;--ok-bg:#eff4df;--warn:#946200;--warn-bg:#fff3d2;--bad:#a03b3b;--bad-bg:#fde9e9;--blue:#46627d;--blue-bg:#eaf0f5;--mo:#477258;--mo-bg:#e5f2e8;--die:#8a6518;--die-bg:#fff1cf;--mitt:#6f57a1;--mitt-bg:#eee8f7;--don:#a45e3a;--don-bg:#fde7dc;--fr:#8f5368;--fr-bg:#f6e6ed;--sam:#5e5f7f;--sam-bg:#e9e9f1}}
 *{{box-sizing:border-box}}
@@ -207,6 +257,12 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 .detail{{font-size:8px;color:var(--muted)}}
 .flag{{font-size:8px;font-weight:850;border-radius:999px;padding:2px 5px;background:var(--blue-bg);color:var(--blue)}}
 .flag.dupe{{background:var(--bad-bg);color:var(--bad)}}
+.flag.time{{background:#fff0d7;color:#855700}}
+.flag.area{{background:var(--bad-bg);color:var(--bad)}}
+.route-start{{font-size:9px;font-weight:850;color:#5f6470;background:#eef0f4;border-radius:999px;padding:2px 5px;white-space:nowrap}}
+.resthead{{padding:8px 10px;background:#f6f3fb;border-top:1px solid var(--line);border-bottom:1px solid var(--line2);font-weight:850}}
+.restrow{{display:grid;grid-template-columns:minmax(200px,1.2fr) minmax(180px,1fr) minmax(220px,1.3fr) auto;gap:8px;align-items:center;padding:8px 9px;border-bottom:1px solid var(--line2);background:#fff}}
+.restmeta{{font-size:9px;color:var(--muted);margin-top:2px}}
 .remove{{border:0;background:transparent;color:#aaa;font-weight:900;font-size:14px;line-height:1;padding:1px 2px;border-radius:4px}}
 .remove:hover{{color:var(--bad);background:var(--bad-bg)}}
 .empty{{color:#a0a2a8;font-size:9px;text-align:center;padding:7px 4px}}
@@ -242,7 +298,7 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 .suggcust{{min-width:0}}.suggcust b{{display:block;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.suggcust span{{font-size:9px;color:var(--muted)}}
 .suggtarget{{font-size:10px;font-weight:800}}.suggalt{{font-size:9px;color:var(--muted)}}
 .suggnew{{color:var(--bad);font-weight:850}}
-@media(max-width:1050px){{.holidaygrid{{grid-template-columns:1fr 1fr}}.holidaygrid .arrow{{display:none}}.suggrow{{grid-template-columns:1fr 1fr}}}}
+@media(max-width:1050px){{.holidaygrid{{grid-template-columns:1fr 1fr}}.holidaygrid .arrow{{display:none}}.suggrow,.restrow{{grid-template-columns:1fr 1fr}}}}
 .changes{{margin-top:12px;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden}}
 .changehead{{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line2)}}
 .changetable{{width:100%;border-collapse:collapse;font-size:10px}}
@@ -256,10 +312,10 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 <div class="top"><div class="topin">
   <div class="headrow">
     <div><h1>Feiertags-Wochenplaner</h1><div class="sub">Komplette Woche gleichzeitig · jeder Tag separat scrollbar · neue Touren frei anlegen</div></div>
-    <div class="filepill">{src} · erzeugt {generated}</div>
+    <div class="filepill">{src}{(" · " + aux) if aux else ""} · erzeugt {generated}</div>
   </div>
   <div class="controls">
-    <div class="ctrl"><span class="label">Bereiche</span><div class="chips" id="sourceChips"></div></div>
+    <div class="ctrl"><span class="label">Startbereiche</span><div class="chips" id="sourceChips"></div></div>
     <div class="ctrl"><span class="label">Suche</span><input id="search" class="search" placeholder="SAP, CSB, Name, Ort, PLZ oder Tour"></div>
     <div class="actions"><button class="btn" id="resetBtn">Zurücksetzen</button><button class="btn" id="csvBtn">Änderungen CSV</button><button class="btn primary" onclick="window.print()">Drucken</button></div>
   </div>
@@ -271,13 +327,13 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
       <select id="fromDay"></select>
       <span class="arrow">→</span>
       <select id="toDay"></select>
-      <label class="chip"><input type="checkbox" id="sameSource" checked> gleicher Bereich</label>
+      <span class="chip"><b>Startbereich bleibt zwingend gleich</b></span>
       <button class="btn primary" id="suggestBtn" type="button">Vorschläge berechnen</button>
     </div>
     <div class="daylegend" id="dayLegend"></div>
   </section>
   <section class="suggestions" id="suggestions"><div class="sugghead"><div><strong id="suggTitle">Vorschläge</strong><div class="sub" id="suggSub"></div></div><div class="actions"><button class="btn" id="applyGoodBtn" type="button">Gute Vorschläge übernehmen</button><button class="btn" id="closeSuggBtn" type="button">Schließen</button></div></div><div class="suggbody" id="suggBody"></div></section>
-  <div class="notice"><b>So arbeitet die Planung:</b> Montag bis Samstag stehen gleichzeitig nebeneinander und jeder Tag scrollt für sich. Bestehende Touren bleiben unverändert. Jede Kundenkachel trägt dauerhaft die Farbe ihres <b>Herkunftstags</b>. Nach einem Verschieben erscheint direkt in der Kachel die Geo-Bewertung.</div>
+  <div class="notice"><b>So arbeitet die Planung:</b> Montag bis Samstag stehen gleichzeitig nebeneinander und jeder Tag scrollt für sich. Bestehende Touren bleiben unverändert. Jede Kundenkachel trägt dauerhaft die Farbe ihres <b>Herkunftstags</b>. Nach einem Verschieben erscheint direkt in der Kachel die Geo-Bewertung. Vorschläge wechseln niemals den <b>Startbereich</b>. Kundenhinweise mit zeitlichen Einschränkungen werden gesondert markiert.</div>
   <div class="metrics">
     <div class="metric"><div class="v" id="mDeliveries">0</div><div class="k">Lieferungen in der Woche</div></div>
     <div class="metric"><div class="v" id="mRoutes">0</div><div class="k">Touren gesamt</div></div>
@@ -299,9 +355,10 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
   </section>
 </main>
 <div id="drawer" class="drawer"><h3 id="drawerTitle"></h3><p id="drawerText"></p></div>
-<div id="tourModal" class="modalback" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="newTourTitle"><h2 id="newTourTitle">Neue Tour anlegen</h2><div class="hint" id="newTourHint"></div><div class="formrow"><div class="field"><label for="newTourNo">Tournummer / Name</label><input id="newTourNo" autocomplete="off" placeholder="z. B. 4055 oder FT-01"></div><div class="field"><label for="newTourSource">Bereich</label><select id="newTourSource"></select></div></div><div id="newTourError" class="modalerror"></div><div class="modalactions"><button class="btn" id="cancelTourBtn">Abbrechen</button><button class="btn primary" id="createTourBtn">Tour anlegen</button></div></div></div>
+<div id="tourModal" class="modalback" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="newTourTitle"><h2 id="newTourTitle">Neue Tour anlegen</h2><div class="hint" id="newTourHint"></div><div class="formrow"><div class="field"><label for="newTourNo">Tournummer / Name</label><input id="newTourNo" autocomplete="off" placeholder="z. B. 4055 oder FT-01"></div><div class="field"><label for="newTourSource">Startbereich</label><select id="newTourSource"></select></div></div><div class="field" style="margin-top:8px"><label for="newTourStart">Startzeit (optional)</label><input id="newTourStart" autocomplete="off" placeholder="z. B. 3:00"></div><div id="newTourError" class="modalerror"></div><div class="modalactions"><button class="btn" id="cancelTourBtn">Abbrechen</button><button class="btn primary" id="createTourBtn">Tour anlegen</button></div></div></div>
 <script>
 const CUSTOMERS={data_json};
+const TOUR_STARTS={starts_json};
 const DAY_ORDER=['Mo','Die','Mitt','Don','Fr','Sam'];
 const DAY_LABELS={{Mo:'Montag',Die:'Dienstag',Mitt:'Mittwoch',Don:'Donnerstag',Fr:'Freitag',Sam:'Samstag'}};
 const SOURCES=['DIREKT','MK','HUPA_NMS','HUPA_MALCHOW'];
@@ -314,12 +371,16 @@ let dayScroll={{}};
 let newTourDay=null;
 let scrollToNewDay=null;
 let suggestions=[];
+let restSuggestions=[];
 
 function esc(v){{return String(v??'').replace(/[&<>"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]))}}
 function rad(x){{return x*Math.PI/180}}
 function dist(a,b){{if(!Number.isFinite(a?.lat)||!Number.isFinite(a?.lon)||!Number.isFinite(b?.lat)||!Number.isFinite(b?.lon))return NaN;const R=6371,dlat=rad(b.lat-a.lat),dlon=rad(b.lon-a.lon),q=Math.sin(dlat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dlon/2)**2;return 2*R*Math.asin(Math.sqrt(q))}}
 function fmt(n){{return Number.isFinite(n)?n.toFixed(1):'–'}}
 function routeId(day,source,tour){{return day+'::'+source+'::'+String(tour)}}
+function startsForTour(tour){{return TOUR_STARTS[String(tour)]||[]}}
+function startLabel(tour){{const s=startsForTour(tour);return s.length?s.join(' / '):''}}
+function timeInfo(a){{return String(a?.Lieferinfo||'').trim()}}
 function activeSources(){{return SOURCES.filter(s=>document.getElementById('src_'+s)?.checked)}}
 function getRoute(id){{return routes.find(r=>r.id===id)}}
 function getAssignment(aid){{return assignments.find(a=>a.aid===aid)}}
@@ -336,6 +397,7 @@ function initControls(){{
   document.getElementById('createTourBtn').addEventListener('click',createNewTour);
   document.getElementById('tourModal').addEventListener('click',e=>{{if(e.target.id==='tourModal')closeNewTour()}});
   document.getElementById('newTourNo').addEventListener('keydown',e=>{{if(e.key==='Enter')createNewTour();if(e.key==='Escape')closeNewTour()}});
+  document.getElementById('newTourStart').addEventListener('keydown',e=>{{if(e.key==='Enter')createNewTour();if(e.key==='Escape')closeNewTour()}});
   document.getElementById('fromDay').innerHTML=DAY_ORDER.map(d=>`<option value="${{d}}">${{DAY_LABELS[d]}} fällt aus</option>`).join('');
   document.getElementById('toDay').innerHTML=DAY_ORDER.map(d=>`<option value="${{d}}">auf ${{DAY_LABELS[d]}}</option>`).join('');
   document.getElementById('fromDay').value='Sam';document.getElementById('toDay').value='Fr';
@@ -346,7 +408,7 @@ function initControls(){{
 }}
 
 function buildOriginalPlan(){{
-  assignments=[]; routes=[]; unplanned=[]; suggestions=[];document.getElementById('suggestions')?.classList.remove('show');
+  assignments=[]; routes=[]; unplanned=[]; suggestions=[];restSuggestions=[];document.getElementById('suggestions')?.classList.remove('show');
   CUSTOMERS.forEach(c=>{{
     DAY_ORDER.forEach(day=>{{
       const tour=c[day];
@@ -354,7 +416,7 @@ function buildOriginalPlan(){{
       const a={{...c,aid:c.uid+'::'+day,originalDay:day,originalTour:String(tour),currentDay:day,currentTour:String(tour),originalRouteId:routeId(day,c.Quelle,tour)}};
       assignments.push(a);
       let r=routes.find(x=>x.id===a.originalRouteId);
-      if(!r){{r={{id:a.originalRouteId,day,source:c.Quelle,tour:String(tour),items:[],originalCount:0}};routes.push(r)}}
+      if(!r){{r={{id:a.originalRouteId,day,source:c.Quelle,tour:String(tour),items:[],originalCount:0,normalStart:startLabel(tour)}};routes.push(r)}}
       r.items.push(a); r.originalCount++;
     }})
   }});
@@ -373,10 +435,12 @@ function duplicateOnTargetDay(a,targetRoute){{
 }}
 
 function fitFor(a,r){{
-  if(!r||!r.items)return {{key:'unknown',label:'keine Bewertung',nearest:NaN,nearName:'',centroid:NaN,dupe:false}};
+  if(!r||!r.items)return {{key:'unknown',label:'keine Bewertung',nearest:NaN,nearName:'',centroid:NaN,dupe:false,startMismatch:false}};
+  const startMismatch=String(a.Quelle)!==String(r.source);
   const others=r.items.filter(x=>x.aid!==a.aid&&Number.isFinite(x.lat)&&Number.isFinite(x.lon));
   const dupe=duplicateOnTargetDay(a,r);
-  if(!Number.isFinite(a.lat)||!Number.isFinite(a.lon)||others.length===0)return {{key:'unknown',label:'nicht bewertbar',nearest:NaN,nearName:'',centroid:NaN,dupe}};
+  if(startMismatch)return {{key:'bad',label:'falscher Startbereich',nearest:NaN,nearName:'',centroid:NaN,dupe,startMismatch:true}};
+  if(!Number.isFinite(a.lat)||!Number.isFinite(a.lon)||others.length===0)return {{key:'unknown',label:'nicht bewertbar',nearest:NaN,nearName:'',centroid:NaN,dupe,startMismatch}};
   let nearest=Infinity,near=null;
   others.forEach(x=>{{const d=dist(a,x);if(d<nearest){{nearest=d;near=x}}}});
   const clat=others.reduce((s,x)=>s+x.lat,0)/others.length,clon=others.reduce((s,x)=>s+x.lon,0)/others.length;
@@ -387,7 +451,7 @@ function fitFor(a,r){{
   else if(nearest<=45&&centroid<=80){{key='warn';label='grenzwertig'}}
   else {{key='bad';label='eher nicht'}}
   if(dupe&&key==='good')key='ok';
-  return {{key,label,nearest,nearName:near?`${{near.SAP}} · ${{near.Ort}}`:'',centroid,dupe}};
+  return {{key,label,nearest,nearName:near?`${{near.SAP}} · ${{near.Ort}}`:'',centroid,dupe,startMismatch}};
 }}
 
 function cardHtml(a,r){{
@@ -400,7 +464,9 @@ function cardHtml(a,r){{
   if(moved){{
     const distance=Number.isFinite(fit?.nearest)?` · ${{fmt(fit.nearest)}} km`:'';
     const dup=dupe?`<span class="flag dupe">Doppellieferung</span>`:'';
-    geo=`<div class="geoline"><span class="fit ${{fit?.key||'unknown'}}">Geo: ${{esc(fit?.label||'nicht bewertbar')}}${{distance}}</span>${{dup}}</div>`;
+    const time=a.Zeitkritisch?`<span class="flag time" title="${{esc(timeInfo(a))}}">Zeitinfo prüfen</span>`:'';
+    const area=fit?.startMismatch?`<span class="flag area">Startbereich!</span>`:'';
+    geo=`<div class="geoline"><span class="fit ${{fit?.key||'unknown'}}">Geo: ${{esc(fit?.label||'nicht bewertbar')}}${{distance}}</span>${{dup}}${{time}}${{area}}</div>`;
   }}
   return `<div class="cust origin-${{a.originalDay}} ${{moved?'moved':''}} ${{bad?'badmove':''}} ${{dupe?'dupe':''}}" draggable="true" data-aid="${{a.aid}}" title="Herkunft: ${{DAY_LABELS[a.originalDay]}} · Tour ${{esc(a.originalTour)}}"><div class="grip">⋮</div><div class="cmain"><div class="cname">${{a.SAP}} · ${{esc(a.Strasse||'')}}</div><div class="csub"><strong>${{esc(a.Name)}}</strong> · ${{esc(a.Ort)}}</div>${{geo}}</div><button class="remove" title="Ausplanen" data-remove="${{a.aid}}">×</button></div>`;
 }}
@@ -410,7 +476,8 @@ function routeHtml(r){{
   const cards=r.items.map(a=>cardHtml(a,r)).join('');
   if(searchText&&!cards&&!r.manuallyCreated)return '';
   const d=r.items.length-r.originalCount;
-  const meta=r.manuallyCreated?`${{r.items.length}} Kunden · neu angelegt`:`${{r.items.length}} Kunden · ursprünglich ${{r.originalCount}}`;
+  const start=r.normalStart||startLabel(r.tour);
+  const meta=(r.manuallyCreated?`${{r.items.length}} Kunden · neu angelegt`:`${{r.items.length}} Kunden · ursprünglich ${{r.originalCount}}`)+(start?` · Start ${{esc(start)}}`:'');
   return `<section class="route ${{routeChanged(r)?'changed':''}}" data-route="${{r.id}}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${{esc(r.tour)}} <span class="source">${{esc(r.source.replace('HUPA_','HUPA '))}}</span></div><div class="rmeta">${{meta}}</div></div><div class="route-right">${{d!==0?`<span class="delta">${{d>0?'+':''}}${{d}}</span>`:''}}${{r.manuallyCreated?`<button class="route-delete" title="Neue Tour löschen" data-delete-route="${{r.id}}">×</button>`:''}}</div></div><div class="dropzone" data-route="${{r.id}}">${{cards||'<div class="empty">Kunden hierher ziehen</div>'}}</div></section>`;
 }}
 
@@ -437,7 +504,7 @@ function restoreDayScroll(){{
 function openNewTour(day){{
   newTourDay=day;
   document.getElementById('newTourHint').textContent=`${{DAY_LABELS[day]}} · die Tour wird leer angelegt und erscheint sofort in dieser Tages-Spalte.`;
-  document.getElementById('newTourNo').value='';
+  document.getElementById('newTourNo').value='';document.getElementById('newTourStart').value='';
   document.getElementById('newTourError').textContent='';
   const firstActive=activeSources()[0]||SOURCES[0];
   document.getElementById('newTourSource').value=firstActive;
@@ -454,7 +521,7 @@ function createNewTour(){{
   if(!newTourDay||!tour){{err.textContent='Bitte eine Tournummer oder einen Namen eingeben.';return}}
   const id=routeId(newTourDay,source,tour);
   if(getRoute(id)){{err.textContent='Diese Tour gibt es an diesem Tag in diesem Bereich bereits.';return}}
-  routes.push({{id,day:newTourDay,source,tour,items:[],originalCount:0,manuallyCreated:true}});
+  routes.push({{id,day:newTourDay,source,tour,items:[],originalCount:0,manuallyCreated:true,normalStart:start}});
   routes.sort(daySort);scrollToNewDay=newTourDay;closeNewTour();renderAll();
 }}
 function deleteNewRoute(id){{
@@ -517,7 +584,7 @@ function currentItemsForDay(day){{
   return routes.filter(r=>r.day===day&&active.includes(r.source)).flatMap(r=>r.items.map(a=>({{a,from:r}})));
 }}
 function computeSuggestions(){{
-  const fromDay=document.getElementById('fromDay').value,toDay=document.getElementById('toDay').value,same=document.getElementById('sameSource').checked;
+  const fromDay=document.getElementById('fromDay').value,toDay=document.getElementById('toDay').value;
   const box=document.getElementById('suggestions');
   if(fromDay===toDay){{box.classList.add('show');document.getElementById('suggTitle').textContent='Ausfall- und Zieltag sind gleich';document.getElementById('suggSub').textContent='Bitte zwei unterschiedliche Tage wählen.';document.getElementById('suggBody').innerHTML='';return}}
   const src=currentItemsForDay(fromDay);
@@ -525,34 +592,82 @@ function computeSuggestions(){{
   const targets=routes.filter(r=>r.day===toDay&&active.includes(r.source)&&r.items.length>0);
   suggestions=src.map(entry=>{{
     const a=entry.a,from=entry.from;
-    let cand=targets.filter(r=>!same||r.source===a.Quelle).map(r=>{{const f=fitFor(a,r);return {{r,f,score:fitScore(f)}}}}).sort((x,y)=>x.score-y.score);
+    let cand=targets.filter(r=>r.source===a.Quelle).map(r=>{{const f=fitFor(a,r);return {{r,f,score:fitScore(f)}}}}).sort((x,y)=>x.score-y.score);
     const known=cand.filter(x=>x.f.key!=='unknown');
     if(known.length)cand=known.concat(cand.filter(x=>x.f.key==='unknown'));
     const best=cand[0]||null;
     return {{aid:a.aid,a,from,best,alts:cand.slice(1,3)}};
   }});
+  const leftover=suggestions.filter(s=>!s.best||s.best.f.dupe||!['good','ok'].includes(s.best.f.key));
+  const groups={{}};
+  leftover.forEach(s=>{{const key=s.a.Quelle+'::'+s.from.tour;if(!groups[key])groups[key]={{source:s.a.Quelle,originalTour:s.from.tour,items:[]}};groups[key].items.push(s)}});
+  restSuggestions=Object.values(groups).map(g=>buildRestSuggestion(g,toDay));
   document.getElementById('suggTitle').textContent=`${{DAY_LABELS[fromDay]}} fällt aus → ${{DAY_LABELS[toDay]}}`;
-  document.getElementById('suggSub').textContent=`${{src.length}} Kunden · Vorschläge verändern noch nichts. Farben zeigen weiterhin den Herkunftstag.`;
+  const tcrit=src.filter(x=>x.a.Zeitkritisch).length;
+  document.getElementById('suggSub').textContent=`${{src.length}} Kunden · Startbereich bleibt zwingend gleich · ${{tcrit}} Kunden mit Zeit-Hinweis · schlechte/unklare Treffer werden als Resttour vorgeschlagen.`;
   renderSuggestions();box.classList.add('show');
+}}
+function restCompactness(items){{
+  const pts=items.map(s=>s.a).filter(a=>Number.isFinite(a.lat)&&Number.isFinite(a.lon));
+  if(pts.length<2)return {{key:'unknown',label:pts.length?'Einzelkunde':'Geo unbekannt',avg:NaN,max:NaN}};
+  const clat=pts.reduce((z,a)=>z+a.lat,0)/pts.length,clon=pts.reduce((z,a)=>z+a.lon,0)/pts.length;
+  const ds=pts.map(a=>dist(a,{{lat:clat,lon:clon}})).filter(Number.isFinite);
+  const avg=ds.reduce((x,y)=>x+y,0)/ds.length,max=Math.max(...ds);
+  if(avg<=25&&max<=50)return {{key:'good',label:'Resttour kompakt',avg,max}};
+  if(avg<=40&&max<=75)return {{key:'ok',label:'Resttour brauchbar',avg,max}};
+  if(avg<=60&&max<=105)return {{key:'warn',label:'Resttour weit gestreut',avg,max}};
+  return {{key:'bad',label:'Resttour sehr weit gestreut',avg,max}};
+}}
+function buildRestSuggestion(g,toDay){{
+  const compact=restCompactness(g.items),starts=startsForTour(g.originalTour),timeCount=g.items.filter(s=>s.a.Zeitkritisch).length;
+  let base='REST-'+String(g.originalTour),name=base,n=2;
+  while(routes.some(r=>r.day===toDay&&r.source===g.source&&String(r.tour)===name))name=base+'-'+(n++);
+  return {{...g,toDay,name,compact,normalStart:starts.join(' / '),timeCount}};
 }}
 function suggestionRow(sg){{
   const a=sg.a,b=sg.best;
   if(!b)return `<div class="suggrow"><div class="suggcust"><b>${{a.SAP}} · ${{esc(a.Name)}}</b><span>${{esc(a.Strasse||'')}} · ${{esc(a.Ort)}}</span></div><div class="suggnew">Keine Ziel-Tour im passenden Bereich</div><div class="suggalt">Neue Tour anlegen oder Bereichsfilter lockern.</div><div></div></div>`;
   const f=b.f,newRecommended=(f.key==='bad'||f.key==='unknown');
   const target=newRecommended?`<span class="suggnew">Eher neue Tour sinnvoll</span><div class="suggalt">Nächste bestehende: Tour ${{esc(b.r.tour)}} · ${{esc(b.r.source.replace('HUPA_','HUPA '))}}</div>`:`<div class="suggtarget">${{DAY_LABELS[b.r.day]}} · Tour ${{esc(b.r.tour)}}</div><div class="suggalt">${{esc(b.r.source.replace('HUPA_','HUPA '))}}</div>`;
-  const geo=`<span class="fit ${{f.key}}">${{esc(f.label)}}</span> ${{Number.isFinite(f.nearest)?`<span class="suggalt">nächster Kunde ${{fmt(f.nearest)}} km</span>`:''}} ${{f.dupe?'<span class="flag dupe">bereits Zieltag</span>':''}}`;
+  const st=b.r.normalStart||startLabel(b.r.tour);
+  const tinfo=a.Zeitkritisch?`<span class="flag time" title="${{esc(timeInfo(a))}}">Zeitinfo prüfen</span>`:'';
+  const geo=`<span class="fit ${{f.key}}">${{esc(f.label)}}</span> ${{Number.isFinite(f.nearest)?`<span class="suggalt">nächster Kunde ${{fmt(f.nearest)}} km</span>`:''}} ${{f.dupe?'<span class="flag dupe">bereits Zieltag</span>':''}} ${{tinfo}}${{st?`<div class="suggalt">Normalstart Ziel-Tour: ${{esc(st)}}</div>`:''}}`;
   const alts=sg.alts.length?'Alternativen: '+sg.alts.map(x=>`${{esc(x.r.tour)}} (${{esc(x.f.label)}})`).join(' · '):'Keine weitere sinnvolle Tour';
   const btn=`<button class="btn ${{newRecommended?'':'primary'}}" type="button" data-apply-sugg="${{sg.aid}}">${{newRecommended?'Trotzdem in nächste Tour':'Übernehmen'}}</button>`;
-  return `<div class="suggrow"><div class="suggcust"><b>${{a.SAP}} · ${{esc(a.Name)}}</b><span>${{esc(a.Strasse||'')}} · ${{esc(a.Ort)}} · aus Tour ${{esc(sg.from.tour)}}</span></div><div>${{target}}</div><div>${{geo}}<div class="suggalt">${{alts}}</div></div><div>${{btn}}</div></div>`;
+  return `<div class="suggrow"><div class="suggcust"><b>${{a.SAP}} · ${{esc(a.Name)}}</b><span>${{esc(a.Strasse||'')}} · ${{esc(a.Ort)}} · aus Tour ${{esc(sg.from.tour)}}${{a.Zeitkritisch?' · ⚠ Zeit-Hinweis':''}}</span></div><div>${{target}}</div><div>${{geo}}<div class="suggalt">${{alts}}</div></div><div>${{btn}}</div></div>`;
 }}
 function renderSuggestions(){{
-  document.getElementById('suggBody').innerHTML=suggestions.length?suggestions.map(suggestionRow).join(''):'<div class="empty">Keine Kunden am gewählten Ausfalltag.</div>';
+  const customerRows=suggestions.length?suggestions.map(suggestionRow).join(''):'<div class="empty">Keine Kunden am gewählten Ausfalltag.</div>';
+  const restRows=restSuggestions.length?`<div class="resthead">Vorgeschlagene neue Resttouren</div>${{restSuggestions.map(restSuggestionRow).join('')}}`:'';
+  document.getElementById('suggBody').innerHTML=customerRows+restRows;
   document.querySelectorAll('[data-apply-sugg]').forEach(b=>b.addEventListener('click',()=>applySuggestion(b.dataset.applySugg)));
+  document.querySelectorAll('[data-apply-rest]').forEach(b=>b.addEventListener('click',()=>applyRestSuggestion(Number(b.dataset.applyRest))));
+}}
+function restSuggestionRow(g,i){{
+  const start=g.normalStart?`Normalstart Ursprungstour: ${{esc(g.normalStart)}}`:'Normalstart Ursprungstour unbekannt';
+  const time=g.timeCount?`<span class="flag time">${{g.timeCount}} Zeit-Hinweis${{g.timeCount===1?'':'e'}}</span>`:'';
+  const places=g.items.slice(0,4).map(s=>esc(s.a.Ort)).join(' · ')+(g.items.length>4?' …':'');
+  const geo=`<span class="fit ${{g.compact.key}}">${{esc(g.compact.label)}}</span>${{Number.isFinite(g.compact.avg)?` <span class="restmeta">Ø Zentrum ${{fmt(g.compact.avg)}} km</span>`:''}}`;
+  return `<div class="restrow"><div><b>${{esc(g.name)}}</b> · ${{esc(g.source.replace('HUPA_','HUPA '))}}<div class="restmeta">aus Tour ${{esc(g.originalTour)}} · ${{g.items.length}} Kunden · ${{places}}</div></div><div>${{geo}}<div class="restmeta">${{start}}</div></div><div>${{time}}<div class="restmeta">Startbereich bleibt ${{esc(g.source.replace('HUPA_','HUPA '))}}. Kunden mit Lieferinfo vor Übernahme prüfen.</div></div><div><button class="btn primary" type="button" data-apply-rest="${{i}}">Resttour anlegen</button></div></div>`;
+}}
+function applyRestSuggestion(index){{
+  const g=restSuggestions[index];if(!g)return;
+  const id=routeId(g.toDay,g.source,g.name);
+  if(routes.some(r=>r.id===id)){{alert('Diese Resttour existiert bereits.');return}}
+  const r={{id,day:g.toDay,source:g.source,tour:g.name,items:[],originalCount:0,manuallyCreated:true,normalStart:g.normalStart,generatedRest:true}};
+  routes.push(r);
+  g.items.forEach(s=>{{const found=removeFromCurrent(s.aid);if(found){{r.items.push(found.a);found.a.currentDay=r.day;found.a.currentTour=r.tour}}}});
+  routes.sort(daySort);
+  suggestions=suggestions.filter(s=>!g.items.some(x=>x.aid===s.aid));
+  restSuggestions=restSuggestions.filter((_,i)=>i!==index);
+  renderAll();renderSuggestions();
 }}
 function applySuggestion(aid){{
   const sg=suggestions.find(x=>x.aid===aid);if(!sg?.best)return;
   moveAid(aid,sg.best.r.id,null);
-  suggestions=suggestions.filter(x=>x.aid!==aid);renderSuggestions();
+  suggestions=suggestions.filter(x=>x.aid!==aid);
+  restSuggestions=restSuggestions.map(g=>({{...g,items:g.items.filter(x=>x.aid!==aid)}})).filter(g=>g.items.length);
+  renderSuggestions();
 }}
 function applyGoodSuggestions(){{
   const todo=suggestions.filter(s=>s.best&&!s.best.f.dupe&&(s.best.f.key==='good'||s.best.f.key==='ok')).map(s=>({{aid:s.aid,rid:s.best.r.id}}));
@@ -568,6 +683,8 @@ function showMove(a,r){{
   if(Number.isFinite(f.nearest))text+=` → nächster Kunde ${{f.nearName}}: ${{fmt(f.nearest)}} km; Abstand zum Tourzentrum ${{fmt(f.centroid)}} km.`;
   if(a.originalDay!==r.day)text+=` Liefertag geändert von ${{DAY_LABELS[a.originalDay]}} auf ${{DAY_LABELS[r.day]}}.`;
   if(f.dupe)text+=' Achtung: Dieser SAP-Kunde ist an dem neuen Tag bereits mit einer weiteren Lieferung vorhanden.';
+  if(f.startMismatch)text+=` Achtung: Startbereich passt nicht. Kunde gehört zu ${{a.Quelle.replace('HUPA_','HUPA ')}}, Ziel-Tour startet aus ${{r.source.replace('HUPA_','HUPA ')}}.`;
+  if(a.Zeitkritisch&&timeInfo(a))text+=` Lieferinfo: ${{timeInfo(a)}}`;
   document.getElementById('drawerText').textContent=text;
   clearTimeout(window.__drawerTimer);window.__drawerTimer=setTimeout(()=>d.className='drawer',7000);
 }}
@@ -585,7 +702,7 @@ function renderMetrics(){{
 
 function renderChanges(){{
   const rows=[];
-  routes.forEach(r=>r.items.forEach(a=>{{if(a.originalRouteId!==r.id){{const f=fitFor(a,r);const notes=[];if(a.originalDay!==r.day)notes.push('Tag geändert');if(f.dupe)notes.push('bereits Lieferung am Zieltag');rows.push([a.SAP,a.Name,`${{DAY_LABELS[a.originalDay]}} / ${{a.originalTour}}`,`${{DAY_LABELS[r.day]}} / ${{r.tour}}`,f.label,f.nearName,Number.isFinite(f.nearest)?fmt(f.nearest)+' km':'–',notes.join(', ')])}}}}));
+  routes.forEach(r=>r.items.forEach(a=>{{if(a.originalRouteId!==r.id){{const f=fitFor(a,r);const notes=[];if(a.originalDay!==r.day)notes.push('Tag geändert');if(f.dupe)notes.push('bereits Lieferung am Zieltag');if(f.startMismatch)notes.push('falscher Startbereich');if(a.Zeitkritisch)notes.push('Zeitinfo prüfen');rows.push([a.SAP,a.Name,`${{DAY_LABELS[a.originalDay]}} / ${{a.originalTour}}`,`${{DAY_LABELS[r.day]}} / ${{r.tour}}`,f.label,f.nearName,Number.isFinite(f.nearest)?fmt(f.nearest)+' km':'–',notes.join(', ')])}}}}));
   unplanned.forEach(a=>rows.push([a.SAP,a.Name,`${{DAY_LABELS[a.originalDay]}} / ${{a.originalTour}}`,'AUSGEPLANT','–','–','–','ausgeplant']));
   document.getElementById('changeBody').innerHTML=rows.length?rows.map(r=>`<tr>${{r.map(v=>`<td>${{esc(v)}}</td>`).join('')}}</tr>`).join(''):'<tr><td colspan="8" style="color:#888">Noch keine Änderungen.</td></tr>';
 }}
@@ -594,9 +711,9 @@ function renderAll(){{saveDayScroll();renderWeek();renderUnplanned();renderMetri
 
 function csvCell(v){{const s=String(v??'');const q=s.includes(';')||s.includes('\"')||s.includes(String.fromCharCode(10))||s.includes(String.fromCharCode(13));return q?'\"'+s.replace(/\"/g,'\"\"')+'\"':s}}
 function downloadCSV(){{
-  const rows=[['Status','Originaltag','Originaltour','Neuer Tag','Neue Tour','Bereich','Pos','CSB','SAP','Name','PLZ','Ort','Straße','Bewertung','Nächster Kunde','Distanz km','Tourzentrum km','Hinweis']];
-  routes.forEach(r=>r.items.forEach((a,i)=>{{const moved=a.originalRouteId!==r.id,f=moved?fitFor(a,r):null,notes=[];if(moved&&a.originalDay!==r.day)notes.push('Tag geändert');if(f?.dupe)notes.push('bereits Lieferung am Zieltag');rows.push([moved?'verschoben':'unverändert',DAY_LABELS[a.originalDay],a.originalTour,DAY_LABELS[r.day],r.tour,a.Quelle,i+1,a.CSB??'',a.SAP??'',a.Name,a.Plz,a.Ort,a.Strasse||'',f?.label||'',f?.nearName||'',Number.isFinite(f?.nearest)?f.nearest.toFixed(1):'',Number.isFinite(f?.centroid)?f.centroid.toFixed(1):'',notes.join(', ')])}}));
-  unplanned.forEach(a=>rows.push(['ausgeplant',DAY_LABELS[a.originalDay],a.originalTour,'AUSGEPLANT','',a.Quelle,'',a.CSB??'',a.SAP??'',a.Name,a.Plz,a.Ort,a.Strasse||'','','','','','']));
+  const rows=[['Status','Originaltag','Originaltour','Neuer Tag','Neue Tour','Startbereich','Normalstart neue Tour','Pos','CSB','SAP','Name','PLZ','Ort','Straße','Lieferinfo','Zeitkritisch','Bewertung','Nächster Kunde','Distanz km','Tourzentrum km','Hinweis']];
+  routes.forEach(r=>r.items.forEach((a,i)=>{{const moved=a.originalRouteId!==r.id,f=moved?fitFor(a,r):null,notes=[];if(moved&&a.originalDay!==r.day)notes.push('Tag geändert');if(f?.dupe)notes.push('bereits Lieferung am Zieltag');if(f?.startMismatch)notes.push('falscher Startbereich');if(a.Zeitkritisch)notes.push('Zeitinfo prüfen');rows.push([moved?'verschoben':'unverändert',DAY_LABELS[a.originalDay],a.originalTour,DAY_LABELS[r.day],r.tour,a.Quelle,r.normalStart||startLabel(r.tour),i+1,a.CSB??'',a.SAP??'',a.Name,a.Plz,a.Ort,a.Strasse||'',a.Lieferinfo||'',a.Zeitkritisch?'ja':'nein',f?.label||'',f?.nearName||'',Number.isFinite(f?.nearest)?f.nearest.toFixed(1):'',Number.isFinite(f?.centroid)?f.centroid.toFixed(1):'',notes.join(', ')])}}));
+  unplanned.forEach(a=>rows.push(['ausgeplant',DAY_LABELS[a.originalDay],a.originalTour,'AUSGEPLANT','',a.Quelle,'','',a.CSB??'',a.SAP??'',a.Name,a.Plz,a.Ort,a.Strasse||'',a.Lieferinfo||'',a.Zeitkritisch?'ja':'nein','','','','','']));
   const blob=new Blob(['\ufeff'+rows.map(r=>r.map(csvCell).join(';')).join(String.fromCharCode(13,10))],{{type:'text/csv;charset=utf-8'}}),link=document.createElement('a');
   link.href=URL.createObjectURL(blob);link.download='Feiertags_Wochenplanung.csv';link.click();URL.revokeObjectURL(link.href);
 }}
@@ -609,7 +726,7 @@ initControls();buildOriginalPlan();
 def main():
     import streamlit as st
 
-    st.set_page_config(page_title="Feiertags-Wochenplaner V6 – HTML Generator", page_icon="📅", layout="wide")
+    st.set_page_config(page_title="Feiertags-Wochenplaner V7 – HTML Generator", page_icon="📅", layout="wide")
     st.markdown(
         """
         <style>
@@ -620,58 +737,63 @@ def main():
         unsafe_allow_html=True,
     )
 
-    st.title("Feiertags-Wochenplaner V6 – HTML Generator")
-    st.caption("Aktuelle Excel hochladen → Wochenmatrix erzeugen → Tagesfarben bleiben beim Verschieben erhalten → Geo-Bewertung direkt in der Kachel → Ausfalltag/Zieltag wählen und sinnvolle Ziel-Touren vorschlagen lassen.")
+    st.title("Feiertags-Wochenplaner V7 – HTML Generator")
+    st.caption("Excel + Normal_Tourenstart.csv + Kisoft_Kunden.csv hochladen → HTML erzeugen. Vorschläge bleiben im gleichen Startbereich, berücksichtigen Geo und markieren zeitkritische Lieferinfos. Restkunden können als neue Tour am Zieltag vorgeschlagen werden.")
 
-    upload = st.file_uploader("Aktuelle Quelldatei (.xlsx)", type=["xlsx"])
-    if upload is None:
-        st.info("Benötigte Blätter: DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        upload = st.file_uploader("Aktuelle Quelldatei (.xlsx)", type=["xlsx"])
+    with c2:
+        starts_upload = st.file_uploader("Normal_Tourenstart.csv", type=["csv"])
+    with c3:
+        info_upload = st.file_uploader("Kisoft_Kunden.csv", type=["csv"])
+
+    if upload is None or starts_upload is None or info_upload is None:
+        st.info("Für V7 bitte alle drei aktuellen Dateien hochladen. Benötigte Excel-Blätter: DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
         return
 
-    raw = upload.getvalue()
     try:
-        with st.spinner("Quelldatei wird gelesen und PLZ werden geografisch ergänzt …"):
-            df = read_source(raw)
+        with st.spinner("Dateien werden zusammengeführt und PLZ geografisch ergänzt …"):
+            df = read_source(upload.getvalue())
+            kisoft = read_kisoft(info_upload.getvalue())
+            df = enrich_customer_info(df, kisoft)
             geo = enrich_geo(df)
+            tour_starts = read_tour_starts(starts_upload.getvalue())
             payload = make_payload(geo)
-            html = build_html(payload, upload.name)
+            html = build_html(payload, tour_starts, upload.name, info_upload.name, starts_upload.name)
     except Exception as exc:
         st.error(f"Fehler: {exc}")
         return
 
     deliveries = sum(int(geo[d].notna().sum()) for d in DAY_COLUMNS)
     missing_geo = int(geo[["lat", "lon"]].isna().any(axis=1).sum())
-    c1,c2,c3 = st.columns(3)
+    time_info = int(geo["Zeitkritisch"].sum())
+    c1,c2,c3,c4 = st.columns(4)
     c1.metric("Kundenstammsätze", f"{len(geo):,}".replace(",", "."))
     c2.metric("Wochen-Lieferungen", f"{deliveries:,}".replace(",", "."))
-    c3.metric("ohne Geo-Koordinate", missing_geo)
+    c3.metric("mit Zeit-Hinweis", time_info)
+    c4.metric("ohne Geo-Koordinate", missing_geo)
 
-    st.success("HTML wurde erzeugt. Die Kundenkacheln bleiben kompakt; Herkunftstag-Farbe und Geo-Bewertung werden bei Verschiebungen sichtbar, alle Detaildaten bleiben intern erhalten.")
+    st.success("HTML wurde erzeugt. Startbereich, Normalstart und Kunden-Lieferinfo sind eingebettet und funktionieren danach ohne Streamlit weiter.")
     st.download_button(
         "Feiertags_Wochenplaner.html herunterladen",
         data=html.encode("utf-8"),
-        file_name="Feiertags_Wochenplaner_V6.html",
+        file_name="Feiertags_Wochenplaner_V7.html",
         mime="text/html",
         use_container_width=True,
     )
 
     st.markdown(
         """
-        **In der HTML:**
-        - komplette Woche Montag–Samstag gleichzeitig
-        - bestehende Touren bleiben unverändert
-        - Kundenkachel zeigt **SAP, Straße, Name und Ort**; nach dem Verschieben zusätzlich die **Geo-Bewertung**
-        - jeder Wochentag hat eine eigene Farbe; die Kachel behält beim Verschieben immer die Farbe des Herkunftstags
-        - Ausfalltag und Zieltag wählen, z. B. **Samstag fällt aus → auf Freitag**
-        - Vorschlagsliste mit bester Ziel-Tour, Alternativen, Entfernung und Hinweis **„eher neue Tour sinnvoll“** bei schlechten Treffern
-        - CSB, PLZ, Quelle, Originaltag/-tour und Geo-/Bewertungsdaten bleiben intern erhalten
-        - **jeder Tag hat seine eigene Scrollleiste**
-        - pro Tag über **+ Tour** neue Touren anlegen (auch z. B. FT-01)
-        - Kunden zwischen Touren **und zwischen Tagen** per Drag & Drop verschieben
-        - sofortige Bewertung der geografischen Passung
-        - Warnung, wenn derselbe SAP-Kunde am Zieltag bereits eine Lieferung hat
-        - Kunden ausplanen und später wieder einsetzen
-        - Änderungstabelle + CSV-Export
+        **Neu in V7:**
+        - Feiertagsvorschläge bleiben **zwingend im gleichen Startbereich** (`DIREKT`, `MK`, `HUPA NMS`, `HUPA MALCHOW`)
+        - manuelle Verschiebung in einen anderen Startbereich bleibt möglich, wird aber **rot gewarnt**
+        - `Kisoft_Kunden.csv` wird über SAP verknüpft; zeitbezogene `Lieferinfo` wird als **Zeitinfo prüfen** markiert
+        - die vollständige Lieferinfo erscheint beim Verschieben/Vorschlag und bleibt im CSV-Export erhalten
+        - `Normal_Tourenstart.csv` ergänzt die normale Startzeit bestehender Touren
+        - Kunden ohne guten/vertretbaren Treffer in einer bestehenden Ziel-Tour werden nach **Ursprungstour + Startbereich** als **Resttour am Zieltag** vorgeschlagen
+        - Resttouren werden **nicht automatisch** angelegt; du bestätigst jede einzelne
+        - bei Resttouren wird Geo-Kompaktheit, Kundenanzahl, Startzeit der Ursprungstour und Anzahl zeitkritischer Kunden angezeigt
         """
     )
 

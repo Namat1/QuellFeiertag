@@ -1,4 +1,5 @@
-streamlit>=1.40
+streamlit>=1.38
 pandas>=2.0
 openpyxl>=3.1
-pgeocode>=0.5.0
+pgeocode>=0.5
+numpy>=1.24

@@ -1,0 +1,8 @@
+streamlit>=1.45
+pandas>=2.2
+numpy>=1.26
+openpyxl>=3.1
+xlsxwriter>=3.2
+pydeck>=0.9
+pgeocode>=0.5.0
+streamlit-sortables>=0.3.1

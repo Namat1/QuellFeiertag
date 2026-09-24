@@ -120,7 +120,7 @@ def build_html(customers: list[dict], source_name: str) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Feiertags-Wochenplaner</title>
+<title>Feiertags-Wochenplaner V5</title>
 <style>
 :root{{--bg:#f3f4f6;--surface:#fff;--surface2:#f8f9fb;--ink:#22242a;--muted:#727680;--line:#dfe1e6;--line2:#eceef2;--accent:#6f54a6;--accent-soft:#eeeaf7;--good:#247348;--good-bg:#e8f5ed;--ok:#5e6f32;--ok-bg:#eff4df;--warn:#946200;--warn-bg:#fff3d2;--bad:#a03b3b;--bad-bg:#fde9e9;--blue:#46627d;--blue-bg:#eaf0f5}}
 *{{box-sizing:border-box}}
@@ -158,15 +158,24 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 .unplanned-title{{font-weight:850;color:#844}}
 .unplanned-drop{{min-height:45px;padding:5px;display:flex;gap:5px;flex-wrap:wrap;align-items:flex-start}}
 .weekwrap{{overflow-x:auto;padding-bottom:8px}}
-.week{{display:grid;grid-template-columns:repeat(6,minmax(250px,1fr));gap:7px;min-width:1540px;align-items:start}}
-.daycol{{min-width:0}}
-.dayhead{{position:sticky;top:118px;z-index:20;background:#373941;color:white;border-radius:9px 9px 0 0;padding:8px 9px;display:flex;justify-content:space-between;align-items:center;border:1px solid #373941}}
+.week{{display:grid;grid-template-columns:repeat(6,minmax(270px,1fr));gap:7px;min-width:1660px;align-items:stretch}}
+.daycol{{min-width:0;height:calc(100vh - 285px);min-height:470px;display:flex;flex-direction:column}}
+.dayhead{{background:#373941;color:white;border-radius:9px 9px 0 0;padding:8px 9px;display:flex;justify-content:space-between;align-items:center;gap:7px;border:1px solid #373941;flex:0 0 auto}}
+.dayhead-main{{min-width:0}}
 .dayname{{font-size:14px;font-weight:850}}
 .daymeta{{font-size:10px;opacity:.78}}
-.daybody{{background:#e9eaed;border:1px solid #d8dadd;border-top:0;border-radius:0 0 9px 9px;padding:5px;min-height:180px}}
+.addtour{{border:1px solid rgba(255,255,255,.3);background:rgba(255,255,255,.10);color:#fff;border-radius:7px;padding:5px 7px;font-size:10px;font-weight:850;white-space:nowrap}}
+.addtour:hover{{background:rgba(255,255,255,.19)}}
+.daybody{{background:#e9eaed;border:1px solid #d8dadd;border-top:0;border-radius:0 0 9px 9px;padding:5px;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;flex:1}}
+.daybody::-webkit-scrollbar{{width:9px}}
+.daybody::-webkit-scrollbar-track{{background:#e2e3e6}}
+.daybody::-webkit-scrollbar-thumb{{background:#b7bac1;border-radius:999px;border:2px solid #e2e3e6}}
 .route{{background:#fff;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;overflow:hidden}}
 .route.changed{{box-shadow:0 0 0 2px rgba(111,84,166,.16)}}
 .routehead{{padding:6px 7px;background:#fafafa;border-bottom:1px solid var(--line2);display:flex;align-items:center;justify-content:space-between;gap:5px}}
+.route-right{{display:flex;align-items:center;gap:4px}}
+.route-delete{{border:0;background:transparent;color:#a2a4aa;border-radius:5px;padding:2px 5px;font-weight:900;font-size:13px;line-height:1}}
+.route-delete:hover{{background:var(--bad-bg);color:var(--bad)}}
 .rleft{{min-width:0}}
 .rtitle{{font-weight:850;font-size:12px;display:flex;gap:5px;align-items:center;min-width:0}}
 .source{{font-size:8px;font-weight:850;color:#62656d;background:#e9e9ec;border-radius:999px;padding:2px 5px;white-space:nowrap}}
@@ -198,6 +207,17 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 .remove:hover{{color:var(--bad);background:var(--bad-bg)}}
 .empty{{color:#a0a2a8;font-size:9px;text-align:center;padding:7px 4px}}
 .drawer{{position:fixed;right:16px;bottom:16px;z-index:100;max-width:430px;background:#fff;border:1px solid var(--line);border-left:5px solid var(--accent);border-radius:10px;padding:10px 12px;box-shadow:0 12px 35px rgba(0,0,0,.15);display:none}}
+.modalback{{position:fixed;inset:0;z-index:150;background:rgba(28,30,35,.44);display:none;align-items:center;justify-content:center;padding:20px}}
+.modalback.show{{display:flex}}
+.modal{{width:min(420px,100%);background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 55px rgba(0,0,0,.22);padding:14px}}
+.modal h2{{font-size:16px;margin:0 0 3px}}
+.modal .hint{{font-size:10px;color:var(--muted);margin-bottom:12px}}
+.formrow{{display:grid;grid-template-columns:1fr 1fr;gap:8px}}
+.field label{{display:block;font-size:9px;font-weight:850;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}}
+.field input,.field select{{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;outline:none}}
+.field input:focus,.field select:focus{{border-color:#9e8ac9;box-shadow:0 0 0 3px var(--accent-soft)}}
+.modalactions{{display:flex;justify-content:flex-end;gap:6px;margin-top:12px}}
+.modalerror{{min-height:16px;margin-top:6px;color:var(--bad);font-size:10px;font-weight:750}}
 .drawer.show{{display:block}}
 .drawer.good{{border-left-color:var(--good)}}.drawer.ok{{border-left-color:var(--ok)}}.drawer.warn{{border-left-color:var(--warn)}}.drawer.bad{{border-left-color:var(--bad)}}
 .drawer h3{{margin:0 0 3px;font-size:13px}}.drawer p{{margin:0;color:var(--muted);font-size:10px}}
@@ -206,14 +226,14 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 .changetable{{width:100%;border-collapse:collapse;font-size:10px}}
 .changetable th,.changetable td{{padding:6px 7px;text-align:left;border-bottom:1px solid var(--line2);white-space:nowrap}}
 .changetable th{{background:#fafafa;color:#666}}
-@media(max-width:900px){{.controls{{grid-template-columns:1fr}}.metrics{{grid-template-columns:repeat(2,1fr)}}.dayhead{{top:186px}}}}
-@media print{{.top,.notice,.metrics,.unplanned,.changes,.remove,.drawer{{display:none!important}}main{{padding:0}}.weekwrap{{overflow:visible}}.week{{min-width:0;grid-template-columns:repeat(3,1fr);gap:4px}}.dayhead{{position:static;background:#333!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}.cust{{break-inside:avoid}}}}
+@media(max-width:900px){{.controls{{grid-template-columns:1fr}}.metrics{{grid-template-columns:repeat(2,1fr)}}.daycol{{height:calc(100vh - 365px);min-height:430px}}}}
+@media print{{.top,.notice,.metrics,.unplanned,.changes,.remove,.drawer,.addtour,.route-delete,.modalback{{display:none!important}}main{{padding:0}}.weekwrap{{overflow:visible}}.week{{min-width:0;grid-template-columns:repeat(3,1fr);gap:4px}}.daycol{{height:auto;min-height:0}}.daybody{{overflow:visible}}.dayhead{{background:#333!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}.cust{{break-inside:avoid}}}}
 </style>
 </head>
 <body>
 <div class="top"><div class="topin">
   <div class="headrow">
-    <div><h1>Feiertags-Wochenplaner</h1><div class="sub">Komplette Woche gleichzeitig · vorhandene Touren bleiben unverändert · Änderungen nur per Drag & Drop</div></div>
+    <div><h1>Feiertags-Wochenplaner</h1><div class="sub">Komplette Woche gleichzeitig · jeder Tag separat scrollbar · neue Touren frei anlegen</div></div>
     <div class="filepill">{src} · erzeugt {generated}</div>
   </div>
   <div class="controls">
@@ -223,7 +243,7 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
   </div>
 </div></div>
 <main>
-  <div class="notice"><b>So arbeitet die Planung:</b> Montag bis Samstag stehen gleichzeitig nebeneinander. Ziehe einen Kunden in eine andere Tour – auch an einen anderen Tag. Danach siehst du direkt, ob er geografisch zur Ziel-Tour passt. Die App plant nichts automatisch um.</div>
+  <div class="notice"><b>So arbeitet die Planung:</b> Montag bis Samstag stehen gleichzeitig nebeneinander und jeder Tag scrollt für sich. Bestehende Touren bleiben unverändert. Über <b>+ Tour</b> kannst du pro Tag neue leere Touren anlegen und Kunden hineinziehen.</div>
   <div class="metrics">
     <div class="metric"><div class="v" id="mDeliveries">0</div><div class="k">Lieferungen in der Woche</div></div>
     <div class="metric"><div class="v" id="mRoutes">0</div><div class="k">Touren gesamt</div></div>
@@ -245,6 +265,7 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
   </section>
 </main>
 <div id="drawer" class="drawer"><h3 id="drawerTitle"></h3><p id="drawerText"></p></div>
+<div id="tourModal" class="modalback" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="newTourTitle"><h2 id="newTourTitle">Neue Tour anlegen</h2><div class="hint" id="newTourHint"></div><div class="formrow"><div class="field"><label for="newTourNo">Tournummer / Name</label><input id="newTourNo" autocomplete="off" placeholder="z. B. 4055 oder FT-01"></div><div class="field"><label for="newTourSource">Bereich</label><select id="newTourSource"></select></div></div><div id="newTourError" class="modalerror"></div><div class="modalactions"><button class="btn" id="cancelTourBtn">Abbrechen</button><button class="btn primary" id="createTourBtn">Tour anlegen</button></div></div></div>
 <script>
 const CUSTOMERS={data_json};
 const DAY_ORDER=['Mo','Die','Mitt','Don','Fr','Sam'];
@@ -255,6 +276,9 @@ let assignments=[];
 let unplanned=[];
 let searchText='';
 let dragAid=null;
+let dayScroll={{}};
+let newTourDay=null;
+let scrollToNewDay=null;
 
 function esc(v){{return String(v??'').replace(/[&<>"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]))}}
 function rad(x){{return x*Math.PI/180}}
@@ -264,7 +288,7 @@ function routeId(day,source,tour){{return day+'::'+source+'::'+String(tour)}}
 function activeSources(){{return SOURCES.filter(s=>document.getElementById('src_'+s)?.checked)}}
 function getRoute(id){{return routes.find(r=>r.id===id)}}
 function getAssignment(aid){{return assignments.find(a=>a.aid===aid)}}
-function daySort(a,b){{return DAY_ORDER.indexOf(a.day)-DAY_ORDER.indexOf(b.day)||Number(a.tour)-Number(b.tour)||a.source.localeCompare(b.source)}}
+function daySort(a,b){{const dd=DAY_ORDER.indexOf(a.day)-DAY_ORDER.indexOf(b.day);if(dd)return dd;const tt=String(a.tour).localeCompare(String(b.tour),'de',{{numeric:true,sensitivity:'base'}});return tt||a.source.localeCompare(b.source)}}
 
 function initControls(){{
   document.getElementById('sourceChips').innerHTML=SOURCES.map(s=>`<label class="chip"><input type="checkbox" id="src_${{s}}" checked> ${{esc(s.replace('HUPA_','HUPA '))}}</label>`).join('');
@@ -272,6 +296,11 @@ function initControls(){{
   document.getElementById('search').addEventListener('input',e=>{{searchText=e.target.value.trim().toLowerCase();renderAll()}});
   document.getElementById('resetBtn').addEventListener('click',()=>{{if(confirm('Alle manuellen Änderungen zurücksetzen?'))buildOriginalPlan()}});
   document.getElementById('csvBtn').addEventListener('click',downloadCSV);
+  document.getElementById('newTourSource').innerHTML=SOURCES.map(s=>`<option value="${{s}}">${{esc(s.replace('HUPA_','HUPA '))}}</option>`).join('');
+  document.getElementById('cancelTourBtn').addEventListener('click',closeNewTour);
+  document.getElementById('createTourBtn').addEventListener('click',createNewTour);
+  document.getElementById('tourModal').addEventListener('click',e=>{{if(e.target.id==='tourModal')closeNewTour()}});
+  document.getElementById('newTourNo').addEventListener('keydown',e=>{{if(e.key==='Enter')createNewTour();if(e.key==='Escape')closeNewTour()}});
 }}
 
 function buildOriginalPlan(){{
@@ -322,38 +351,81 @@ function fitFor(a,r){{
 function cardHtml(a,r){{
   const moved=a.originalRouteId!==r.id;
   const fit=moved?fitFor(a,r):null;
-  const dayChanged=moved&&a.originalDay!==r.day;
   const bad=fit?.key==='bad';
   const dupe=fit?.dupe;
   if(!matches(a,r))return '';
-  let extra='';
-  if(moved){{
-    extra=`<div class="orig">von ${{DAY_LABELS[a.originalDay]}} · Tour ${{esc(a.originalTour)}}</div><div class="fitrow"><span class="fit ${{fit.key}}">${{fit.label}}</span>${{Number.isFinite(fit.nearest)?`<span class="detail">${{fmt(fit.nearest)}} km zum nächsten · ${{fmt(fit.centroid)}} km zum Tourzentrum</span>`:''}}${{dayChanged?'<span class="flag">Tag geändert</span>':''}}${{dupe?'<span class="flag dupe">an diesem Tag bereits vorhanden</span>':''}}</div>`;
-  }}
-  return `<div class="cust ${{moved?'moved':''}} ${{bad?'badmove':''}} ${{dupe?'dupe':''}}" draggable="true" data-aid="${{a.aid}}"><div class="grip">⋮</div><div class="cmain"><div class="cname">${{a.SAP}} · ${{esc(a.Name)}}</div><div class="csub">${{esc(a.Plz)}} ${{esc(a.Ort)}} · ${{esc(a.Strasse||'')}}</div>${{extra}}</div><button class="remove" title="Ausplanen" data-remove="${{a.aid}}">×</button></div>`;
+  // Sichtbar bleiben nur SAP, Straße, Name und Ort. Alle weiteren Daten
+  // (CSB, PLZ, Quelle, Originaltag/-tour, Geo- und Bewertungsdaten) bleiben
+  // vollständig im Objekt a bzw. in der Routenlogik erhalten.
+  return `<div class="cust ${{moved?'moved':''}} ${{bad?'badmove':''}} ${{dupe?'dupe':''}}" draggable="true" data-aid="${{a.aid}}"><div class="grip">⋮</div><div class="cmain"><div class="cname">${{a.SAP}} · ${{esc(a.Strasse||'')}}</div><div class="csub"><strong>${{esc(a.Name)}}</strong> · ${{esc(a.Ort)}}</div></div><button class="remove" title="Ausplanen" data-remove="${{a.aid}}">×</button></div>`;
 }}
 
 function routeHtml(r){{
   if(!activeSources().includes(r.source))return '';
   const cards=r.items.map(a=>cardHtml(a,r)).join('');
-  if(searchText&&!cards)return '';
+  if(searchText&&!cards&&!r.manuallyCreated)return '';
   const d=r.items.length-r.originalCount;
-  return `<section class="route ${{routeChanged(r)?'changed':''}}" data-route="${{r.id}}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${{esc(r.tour)}} <span class="source">${{esc(r.source.replace('HUPA_','HUPA '))}}</span></div><div class="rmeta">${{r.items.length}} Kunden · ursprünglich ${{r.originalCount}}</div></div>${{d!==0?`<span class="delta">${{d>0?'+':''}}${{d}}</span>`:''}}</div><div class="dropzone" data-route="${{r.id}}">${{cards||'<div class="empty">Kunden hierher ziehen</div>'}}</div></section>`;
+  const meta=r.manuallyCreated?`${{r.items.length}} Kunden · neu angelegt`:`${{r.items.length}} Kunden · ursprünglich ${{r.originalCount}}`;
+  return `<section class="route ${{routeChanged(r)?'changed':''}}" data-route="${{r.id}}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${{esc(r.tour)}} <span class="source">${{esc(r.source.replace('HUPA_','HUPA '))}}</span></div><div class="rmeta">${{meta}}</div></div><div class="route-right">${{d!==0?`<span class="delta">${{d>0?'+':''}}${{d}}</span>`:''}}${{r.manuallyCreated?`<button class="route-delete" title="Neue Tour löschen" data-delete-route="${{r.id}}">×</button>`:''}}</div></div><div class="dropzone" data-route="${{r.id}}">${{cards||'<div class="empty">Kunden hierher ziehen</div>'}}</div></section>`;
 }}
 
 function renderWeek(){{
   const week=document.getElementById('week');
   week.innerHTML=DAY_ORDER.map(day=>{{
-    const rs=routes.filter(r=>r.day===day);
+    const rs=routes.filter(r=>r.day===day).sort(daySort);
     const active=rs.filter(r=>activeSources().includes(r.source));
     const total=active.reduce((n,r)=>n+r.items.length,0);
-    return `<div class="daycol"><div class="dayhead"><div class="dayname">${{DAY_LABELS[day]}}</div><div class="daymeta">${{active.length}} Touren · ${{total}} Kunden</div></div><div class="daybody" data-day="${{day}}">${{rs.map(routeHtml).join('')||'<div class="empty">Keine Touren</div>'}}</div></div>`;
+    return `<div class="daycol"><div class="dayhead"><div class="dayhead-main"><div class="dayname">${{DAY_LABELS[day]}}</div><div class="daymeta">${{active.length}} Touren · ${{total}} Kunden</div></div><button class="addtour" type="button" data-add-tour="${{day}}">+ Tour</button></div><div class="daybody" data-day="${{day}}">${{rs.map(routeHtml).join('')||'<div class="empty">Keine Touren</div>'}}</div></div>`;
   }}).join('');
+}}
+
+function saveDayScroll(){{
+  document.querySelectorAll('.daybody[data-day]').forEach(el=>dayScroll[el.dataset.day]=el.scrollTop);
+}}
+function restoreDayScroll(){{
+  document.querySelectorAll('.daybody[data-day]').forEach(el=>{{
+    if(scrollToNewDay===el.dataset.day)el.scrollTop=el.scrollHeight;
+    else el.scrollTop=dayScroll[el.dataset.day]||0;
+  }});
+  scrollToNewDay=null;
+}}
+function openNewTour(day){{
+  newTourDay=day;
+  document.getElementById('newTourHint').textContent=`${{DAY_LABELS[day]}} · die Tour wird leer angelegt und erscheint sofort in dieser Tages-Spalte.`;
+  document.getElementById('newTourNo').value='';
+  document.getElementById('newTourError').textContent='';
+  const firstActive=activeSources()[0]||SOURCES[0];
+  document.getElementById('newTourSource').value=firstActive;
+  const m=document.getElementById('tourModal');m.classList.add('show');m.setAttribute('aria-hidden','false');
+  setTimeout(()=>document.getElementById('newTourNo').focus(),0);
+}}
+function closeNewTour(){{
+  newTourDay=null;const m=document.getElementById('tourModal');m.classList.remove('show');m.setAttribute('aria-hidden','true');
+}}
+function createNewTour(){{
+  const tour=String(document.getElementById('newTourNo').value||'').trim();
+  const source=document.getElementById('newTourSource').value;
+  const err=document.getElementById('newTourError');
+  if(!newTourDay||!tour){{err.textContent='Bitte eine Tournummer oder einen Namen eingeben.';return}}
+  const id=routeId(newTourDay,source,tour);
+  if(getRoute(id)){{err.textContent='Diese Tour gibt es an diesem Tag in diesem Bereich bereits.';return}}
+  routes.push({{id,day:newTourDay,source,tour,items:[],originalCount:0,manuallyCreated:true}});
+  routes.sort(daySort);scrollToNewDay=newTourDay;closeNewTour();renderAll();
+}}
+function deleteNewRoute(id){{
+  const r=getRoute(id);if(!r||!r.manuallyCreated)return;
+  if(r.items.length&&!confirm(`Tour ${{r.tour}} löschen? Die ${{r.items.length}} enthaltenen Kunden werden nach AUSGEPLANT verschoben.`))return;
+  if(r.items.length)unplanned.push(...r.items);
+  routes=routes.filter(x=>x.id!==id);renderAll();
+}}
+function bindDayActions(){{
+  document.querySelectorAll('[data-add-tour]').forEach(b=>b.addEventListener('click',()=>openNewTour(b.dataset.addTour)));
+  document.querySelectorAll('[data-delete-route]').forEach(b=>b.addEventListener('click',e=>{{e.stopPropagation();deleteNewRoute(b.dataset.deleteRoute)}}));
 }}
 
 function renderUnplanned(){{
   const box=document.getElementById('unplannedDrop');
-  box.innerHTML=unplanned.filter(a=>activeSources().includes(a.Quelle)&&(!searchText||[a.SAP,a.CSB,a.Name,a.Ort,a.Plz,a.Strasse].some(v=>String(v??'').toLowerCase().includes(searchText)))).map(a=>`<div class="cust moved" draggable="true" data-aid="${{a.aid}}"><div class="grip">⋮</div><div class="cmain"><div class="cname">${{a.SAP}} · ${{esc(a.Name)}}</div><div class="csub">${{esc(a.Plz)}} ${{esc(a.Ort)}} · ursprünglich ${{DAY_LABELS[a.originalDay]}} / Tour ${{esc(a.originalTour)}}</div></div></div>`).join('')||'<div class="empty">Keine ausgeplanten Kunden</div>';
+  box.innerHTML=unplanned.filter(a=>activeSources().includes(a.Quelle)&&(!searchText||[a.SAP,a.CSB,a.Name,a.Ort,a.Plz,a.Strasse].some(v=>String(v??'').toLowerCase().includes(searchText)))).map(a=>`<div class="cust moved" draggable="true" data-aid="${{a.aid}}"><div class="grip">⋮</div><div class="cmain"><div class="cname">${{a.SAP}} · ${{esc(a.Strasse||'')}}</div><div class="csub"><strong>${{esc(a.Name)}}</strong> · ${{esc(a.Ort)}}</div></div></div>`).join('')||'<div class="empty">Keine ausgeplanten Kunden</div>';
 }}
 
 function removeFromCurrent(aid){{
@@ -419,7 +491,7 @@ function renderChanges(){{
   document.getElementById('changeBody').innerHTML=rows.length?rows.map(r=>`<tr>${{r.map(v=>`<td>${{esc(v)}}</td>`).join('')}}</tr>`).join(''):'<tr><td colspan="8" style="color:#888">Noch keine Änderungen.</td></tr>';
 }}
 
-function renderAll(){{renderWeek();renderUnplanned();renderMetrics();renderChanges();bindDnD()}}
+function renderAll(){{saveDayScroll();renderWeek();renderUnplanned();renderMetrics();renderChanges();bindDnD();bindDayActions();restoreDayScroll()}}
 
 function csvCell(v){{const s=String(v??'');const q=s.includes(';')||s.includes('\"')||s.includes(String.fromCharCode(10))||s.includes(String.fromCharCode(13));return q?'\"'+s.replace(/\"/g,'\"\"')+'\"':s}}
 function downloadCSV(){{
@@ -438,7 +510,7 @@ initControls();buildOriginalPlan();
 def main():
     import streamlit as st
 
-    st.set_page_config(page_title="Feiertags-Wochenplaner – HTML Generator", page_icon="📅", layout="wide")
+    st.set_page_config(page_title="Feiertags-Wochenplaner V5 – HTML Generator", page_icon="📅", layout="wide")
     st.markdown(
         """
         <style>
@@ -449,8 +521,8 @@ def main():
         unsafe_allow_html=True,
     )
 
-    st.title("Feiertags-Wochenplaner – HTML Generator")
-    st.caption("Aktuelle Excel hochladen → erste vier Blätter einlesen → komplette Wochenansicht als eigenständige HTML herunterladen.")
+    st.title("Feiertags-Wochenplaner V5 – HTML Generator")
+    st.caption("Aktuelle Excel hochladen → Wochenmatrix erzeugen → kompakte Kundenkacheln mit SAP, Straße, Name und Ort → alle Detaildaten bleiben für Berechnung und Export erhalten.")
 
     upload = st.file_uploader("Aktuelle Quelldatei (.xlsx)", type=["xlsx"])
     if upload is None:
@@ -475,11 +547,11 @@ def main():
     c2.metric("Wochen-Lieferungen", f"{deliveries:,}".replace(",", "."))
     c3.metric("ohne Geo-Koordinate", missing_geo)
 
-    st.success("HTML wurde erzeugt. Beim Öffnen bleiben alle bestehenden Touren Montag–Samstag zunächst genau erhalten.")
+    st.success("HTML wurde erzeugt. In den Kundenkacheln werden nur SAP, Straße, Name und Ort angezeigt; alle weiteren Daten bleiben intern erhalten.")
     st.download_button(
         "Feiertags_Wochenplaner.html herunterladen",
         data=html.encode("utf-8"),
-        file_name="Feiertags_Wochenplaner.html",
+        file_name="Feiertags_Wochenplaner_V5.html",
         mime="text/html",
         use_container_width=True,
     )
@@ -489,6 +561,10 @@ def main():
         **In der HTML:**
         - komplette Woche Montag–Samstag gleichzeitig
         - bestehende Touren bleiben unverändert
+        - Kundenkachel zeigt nur **SAP, Straße, Name und Ort**
+        - CSB, PLZ, Quelle, Originaltag/-tour und Geo-/Bewertungsdaten bleiben intern erhalten
+        - **jeder Tag hat seine eigene Scrollleiste**
+        - pro Tag über **+ Tour** neue Touren anlegen (auch z. B. FT-01)
         - Kunden zwischen Touren **und zwischen Tagen** per Drag & Drop verschieben
         - sofortige Bewertung der geografischen Passung
         - Warnung, wenn derselbe SAP-Kunde am Zieltag bereits eine Lieferung hat

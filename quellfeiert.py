@@ -244,7 +244,7 @@ def build_html(customers: list[dict], tour_starts: dict[str, list[str]], source_
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Feiertags-Wochenplaner V14</title>
+<title>Feiertags-Wochenplaner V15</title>
 <style>
 :root{{--bg:#f3f4f6;--surface:#fff;--surface2:#f8f9fb;--ink:#22242a;--muted:#727680;--line:#dfe1e6;--line2:#eceef2;--accent:#6f54a6;--accent-soft:#eeeaf7;--good:#247348;--good-bg:#e8f5ed;--ok:#5e6f32;--ok-bg:#eff4df;--warn:#946200;--warn-bg:#fff3d2;--bad:#a03b3b;--bad-bg:#fde9e9;--blue:#46627d;--blue-bg:#eaf0f5;--mo:#477258;--mo-bg:#e5f2e8;--die:#8a6518;--die-bg:#fff1cf;--mitt:#6f57a1;--mitt-bg:#eee8f7;--don:#a45e3a;--don-bg:#fde7dc;--fr:#8f5368;--fr-bg:#f6e6ed;--sam:#5e5f7f;--sam-bg:#e9e9f1}}
 *{{box-sizing:border-box}}
@@ -436,7 +436,7 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 <body>
 <div class="top"><div class="topin">
   <div class="headrow">
-    <div><h1>Feiertags-Wochenplaner</h1><div class="sub">Komplette Woche gleichzeitig · neue Touren visuell erkennen · Geo-Skizze ab Valluhn · Bestandsdoppelungen bleiben erlaubt</div></div>
+    <div><h1>Feiertags-Wochenplaner</h1><div class="sub">Komplette Woche gleichzeitig · Wochen-Referenzen aus anderen Tagen · neue Touren visuell erkennen · Geo-Skizze ab Valluhn</div></div>
     <div class="filepill">{src}{(" · " + aux) if aux else ""} · erzeugt {generated}</div>
   </div>
   <div class="controls">
@@ -453,7 +453,7 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
       <select id="fromDay"></select>
       <span class="arrow">→</span>
       <select id="toDay"></select>
-      <span class="chip"><b>Startbereich bleibt zwingend gleich</b></span>
+      <span class="chip"><b>Startbereich bleibt zwingend gleich</b></span><span class="chip"><b>Wochen-Referenzen aktiv</b></span>
       <button class="btn primary" id="suggestBtn" type="button">Vorschläge berechnen</button>
       <button class="btn dangerbtn" id="cancelOutageBtn" type="button">Zieltag bereits vorhanden → Ausfall-Lieferung streichen</button>
     </div>
@@ -466,7 +466,7 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
     <button class="btn" id="sequenceAllBtn" type="button">Geänderte Touren sortieren</button>
   </section>
   <section class="suggestions" id="suggestions"><div class="sugghead"><div><strong id="suggTitle">Vorschläge</strong><div class="sub" id="suggSub"></div></div><div class="actions"><button class="btn" id="applyVeryGoodBtn" type="button">Sehr gute übernehmen</button><button class="btn primary" id="applyGoodBtn" type="button">Sehr gut + gut übernehmen</button><button class="btn" id="applyRestAllBtn" type="button">Alle Resttouren anlegen</button><button class="btn" id="closeSuggBtn" type="button">Schließen</button></div></div><div class="suggbody" id="suggBody"></div></section>
-  <div class="notice"><b>Zeitlogik:</b> Der Normal-Tourstart aus der CSV ist der <b>Ladebeginn</b>. Es werden immer <b>60 Minuten Ladezeit</b> gerechnet; Beispiel: Start 03:00 → Laden 03:00–04:00 → Abfahrt 04:00. Lüttow‑Valluhn ist Ladefolge 0. Vorschläge bleiben im gleichen Startbereich, berücksichtigen Geo, Zeitrestriktionen und Tourgröße. <b>Bereits im Original vorhandene Doppelbelieferungen (z. B. Picnic) sind erlaubt; neue oder zusätzliche Doppelungen werden blockiert.</b></div>
+  <div class="notice"><b>Zeitlogik:</b> Der Normal-Tourstart aus der CSV ist der <b>Ladebeginn</b>. Es werden immer <b>60 Minuten Ladezeit</b> gerechnet; Beispiel: Start 03:00 → Laden 03:00–04:00 → Abfahrt 04:00. Lüttow‑Valluhn ist Ladefolge 0. Vorschläge bleiben im gleichen Startbereich, berücksichtigen Geo, Zeitrestriktionen, Tourgröße und passende Referenztouren aus allen Wochentagen. <b>Bereits im Original vorhandene Doppelbelieferungen (z. B. Picnic) sind erlaubt; neue oder zusätzliche Doppelungen werden blockiert.</b></div>
   <div class="metrics">
     <div class="metric"><div class="v" id="mDeliveries">0</div><div class="k">Lieferungen in der Woche</div></div>
     <div class="metric"><div class="v" id="mRoutes">0</div><div class="k">Touren gesamt</div></div>
@@ -558,7 +558,13 @@ function loadStartMinutes(r){{return routeStartMinutes(r)}}
 function departureMinutes(r){{return routeStartMinutes(r)+LOAD_MIN}}
 function routeClockInfo(r){{return hasRouteStart(r)?`Laden ${{formatMin(loadStartMinutes(r))}}–${{formatMin(departureMinutes(r))}} · Abfahrt ${{formatMin(departureMinutes(r))}}`:''}}
 function median(vals){{const a=vals.filter(Number.isFinite).sort((x,y)=>x-y);if(!a.length)return NaN;const m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}}
-function referenceTourSize(day,source){{const vals=routes.filter(r=>r.day===day&&r.source===source&&!r.manuallyCreated&&r.originalCount>0).map(r=>Number(r.originalCount));const med=median(vals);const typical=Number.isFinite(med)?Math.max(1,Math.round(med)):Math.min(maxCustomers,8);const soft=Math.min(maxCustomers,typical+AUTO_OVER);return {{typical,soft,count:vals.length}}}}
+function referenceTourSize(day,source){{
+  const dayVals=routes.filter(r=>r.day===day&&r.source===source&&!r.manuallyCreated&&r.originalCount>0).map(r=>Number(r.originalCount));
+  const weekVals=routes.filter(r=>r.source===source&&!r.manuallyCreated&&r.originalCount>0).map(r=>Number(r.originalCount));
+  const vals=weekVals.length?weekVals:dayVals,med=median(vals);
+  const typical=Number.isFinite(med)?Math.max(1,Math.round(med)):Math.min(maxCustomers,8),soft=Math.min(maxCustomers,typical+AUTO_OVER);
+  return {{typical,soft,count:vals.length,dayCount:dayVals.length,weekCount:weekVals.length}};
+}}
 function autoLimitForRoute(r){{return referenceTourSize(r.day,r.source).soft}}
 function autoCapacityFull(r){{return r.items.length>=autoLimitForRoute(r)}}
 function weekdayRelevant(text,day){{const t=String(text||'').toLowerCase(),map={{Mo:['montag','montags'],Die:['dienstag','dienstags'],Mitt:['mittwoch','mittwochs'],Don:['donnerstag','donnerstags'],Fr:['freitag','freitags'],Sam:['samstag','samstags']}};const all=Object.values(map).flat(),mentioned=all.some(w=>t.includes(w));return !mentioned||(map[day]||[]).some(w=>t.includes(w))}}
@@ -691,7 +697,8 @@ function routeHtml(r){{
   const start=r.normalStart||startLabel(r.tour);
   const cap=r.items.length>maxCustomers,tc=r.items.filter(a=>a._timeViolation).length;
   const ref=referenceTourSize(r.day,r.source),clock=routeClockInfo(r);
-  const meta=(r.manuallyCreated?`${{r.items.length}}/${{maxCustomers}} Kunden · neu angelegt`:`${{r.items.length}}/${{maxCustomers}} Kunden · ursprünglich ${{r.originalCount}}`)+` · Richtgröße ${{ref.typical}} · automatisch bis ${{ref.soft}}`+(clock?` · ${{clock}}`:(start?` · Ladebeginn ${{esc(start)}}`:''))+(r.sequenceCalculated?` · Reihenfolge ab Valluhn berechnet${{tc?` · ⚠ ${{tc}} Zeitkonflikt${{tc===1?'':'e'}}`:''}}`:'');
+  const refNote=r.referenceTour?` · Vorlage ${{DAY_LABELS[r.referenceDay]}} Tour ${{esc(r.referenceTour)}}`:'';
+  const meta=(r.manuallyCreated?`${{r.items.length}}/${{maxCustomers}} Kunden · neu angelegt`:`${{r.items.length}}/${{maxCustomers}} Kunden · ursprünglich ${{r.originalCount}}`)+` · Wochen-Richtgröße ${{ref.typical}} · automatisch bis ${{ref.soft}}`+refNote+(clock?` · ${{clock}}`:(start?` · Ladebeginn ${{esc(start)}}`:''))+(r.sequenceCalculated?` · Reihenfolge ab Valluhn berechnet${{tc?` · ⚠ ${{tc}} Zeitkonflikt${{tc===1?'':'e'}}`:''}}`:'');
   return `<section class="route ${{routeChanged(r)?'changed':''}} ${{r.manuallyCreated?'newroute':''}} ${{cap?'overcap':''}} ${{tc?'timeconflict':''}}" data-route="${{r.id}}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${{esc(r.tour)}} ${{r.manuallyCreated?`<span class="newbadge">NEU</span>`:''}} <span class="source">${{esc(r.source.replace('HUPA_','HUPA '))}}</span> <span class="depotchip">0 · Valluhn</span></div><div class="rmeta ${{cap?'capwarn':''}}">${{meta}}</div></div><div class="route-right">${{d!==0?`<span class="delta">${{d>0?'+':''}}${{d}}</span>`:''}}<button class="seqbtn" title="Lade-/Fahrfolge ab Valluhn neu berechnen" data-seq-route="${{r.id}}">Reihenfolge</button>${{r.manuallyCreated?`<button class="route-delete" title="Neue Tour löschen" data-delete-route="${{r.id}}">×</button>`:''}}</div></div><div class="dropzone" data-route="${{r.id}}">${{cards||'<div class="empty">Kunden hierher ziehen</div>'}}</div></section>`;
 }}
 
@@ -719,7 +726,7 @@ function renderNewTourVisuals(){{
   const grid=document.getElementById('visualGrid'),count=document.getElementById('visualCount');if(!grid||!count)return;
   const nr=routes.filter(r=>r.manuallyCreated).sort(daySort);count.textContent=`${{nr.length}} neue Tour${{nr.length===1?'':'en'}}`;
   if(!nr.length){{grid.innerHTML='<div class="empty">Noch keine neue Tour angelegt. Neue Resttouren oder manuell angelegte Touren erscheinen hier automatisch.</div>';return}}
-  grid.innerHTML=nr.map(r=>{{if(!r.sequenceCalculated&&r.items.length)optimizeRouteOrder(r);const tc=r.items.filter(a=>a._timeViolation).length,clock=routeClockInfo(r);const origins=[...new Set(r.items.map(a=>a.originalTour).filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b),'de',{{numeric:true}}));const rows=r.items.map((a,i)=>`<div class="vizrow"><span class="vizseq">${{i+1}}</span><span><b>${{esc(a.SAP)}}</b> · ${{esc(a.Name)}} · ${{esc(a.Ort)}}</span><span class="viztime ${{a._timeViolation?'vizwarn':''}}">${{Number.isFinite(a._eta)?esc(formatMin(a._eta)):''}}${{a._timeViolation?' ⚠':''}}</span></div>`).join('');return `<article class="visualcard"><div class="visualcardhead"><div><div class="visualtitle">${{DAY_LABELS[r.day]}} · Tour ${{esc(r.tour)}} <span class="newbadge">NEU</span></div><div class="visualmeta">${{esc(r.source.replace('HUPA_','HUPA '))}} · ${{r.items.length}} Kunden${{clock?' · '+esc(clock):''}}${{tc?' · '+tc+' Zeitkonflikt'+(tc===1?'':'e'):''}}</div><div class="visualmeta">Herkunftstouren: ${{origins.length?origins.map(esc).join(', '):'–'}}</div></div><button class="seqbtn" type="button" data-visual-seq="${{r.id}}">Neu sortieren</button></div><div class="routeviz">${{routeVizSvg(r)}}</div><div class="vizlegend"><span><i class="vizdot" style="background:#22242a"></i>0 Valluhn</span><span><i class="vizdot" style="background:#6f54a6"></i>Kunde</span><span><i class="vizdot" style="background:#a03b3b"></i>Zeitkonflikt</span></div><div class="vizlist"><div class="vizrow"><span class="vizseq">0</span><span><b>Lüttow-Valluhn</b> · Am Heisterbusch 24</span><span class="viztime">${{hasRouteStart(r)?esc(formatMin(departureMinutes(r))+' Abfahrt'):''}}</span></div>${{rows}}</div></article>`}}).join('');
+  grid.innerHTML=nr.map(r=>{{if(!r.sequenceCalculated&&r.items.length)optimizeRouteOrder(r);const tc=r.items.filter(a=>a._timeViolation).length,clock=routeClockInfo(r);const origins=[...new Set(r.items.map(a=>a.originalTour).filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b),'de',{{numeric:true}}));const rows=r.items.map((a,i)=>`<div class="vizrow"><span class="vizseq">${{i+1}}</span><span><b>${{esc(a.SAP)}}</b> · ${{esc(a.Name)}} · ${{esc(a.Ort)}}</span><span class="viztime ${{a._timeViolation?'vizwarn':''}}">${{Number.isFinite(a._eta)?esc(formatMin(a._eta)):''}}${{a._timeViolation?' ⚠':''}}</span></div>`).join('');return `<article class="visualcard"><div class="visualcardhead"><div><div class="visualtitle">${{DAY_LABELS[r.day]}} · Tour ${{esc(r.tour)}} <span class="newbadge">NEU</span></div><div class="visualmeta">${{esc(r.source.replace('HUPA_','HUPA '))}} · ${{r.items.length}} Kunden${{clock?' · '+esc(clock):''}}${{tc?' · '+tc+' Zeitkonflikt'+(tc===1?'':'e'):''}}</div><div class="visualmeta">Herkunftstouren: ${{origins.length?origins.map(esc).join(', '):'–'}}</div>${{r.referenceTour?`<div class="visualmeta"><b>Wochen-Vorlage:</b> ${{DAY_LABELS[r.referenceDay]}} · Tour ${{esc(r.referenceTour)}}</div>`:''}}</div><button class="seqbtn" type="button" data-visual-seq="${{r.id}}">Neu sortieren</button></div><div class="routeviz">${{routeVizSvg(r)}}</div><div class="vizlegend"><span><i class="vizdot" style="background:#22242a"></i>0 Valluhn</span><span><i class="vizdot" style="background:#6f54a6"></i>Kunde</span><span><i class="vizdot" style="background:#a03b3b"></i>Zeitkonflikt</span></div><div class="vizlist"><div class="vizrow"><span class="vizseq">0</span><span><b>Lüttow-Valluhn</b> · Am Heisterbusch 24</span><span class="viztime">${{hasRouteStart(r)?esc(formatMin(departureMinutes(r))+' Abfahrt'):''}}</span></div>${{rows}}</div></article>`}}).join('');
   grid.querySelectorAll('[data-visual-seq]').forEach(b=>b.addEventListener('click',()=>{{const r=getRoute(b.dataset.visualSeq);if(r){{optimizeRouteOrder(r);renderAll()}}}}));
 }}
 
@@ -837,6 +844,25 @@ function fitScore(f,r=null){{
   const fillPenalty=r?Math.max(0,(r.items.length+1)-autoLimitForRoute(r))*25000:0;
   return fitRank(f.key)*10000+nr*.7+cr*.3+(f.dupe?50000:0)+(f.capacity?50000:0)+(f.timeRisk?12000:0)+fillPenalty;
 }}
+function referenceGeoFit(a,r){{
+  if(!r||!r.items||String(a.Quelle)!==String(r.source))return {{key:'bad',label:'falscher Startbereich',nearest:NaN,centroid:NaN}};
+  const others=r.items.filter(x=>x.aid!==a.aid&&Number.isFinite(x.lat)&&Number.isFinite(x.lon));
+  if(!Number.isFinite(a.lat)||!Number.isFinite(a.lon)||!others.length)return {{key:'unknown',label:'nicht bewertbar',nearest:NaN,centroid:NaN}};
+  let nearest=Infinity;others.forEach(x=>{{const d=dist(a,x);if(d<nearest)nearest=d}});
+  const clat=others.reduce((z,x)=>z+x.lat,0)/others.length,clon=others.reduce((z,x)=>z+x.lon,0)/others.length,centroid=dist(a,{{lat:clat,lon:clon}});
+  let key='bad',label='eher nicht';
+  if(nearest<=12&&centroid<=35){{key='good';label='passt sehr gut'}}
+  else if(nearest<=25&&centroid<=55){{key='ok';label='passt gut'}}
+  else if(nearest<=45&&centroid<=80){{key='warn';label='grenzwertig'}}
+  return {{key,label,nearest,centroid}};
+}}
+function bestWeekReference(a,fromDay,toDay){{
+  let refs=routes.filter(r=>!r.manuallyCreated&&r.source===a.Quelle&&r.items.length>0&&r.day!==fromDay&&r.day!==toDay);
+  if(!refs.length)refs=routes.filter(r=>!r.manuallyCreated&&r.source===a.Quelle&&r.items.length>0&&r.day!==fromDay);
+  const cand=refs.map(r=>{{const f=referenceGeoFit(a,r);return {{r,f,score:fitRank(f.key)*10000+(Number.isFinite(f.nearest)?f.nearest:999)*.7+(Number.isFinite(f.centroid)?f.centroid:999)*.3}}}}).sort((x,y)=>x.score-y.score);
+  const known=cand.filter(x=>x.f.key!=='unknown');
+  return (known.length?known:cand)[0]||null;
+}}
 function currentItemsForDay(day){{
   const active=activeSources();
   return routes.filter(r=>r.day===day&&active.includes(r.source)).flatMap(r=>r.items.map(a=>({{a,from:r}})));
@@ -854,17 +880,26 @@ function computeSuggestions(){{
     let cand=targets.filter(r=>r.source===a.Quelle).map(r=>{{const f=fitFor(a,r);return {{r,f,score:fitScore(f,r)}}}}).sort((x,y)=>x.score-y.score);
     const known=cand.filter(x=>x.f.key!=='unknown');
     if(known.length)cand=known.concat(cand.filter(x=>x.f.key==='unknown'));
-    const best=cand[0]||null;
-    return {{aid:a.aid,a,from,best,alts:cand.slice(1,3),targetExisting:targetDayAlreadyHas(a,toDay)}};
+    const best=cand[0]||null,weekRef=bestWeekReference(a,fromDay,toDay);
+    return {{aid:a.aid,a,from,best,alts:cand.slice(1,3),weekRef,targetExisting:targetDayAlreadyHas(a,toDay)}};
   }});
   const leftover=suggestions.filter(s=>!s.targetExisting&&(!s.best||(!s.best.f.dupe&&!['good','ok'].includes(s.best.f.key))));
   const groups={{}};
-  leftover.forEach(s=>{{const key=s.a.Quelle+'::'+s.from.tour;if(!groups[key])groups[key]={{source:s.a.Quelle,originalTour:s.from.tour,items:[]}};groups[key].items.push(s)}});
-  restSuggestions=[];Object.values(groups).forEach(g=>{{const ref=referenceTourSize(toDay,g.source),chunk=Math.max(1,Math.min(maxCustomers,ref.soft));for(let i=0;i<g.items.length;i+=chunk)restSuggestions.push(buildRestSuggestion({{...g,items:g.items.slice(i,i+chunk),part:Math.floor(i/chunk)+1,targetSize:ref.typical,autoLimit:ref.soft}},toDay))}});
+  leftover.forEach(s=>{{
+    const wr=s.weekRef,usable=wr&&['good','ok','warn'].includes(wr.f.key),key=usable?s.a.Quelle+'::REF::'+wr.r.day+'::'+wr.r.tour:s.a.Quelle+'::ORIG::'+s.from.tour;
+    if(!groups[key])groups[key]={{source:s.a.Quelle,originalTour:s.from.tour,referenceDay:usable?wr.r.day:null,referenceTour:usable?wr.r.tour:null,referenceFit:usable?wr.f:null,items:[]}};
+    groups[key].items.push(s);
+  }});
+  restSuggestions=[];Object.values(groups).forEach(g=>{{
+    const refRoute=g.referenceDay?routes.find(r=>r.day===g.referenceDay&&r.source===g.source&&String(r.tour)===String(g.referenceTour)):null;
+    const baseSize=refRoute?Math.max(1,Number(refRoute.originalCount||refRoute.items.length||1)):referenceTourSize(toDay,g.source).typical;
+    const soft=Math.min(maxCustomers,baseSize+AUTO_OVER),chunk=Math.max(1,Math.min(maxCustomers,soft));
+    for(let i=0;i<g.items.length;i+=chunk)restSuggestions.push(buildRestSuggestion({{...g,items:g.items.slice(i,i+chunk),part:Math.floor(i/chunk)+1,targetSize:baseSize,autoLimit:soft}},toDay));
+  }});
   document.getElementById('suggTitle').textContent=`${{DAY_LABELS[fromDay]}} fällt aus → ${{DAY_LABELS[toDay]}}`;
   const tcrit=src.filter(x=>x.a.Zeitkritisch).length,targetExistingCount=suggestions.filter(x=>x.targetExisting).length;
-  const refs=active.map(source=>{{const x=referenceTourSize(toDay,source);return `${{source.replace('HUPA_','HUPA ')}}: Richtgröße ${{x.typical}}, Auto-Limit ${{x.soft}}`}}).join(' · ');
-  document.getElementById('suggSub').textContent=`${{src.length}} berücksichtigte Kunden · ${{targetExistingCount}} am Zieltag bereits vorhanden → streichbar · ${{excludedCount}} SAP ausgeschlossen · harte Grenze ${{maxCustomers}} · automatische Tourgröße = Bestand + bis ${{AUTO_OVER}} Kunden · ${{tcrit}} Zeit-Hinweise. ${{refs}}`;
+  const refs=active.map(source=>{{const x=referenceTourSize(toDay,source);return `${{source.replace('HUPA_','HUPA ')}}: Wochen-Richtgröße ${{x.typical}}, Auto-Limit ${{x.soft}}`}}).join(' · ');
+  document.getElementById('suggSub').textContent=`${{src.length}} berücksichtigte Kunden · ${{targetExistingCount}} am Zieltag bereits vorhanden → streichbar · ${{excludedCount}} SAP ausgeschlossen · harte Grenze ${{maxCustomers}} · automatische Tourgröße = Wochen-Referenz + bis ${{AUTO_OVER}} Kunden · ${{tcrit}} Zeit-Hinweise. ${{refs}}`;
 
   renderSuggestions();box.classList.add('show');
 }}
@@ -880,22 +915,25 @@ function restCompactness(items){{
   return {{key:'bad',label:'Resttour sehr weit gestreut',avg,max}};
 }}
 function buildRestSuggestion(g,toDay){{
-  const compact=restCompactness(g.items),starts=startsForTour(g.originalTour),timeCount=g.items.filter(s=>s.a.Zeitkritisch).length;
-  let base='REST-'+String(g.originalTour)+(g.part&&g.part>1?'-'+g.part:''),name=base,n=2;
+  const compact=restCompactness(g.items),refRoute=g.referenceDay?routes.find(r=>r.day===g.referenceDay&&r.source===g.source&&String(r.tour)===String(g.referenceTour)):null;
+  const startTour=refRoute?.tour||g.originalTour,starts=refRoute?.normalStart?[refRoute.normalStart]:startsForTour(startTour),timeCount=g.items.filter(s=>s.a.Zeitkritisch).length;
+  const stem=g.referenceTour?`REF-${{String(g.referenceTour)}}`:`REST-${{String(g.originalTour)}}`;
+  let base=stem+(g.part&&g.part>1?'-'+g.part:''),name=base,n=2;
   while(routes.some(r=>r.day===toDay&&r.source===g.source&&String(r.tour)===name))name=base+'-'+(n++);
-  return {{...g,toDay,name,compact,normalStart:starts.join(' / '),timeCount}};
+  return {{...g,toDay,name,compact,normalStart:starts.join(' / '),timeCount,referenceDay:g.referenceDay||null,referenceTour:g.referenceTour||null}};
 }}
 function suggestionRow(sg){{
-  const a=sg.a,b=sg.best;
-  if(sg.targetExisting)return `<div class="suggrow"><div class="suggcust"><b>${{a.SAP}} · ${{esc(a.Name)}}</b><span>${{esc(a.Strasse||'')}} · ${{esc(a.Ort)}} · aus Tour ${{esc(sg.from.tour)}}</span></div><div><span class="suggnew">Zieltag bereits vorhanden</span><div class="suggalt">SAP ${{esc(a.SAP)}} hat am ${{DAY_LABELS[document.getElementById('toDay').value]}} bereits eine Lieferung.</div></div><div><span class="flag dupe">Ausfall-Lieferung streichen</span><div class="suggalt">Keine zusätzliche Verteilung nötig.</div></div><div><button class="btn" type="button" data-unplan-sugg="${{sg.aid}}">Streichen</button></div></div>`;
-  if(!b)return `<div class="suggrow"><div class="suggcust"><b>${{a.SAP}} · ${{esc(a.Name)}}</b><span>${{esc(a.Strasse||'')}} · ${{esc(a.Ort)}}</span></div><div class="suggnew">Keine Ziel-Tour im passenden Bereich</div><div class="suggalt">Neue Tour bzw. Resttour im gleichen Startbereich anlegen.</div><div></div></div>`;
+  const a=sg.a,b=sg.best,wr=sg.weekRef;
+  const weekRef=wr?`<div class="suggalt"><b>Wochen-Referenz:</b> ${{DAY_LABELS[wr.r.day]}} · Tour ${{esc(wr.r.tour)}} · ${{esc(wr.f.label)}}${{Number.isFinite(wr.f.nearest)?` · nächster Kunde ${{fmt(wr.f.nearest)}} km`:''}}</div>`:'<div class="suggalt">Keine passende Referenztour an einem anderen Tag gefunden.</div>';
+  if(sg.targetExisting)return `<div class="suggrow"><div class="suggcust"><b>${{a.SAP}} · ${{esc(a.Name)}}</b><span>${{esc(a.Strasse||'')}} · ${{esc(a.Ort)}} · aus Tour ${{esc(sg.from.tour)}}</span></div><div><span class="suggnew">Zieltag bereits vorhanden</span><div class="suggalt">SAP ${{esc(a.SAP)}} hat am ${{DAY_LABELS[document.getElementById('toDay').value]}} bereits eine Lieferung.</div>${{weekRef}}</div><div><span class="flag dupe">Ausfall-Lieferung streichen</span><div class="suggalt">Keine zusätzliche Verteilung nötig.</div></div><div><button class="btn" type="button" data-unplan-sugg="${{sg.aid}}">Streichen</button></div></div>`;
+  if(!b)return `<div class="suggrow"><div class="suggcust"><b>${{a.SAP}} · ${{esc(a.Name)}}</b><span>${{esc(a.Strasse||'')}} · ${{esc(a.Ort)}}</span></div><div class="suggnew">Keine freie Ziel-Tour im passenden Bereich</div><div>${{weekRef}}<div class="suggalt">Der Kunde wird für eine neue Tour am Zieltag nach Wochen-Referenz berücksichtigt.</div></div><div></div></div>`;
   const f=b.f,newRecommended=(f.key==='bad'||f.key==='unknown'),isDupe=f.dupe;
   const target=isDupe?`<span class="suggnew">Bereits Lieferung am Zieltag</span><div class="suggalt">Keine zweite Belieferung zulässig.</div>`:newRecommended?`<span class="suggnew">Eher neue Tour sinnvoll</span><div class="suggalt">Nächste bestehende: Tour ${{esc(b.r.tour)}} · ${{esc(b.r.source.replace('HUPA_','HUPA '))}}</div>`:`<div class="suggtarget">${{DAY_LABELS[b.r.day]}} · Tour ${{esc(b.r.tour)}}</div><div class="suggalt">${{esc(b.r.source.replace('HUPA_','HUPA '))}}</div>`;
   const st=b.r.normalStart||startLabel(b.r.tour),ref=referenceTourSize(b.r.day,b.r.source),clock=routeClockInfo(b.r);
   const tinfo=a.Zeitkritisch?`<span class="flag time" title="${{esc(timeInfo(a))}}">Zeitinfo prüfen</span>`:'';
   const timing=f.timeRisk?`<span class="flag time">Zeitkonflikt erwartet</span>`:(a.Zeitkritisch&&Number.isFinite(f.eta)?`<span class="suggalt">ETA ca. ${{formatMin(f.eta)}}</span>`:'');
-  const geo=`<span class="fit ${{f.key}}">${{esc(f.label)}}</span> ${{Number.isFinite(f.nearest)?`<span class="suggalt">nächster Kunde ${{fmt(f.nearest)}} km</span>`:''}} ${{f.dupe?'<span class="flag dupe">bereits Zieltag</span>':''}} ${{tinfo}} ${{timing}}<div class="suggalt">Tourgröße ${{b.r.items.length}} → ${{b.r.items.length+1}} · Richtgröße ${{ref.typical}} · Auto-Limit ${{ref.soft}}</div>${{clock?`<div class="suggalt">${{esc(clock)}} · Start 0 = Valluhn</div>`:(st?`<div class="suggalt">Ladebeginn ${{esc(st)}} · Abfahrt +60 Min · Start 0 = Valluhn</div>`:'')}}`;
-  const alts=sg.alts.length?'Alternativen: '+sg.alts.map(x=>`${{esc(x.r.tour)}} (${{esc(x.f.label)}})`).join(' · '):'Keine weitere sinnvolle Tour';
+  const geo=`<span class="fit ${{f.key}}">${{esc(f.label)}}</span> ${{Number.isFinite(f.nearest)?`<span class="suggalt">nächster Kunde ${{fmt(f.nearest)}} km</span>`:''}} ${{f.dupe?'<span class="flag dupe">bereits Zieltag</span>':''}} ${{tinfo}} ${{timing}}<div class="suggalt">Tourgröße ${{b.r.items.length}} → ${{b.r.items.length+1}} · Wochen-Richtgröße ${{ref.typical}} · Auto-Limit ${{ref.soft}}</div>${{clock?`<div class="suggalt">${{esc(clock)}} · Start 0 = Valluhn</div>`:(st?`<div class="suggalt">Ladebeginn ${{esc(st)}} · Abfahrt +60 Min · Start 0 = Valluhn</div>`:'')}}${{weekRef}}`;
+  const alts=sg.alts.length?'Zieltag-Alternativen: '+sg.alts.map(x=>`${{esc(x.r.tour)}} (${{esc(x.f.label)}})`).join(' · '):'Keine weitere freie Ziel-Tour';
   const btn=isDupe?`<button class="btn" type="button" data-unplan-sugg="${{sg.aid}}">Ausfalllieferung streichen</button>`:`<button class="btn ${{newRecommended?'':'primary'}}" type="button" data-apply-sugg="${{sg.aid}}">${{newRecommended?'Trotzdem in nächste Tour':'Übernehmen'}}</button>`;
   return `<div class="suggrow"><div class="suggcust"><b>${{a.SAP}} · ${{esc(a.Name)}}</b><span>${{esc(a.Strasse||'')}} · ${{esc(a.Ort)}} · aus Tour ${{esc(sg.from.tour)}}${{a.Zeitkritisch?' · ⚠ Zeit-Hinweis':''}}</span></div><div>${{target}}</div><div>${{geo}}<div class="suggalt">${{alts}}</div></div><div>${{btn}}</div></div>`;
 }}
@@ -909,11 +947,12 @@ function renderSuggestions(){{
 }}
 function restSuggestionRow(g,i){{
   const tempR={{tour:g.name,normalStart:g.normalStart}},clock=g.normalStart?routeClockInfo(tempR):'';
-  const start=clock?clock:(g.normalStart?`Ladebeginn: ${{esc(g.normalStart)}} · Abfahrt +60 Min`:'Normalstart Ursprungstour unbekannt');
+  const start=clock?clock:(g.normalStart?`Ladebeginn: ${{esc(g.normalStart)}} · Abfahrt +60 Min`:'Normalstart unbekannt');
   const time=g.timeCount?`<span class="flag time">${{g.timeCount}} Zeit-Hinweis${{g.timeCount===1?'':'e'}}</span>`:'';
   const places=g.items.slice(0,4).map(s=>esc(s.a.Ort)).join(' · ')+(g.items.length>4?' …':'');
   const geo=`<span class="fit ${{g.compact.key}}">${{esc(g.compact.label)}}</span>${{Number.isFinite(g.compact.avg)?` <span class="restmeta">Ø Zentrum ${{fmt(g.compact.avg)}} km</span>`:''}}`;
-  return `<div class="restrow"><div><b>${{esc(g.name)}}</b> · ${{esc(g.source.replace('HUPA_','HUPA '))}}<div class="restmeta">aus Tour ${{esc(g.originalTour)}} · ${{g.items.length}} Kunden · Richtgröße ${{g.targetSize??'–'}} · Auto-Limit ${{g.autoLimit??'–'}} · ${{places}}</div></div><div>${{geo}}<div class="restmeta">${{start}}</div></div><div>${{time}}<div class="restmeta">Startbereich bleibt ${{esc(g.source.replace('HUPA_','HUPA '))}}. Kunden mit Lieferinfo vor Übernahme prüfen.</div></div><div><button class="btn primary" type="button" data-apply-rest="${{i}}">Resttour anlegen</button></div></div>`;
+  const ref=g.referenceTour?`<div class="restmeta"><b>Vorlage:</b> ${{DAY_LABELS[g.referenceDay]}} · Tour ${{esc(g.referenceTour)}} · gleiche Region/Startbereich</div>`:`<div class="restmeta">Keine passende Wochen-Vorlage; Gruppierung nach Ursprungstour ${{esc(g.originalTour)}}.</div>`;
+  return `<div class="restrow"><div><b>${{esc(g.name)}}</b> · ${{esc(g.source.replace('HUPA_','HUPA '))}}${{ref}}<div class="restmeta">${{g.items.length}} Kunden · Wochen-Richtgröße ${{g.targetSize??'–'}} · Auto-Limit ${{g.autoLimit??'–'}} · ${{places}}</div></div><div>${{geo}}<div class="restmeta">${{start}}</div></div><div>${{time}}<div class="restmeta">Startbereich bleibt ${{esc(g.source.replace('HUPA_','HUPA '))}}. Die Vorlage dient nur als Orientierung; eingeplant wird am Zieltag.</div></div><div><button class="btn primary" type="button" data-apply-rest="${{i}}">Neue Tour nach Vorlage anlegen</button></div></div>`;
 }}
 function applyRestSuggestion(index){{
   const g=restSuggestions[index];if(!g)return;
@@ -921,7 +960,7 @@ function applyRestSuggestion(index){{
   const id=routeId(g.toDay,g.source,g.name);
   if(routes.some(r=>r.id===id)){{alert('Diese Resttour existiert bereits.');return}}
   if(g.items.length>maxCustomers){{showBlocked(`Resttour enthält ${{g.items.length}} Kunden; maximal ${{maxCustomers}} sind erlaubt.`);return}}
-  const r={{id,day:g.toDay,source:g.source,tour:g.name,items:[],originalCount:0,manuallyCreated:true,normalStart:g.normalStart,generatedRest:true}};
+  const r={{id,day:g.toDay,source:g.source,tour:g.name,items:[],originalCount:0,manuallyCreated:true,normalStart:g.normalStart,generatedRest:true,referenceDay:g.referenceDay||null,referenceTour:g.referenceTour||null}};
   routes.push(r);
   const touchedSources=new Set();
   g.items.forEach(s=>{{const found=removeFromCurrent(s.aid);if(found){{if(found.from) touchedSources.add(found.from.id);r.items.push(found.a);found.a.currentDay=r.day;found.a.currentTour=r.tour}}}});
@@ -1062,14 +1101,14 @@ function reportTable(rows,headers){{return `<div class="reportscroll"><table cla
 function buildReportHtmlBody(){{
   const v=validateForExcel(),s=v.stats;
   const changeRows=s.changed.map(x=>[x.a.SAP,x.a.Name,`${{DAY_LABELS[x.a.originalDay]}} / ${{x.a.originalTour}}`,`${{DAY_LABELS[x.r.day]}} / ${{x.r.tour}}`,x.r.source,x.f.label,Number.isFinite(x.f.nearest)?fmt(x.f.nearest)+' km':'–',x.a.Zeitkritisch?timeInfo(x.a):'']);
-  const newRows=s.newRoutes.map(r=>[DAY_LABELS[r.day],r.tour,r.source,r.items.length,hasRouteStart(r)?formatMin(loadStartMinutes(r)):'',hasRouteStart(r)?formatMin(departureMinutes(r)):'',[...new Set(r.items.map(a=>a.originalTour).filter(Boolean))].join(', '),r.items.filter(a=>a._timeViolation).length]);
+  const newRows=s.newRoutes.map(r=>[DAY_LABELS[r.day],r.tour,r.source,r.items.length,hasRouteStart(r)?formatMin(loadStartMinutes(r)):'',hasRouteStart(r)?formatMin(departureMinutes(r)):'',r.referenceTour?`${{DAY_LABELS[r.referenceDay]}} / ${{r.referenceTour}}`:'',[...new Set(r.items.map(a=>a.originalTour).filter(Boolean))].join(', '),r.items.filter(a=>a._timeViolation).length]);
   const cancelledRows=unplanned.filter(a=>cancelledAids.has(a.aid)).map(a=>[a.SAP,a.Name,DAY_LABELS[a.originalDay],a.originalTour,a.Quelle,cancelReasons.get(a.aid)||'Ausfall-Lieferung gestrichen',a.Zeitkritisch?timeInfo(a):'']);
   const outRows=unplanned.filter(a=>!cancelledAids.has(a.aid)).map(a=>[a.SAP,a.Name,DAY_LABELS[a.originalDay],a.originalTour,a.Quelle,a.Zeitkritisch?timeInfo(a):'']);
   const dupRows=s.dups.map(g=>[g[0].a.SAP,DAY_LABELS[g[0].r.day],g.map(x=>x.r.tour).join(' / '),g.length]);
   const allowedDupRows=s.allowedDups.map(x=>[x.group[0].a.SAP,DAY_LABELS[x.group[0].r.day],x.group.map(y=>y.r.tour).join(' / '),x.group.length,x.cap]);
   const errors=v.errors.length?`<div class="reporterror">Abschlussprüfung: ${{v.errors.map(esc).join(' · ')}}</div>`:`<div class="notice"><b>Abschlussprüfung bestanden:</b> keine neue/zusätzliche Doppelbelieferung, kein Startbereichswechsel und keine Tour über dem Kundenmaximum.</div>`;
   const warnings=[];if(s.leftOnOutage)warnings.push(`${{s.leftOnOutage}} Lieferungen stehen noch auf dem gewählten Ausfalltag ${{DAY_LABELS[s.fromDay]}}.`);if(s.cancelledCount)warnings.push(`${{s.cancelledCount}} Ausfall-Lieferungen wurden bewusst gestrichen.`);if(s.unplannedCount-s.cancelledCount)warnings.push(`${{s.unplannedCount-s.cancelledCount}} weitere Lieferungen sind ausgeplant.`);if(s.timeChanged.length)warnings.push(`${{s.timeChanged.length}} verschobene Lieferungen haben einen Zeit-Hinweis.`);if(s.timeViolations.length)warnings.push(`${{s.timeViolations.length}} voraussichtliche Zeitkonflikte laut Lieferinfo / Normalstart – bitte prüfen.`);if(s.excluded.length)warnings.push(`${{s.excluded.length}} SAP stehen auf der Ausschlussliste und wurden bei Vorschlägen nicht berücksichtigt.`);if(s.unmappedLoadRows.length)warnings.push(`${{s.unmappedLoadRows.length}} Lieferung(en) haben im Input keine vorhandene Zeile in LADEREIHENFOLGE; ihre Reihenfolge bleibt nur im Report/CSV sichtbar.`);
-  return `${{errors}}${{warnings.length?`<div class="reportwarn">${{warnings.map(esc).join('<br>')}}</div>`:''}}<div class="reportstatus"><div class="reportkpi"><b>${{assignments.length}}</b><span>Wochen-Lieferungen</span></div><div class="reportkpi"><b>${{s.changed.length}}</b><span>verschoben</span></div><div class="reportkpi"><b>${{s.newRoutes.length}}</b><span>neue Touren</span></div><div class="reportkpi"><b>${{s.cancelledCount}}</b><span>Ausfall gestrichen</span></div><div class="reportkpi"><b>${{s.unplannedCount-s.cancelledCount}}</b><span>sonst ausgeplant</span></div><div class="reportkpi"><b>${{s.dups.length}}</b><span>unerlaubte Doppelungen</span></div><div class="reportkpi"><b>${{s.timeViolations.length}}</b><span>Zeitkonflikte</span></div><div class="reportkpi"><b>${{maxCustomers}}</b><span>Max. Kunden/Tour</span></div></div><div class="reportsection"><h3>Verschiebungen</h3>${{reportTable(changeRows,['SAP','Kunde','Original','Neu','Startbereich','Geo','Nächster Kunde','Lieferinfo / Zeit'])}}</div><div class="reportsection"><h3>Neu angelegte Touren</h3>${{reportTable(newRows,['Tag','Tour','Startbereich','Kunden','Ladebeginn','Abfahrt','Herkunftstouren','Zeitkonflikte'])}}</div><div class="reportsection"><h3>Gestrichene Ausfall-Lieferungen</h3>${{reportTable(cancelledRows,['SAP','Kunde','Originaltag','Originaltour','Startbereich','Grund','Lieferinfo / Zeit'])}}</div><div class="reportsection"><h3>Sonstige ausgeplante Lieferungen</h3>${{reportTable(outRows,['SAP','Kunde','Originaltag','Originaltour','Startbereich','Lieferinfo / Zeit'])}}</div>${{s.dups.length?`<div class="reportsection"><h3>Neue/zusätzliche Doppelbelieferungen – vor Excel-Export lösen</h3>${{reportTable(dupRows,['SAP','Tag','Touren','Anzahl'])}}</div>`:''}}${{s.allowedDups.length?`<div class="reportsection"><h3>Im Original vorhandene Doppelbelieferungen – erlaubt</h3>${{reportTable(allowedDupRows,['SAP','Tag','Touren','Aktuell','Original erlaubt'])}}</div>`:''}}<div class="reportsection"><h3>Lade-/Fahrfolge ab Lüttow-Valluhn (0 = Depot)</h3>${{reportTable(routes.filter(r=>routeChanged(r)||r.manuallyCreated).flatMap(r=>[[DAY_LABELS[r.day],r.tour,r.source,0,'Lüttow-Valluhn',hasRouteStart(r)?`${{formatMin(loadStartMinutes(r))}} Ladebeginn → ${{formatMin(departureMinutes(r))}} Abfahrt`:(r.normalStart||startLabel(r.tour)),'Depot'],...r.items.map((a,i)=>[DAY_LABELS[r.day],r.tour,r.source,i+1,`${{a.SAP}} · ${{a.Name}}`,Number.isFinite(a._eta)?formatMin(a._eta):'',a._timeViolation?'ZEITKONFLIKT':(a.Zeitkritisch?'Zeitinfo geprüft':'')])]),['Tag','Tour','Startbereich','Ladefolge','Stopp','Abfahrt / ETA','Hinweis'])}}</div><div class="reportsection"><h3>SAP-Ausschlussliste</h3><div class="notice">${{s.excluded.length?s.excluded.map(esc).join(', '):'Keine SAP ausgeschlossen.'}}</div></div>`;
+  return `${{errors}}${{warnings.length?`<div class="reportwarn">${{warnings.map(esc).join('<br>')}}</div>`:''}}<div class="reportstatus"><div class="reportkpi"><b>${{assignments.length}}</b><span>Wochen-Lieferungen</span></div><div class="reportkpi"><b>${{s.changed.length}}</b><span>verschoben</span></div><div class="reportkpi"><b>${{s.newRoutes.length}}</b><span>neue Touren</span></div><div class="reportkpi"><b>${{s.cancelledCount}}</b><span>Ausfall gestrichen</span></div><div class="reportkpi"><b>${{s.unplannedCount-s.cancelledCount}}</b><span>sonst ausgeplant</span></div><div class="reportkpi"><b>${{s.dups.length}}</b><span>unerlaubte Doppelungen</span></div><div class="reportkpi"><b>${{s.timeViolations.length}}</b><span>Zeitkonflikte</span></div><div class="reportkpi"><b>${{maxCustomers}}</b><span>Max. Kunden/Tour</span></div></div><div class="reportsection"><h3>Verschiebungen</h3>${{reportTable(changeRows,['SAP','Kunde','Original','Neu','Startbereich','Geo','Nächster Kunde','Lieferinfo / Zeit'])}}</div><div class="reportsection"><h3>Neu angelegte Touren</h3>${{reportTable(newRows,['Tag','Tour','Startbereich','Kunden','Ladebeginn','Abfahrt','Wochen-Vorlage','Herkunftstouren','Zeitkonflikte'])}}</div><div class="reportsection"><h3>Gestrichene Ausfall-Lieferungen</h3>${{reportTable(cancelledRows,['SAP','Kunde','Originaltag','Originaltour','Startbereich','Grund','Lieferinfo / Zeit'])}}</div><div class="reportsection"><h3>Sonstige ausgeplante Lieferungen</h3>${{reportTable(outRows,['SAP','Kunde','Originaltag','Originaltour','Startbereich','Lieferinfo / Zeit'])}}</div>${{s.dups.length?`<div class="reportsection"><h3>Neue/zusätzliche Doppelbelieferungen – vor Excel-Export lösen</h3>${{reportTable(dupRows,['SAP','Tag','Touren','Anzahl'])}}</div>`:''}}${{s.allowedDups.length?`<div class="reportsection"><h3>Im Original vorhandene Doppelbelieferungen – erlaubt</h3>${{reportTable(allowedDupRows,['SAP','Tag','Touren','Aktuell','Original erlaubt'])}}</div>`:''}}<div class="reportsection"><h3>Lade-/Fahrfolge ab Lüttow-Valluhn (0 = Depot)</h3>${{reportTable(routes.filter(r=>routeChanged(r)||r.manuallyCreated).flatMap(r=>[[DAY_LABELS[r.day],r.tour,r.source,0,'Lüttow-Valluhn',hasRouteStart(r)?`${{formatMin(loadStartMinutes(r))}} Ladebeginn → ${{formatMin(departureMinutes(r))}} Abfahrt`:(r.normalStart||startLabel(r.tour)),'Depot'],...r.items.map((a,i)=>[DAY_LABELS[r.day],r.tour,r.source,i+1,`${{a.SAP}} · ${{a.Name}}`,Number.isFinite(a._eta)?formatMin(a._eta):'',a._timeViolation?'ZEITKONFLIKT':(a.Zeitkritisch?'Zeitinfo geprüft':'')])]),['Tag','Tour','Startbereich','Ladefolge','Stopp','Abfahrt / ETA','Hinweis'])}}</div><div class="reportsection"><h3>SAP-Ausschlussliste</h3><div class="notice">${{s.excluded.length?s.excluded.map(esc).join(', '):'Keine SAP ausgeschlossen.'}}</div></div>`;
 }}
 function openFinalReport(){{document.getElementById('reportBody').innerHTML=buildReportHtmlBody();const m=document.getElementById('reportModal');m.classList.add('show');m.setAttribute('aria-hidden','false')}}
 function closeFinalReport(){{const m=document.getElementById('reportModal');m.classList.remove('show');m.setAttribute('aria-hidden','true')}}
@@ -1126,7 +1165,7 @@ initControls();buildOriginalPlan();
 def main():
     import streamlit as st
 
-    st.set_page_config(page_title="Feiertags-Wochenplaner V14 – HTML Generator", page_icon="📅", layout="wide")
+    st.set_page_config(page_title="Feiertags-Wochenplaner V15 – HTML Generator", page_icon="📅", layout="wide")
     st.markdown(
         """
         <style>
@@ -1137,8 +1176,8 @@ def main():
         unsafe_allow_html=True,
     )
 
-    st.title("Feiertags-Wochenplaner V14 – HTML Generator")
-    st.caption("Excel + Normal_Tourenstart.csv + Kisoft_Kunden.csv hochladen → HTML erzeugen. Neue Touren werden in V14 zusätzlich als Geo-Skizze ab Valluhn visualisiert. Ausfalltag, Zieltag, Startbereich, Zeitrestriktionen, Tourgröße, Ladezeit und Ladefolge bleiben berücksichtigt.")
+    st.title("Feiertags-Wochenplaner V15 – HTML Generator")
+    st.caption("Excel + Normal_Tourenstart.csv + Kisoft_Kunden.csv hochladen → HTML erzeugen. Neue Touren werden in V15 zusätzlich anhand passender Referenztouren aus der gesamten Woche aufgebaut und als Geo-Skizze ab Valluhn visualisiert. Ausfalltag, Zieltag, Startbereich, Zeitrestriktionen, Tourgröße, Ladezeit und Ladefolge bleiben berücksichtigt.")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -1149,7 +1188,7 @@ def main():
         info_upload = st.file_uploader("Kisoft_Kunden.csv", type=["csv"])
 
     if upload is None or starts_upload is None or info_upload is None:
-        st.info("Für V14 bitte alle drei aktuellen Dateien hochladen. Benötigte Excel-Blätter: DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
+        st.info("Für V15 bitte alle drei aktuellen Dateien hochladen. Benötigte Excel-Blätter: DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
         return
 
     try:
@@ -1177,19 +1216,21 @@ def main():
     c3.metric("mit Zeit-Hinweis", time_info)
     c4.metric("ohne Geo-Koordinate", missing_geo)
 
-    st.success("HTML wurde erzeugt. Neue Touren werden zusätzlich visuell als Geo-Skizze ab Valluhn dargestellt. Original-XLSX, Ladereihenfolge, Startbereich, Normalstart und Kunden-Lieferinfo bleiben eingebettet.")
+    st.success("HTML wurde erzeugt. Vorschläge und neue Touren können sich jetzt an räumlich passenden Touren anderer Wochentage orientieren. Neue Touren werden zusätzlich als Geo-Skizze ab Valluhn dargestellt.")
     st.download_button(
         "Feiertags_Wochenplaner.html herunterladen",
         data=html.encode("utf-8"),
-        file_name="Feiertags_Wochenplaner_V14.html",
+        file_name="Feiertags_Wochenplaner_V15.html",
         mime="text/html",
         use_container_width=True,
     )
 
     st.markdown(
         """
-        **Neu in V14:**
+        **Neu in V15:**
         - neue Touren sind in der Wochenansicht klar mit **NEU** markiert
+        - neue Touren dürfen sich an **Touren anderer Wochentage** im gleichen Startbereich orientieren; der Referenztag dient nur als Vorlage, eingeplant wird immer am gewählten Zieltag
+        - Wochen-Referenzen beeinflussen Gebiet, typische Tourgröße, Startzeit-Vorlage und Gruppierung der Restkunden
         - eigener Filter **Alle / Nur neue / Nur geändert**
         - eigener Bereich **Neue Touren visualisieren** mit Geo-Skizze ab **0 = Valluhn**
         - aktuelle Stoppfolge wird als Linie mit nummerierten Punkten dargestellt; rote Punkte markieren Zeitkonflikte
@@ -1200,9 +1241,9 @@ def main():
         - `Kisoft_Kunden.csv` wird über SAP verknüpft; zeitbezogene `Lieferinfo` wird als **Zeitinfo prüfen** markiert
         - die vollständige Lieferinfo erscheint beim Verschieben/Vorschlag und bleibt im CSV-Export erhalten
         - `Normal_Tourenstart.csv` ergänzt die normale Startzeit bestehender Touren
-        - Kunden ohne guten/vertretbaren Treffer in einer bestehenden Ziel-Tour werden nach **Ursprungstour + Startbereich** als **Resttour am Zieltag** vorgeschlagen
+        - Kunden ohne guten/vertretbaren Treffer in einer bestehenden Ziel-Tour werden mit passenden **Referenztouren aus anderen Wochentagen** verglichen und daraus als neue Tour am Zieltag gruppiert
         - Resttouren werden **nicht automatisch** angelegt; du bestätigst jede einzelne
-        - bei Resttouren wird Geo-Kompaktheit, Kundenanzahl, Ladebeginn/Abfahrt der Ursprungstour und Anzahl zeitkritischer Kunden angezeigt
+        - bei neuen Touren wird die verwendete **Wochen-Vorlage** (Tag + Tour), Geo-Kompaktheit, Kundenanzahl, Ladebeginn/Abfahrt und Anzahl zeitkritischer Kunden angezeigt
         - bereits im Original vorhandene Doppelbelieferungen (z. B. Picnic) bleiben erlaubt; neue oder zusätzliche Doppelungen werden blockiert und verhindern den Export
         - Abschlussreport dokumentiert Verschiebungen, neue Touren, Ausplanungen und Zeit-Hinweise
         - Excel-Export basiert auf der hochgeladenen Original-XLSX; die Tourzellen Mo–Sa werden angepasst und vorhandene Zeilen in `LADEREIHENFOLGE` (A–C) werden für zuordenbare Kunden aktualisiert

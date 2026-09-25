@@ -244,7 +244,7 @@ def build_html(customers: list[dict], tour_starts: dict[str, list[str]], source_
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Feiertags-Wochenplaner V17</title>
+<title>Feiertags-Wochenplaner V18</title>
 <style>
 :root{{--bg:#f3f4f6;--surface:#fff;--surface2:#f8f9fb;--ink:#22242a;--muted:#727680;--line:#dfe1e6;--line2:#eceef2;--accent:#6f54a6;--accent-soft:#eeeaf7;--good:#247348;--good-bg:#e8f5ed;--ok:#5e6f32;--ok-bg:#eff4df;--warn:#946200;--warn-bg:#fff3d2;--bad:#a03b3b;--bad-bg:#fde9e9;--blue:#46627d;--blue-bg:#eaf0f5;--mo:#477258;--mo-bg:#e5f2e8;--die:#8a6518;--die-bg:#fff1cf;--mitt:#6f57a1;--mitt-bg:#eee8f7;--don:#a45e3a;--don-bg:#fde7dc;--fr:#8f5368;--fr-bg:#f6e6ed;--sam:#5e5f7f;--sam-bg:#e9e9f1}}
 *{{box-sizing:border-box}}
@@ -379,6 +379,10 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 .visualmodal .visualcardhead{{padding-top:0}}
 .visualone .routeviz{{border-top:1px solid var(--line2);border-bottom:1px solid var(--line2)}}
 .visualactions{{display:flex;gap:6px;justify-content:flex-end;margin-top:8px}}
+.mapsmodal{{width:min(560px,100%)}}
+.mapslist{{display:grid;gap:7px;margin-top:10px}}
+.mapslink{{display:flex;justify-content:space-between;align-items:center;gap:10px;text-decoration:none}}
+.mapslink small{{color:var(--muted);font-weight:650}}
 .drawer.show{{display:block}}
 .drawer.good{{border-left-color:var(--good)}}.drawer.ok{{border-left-color:var(--ok)}}.drawer.warn{{border-left-color:var(--warn)}}.drawer.bad{{border-left-color:var(--bad)}}
 .drawer h3{{margin:0 0 3px;font-size:13px}}.drawer p{{margin:0;color:var(--muted);font-size:10px}}
@@ -506,6 +510,7 @@ main{{max-width:2400px;margin:auto;padding:13px 18px 45px}}
 <div id="tourModal" class="modalback" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="newTourTitle"><h2 id="newTourTitle">Neue Tour anlegen</h2><div class="hint" id="newTourHint"></div><div class="formrow"><div class="field"><label for="newTourNo">Tournummer / Name</label><input id="newTourNo" autocomplete="off" placeholder="z. B. 4055 oder FT-01"></div><div class="field"><label for="newTourSource">Startbereich</label><select id="newTourSource"></select></div></div><div class="field" style="margin-top:8px"><label for="newTourStart">Ladebeginn / Normalstart (optional)</label><input id="newTourStart" autocomplete="off" placeholder="z. B. 03:00 → Abfahrt automatisch 04:00"></div><div id="newTourError" class="modalerror"></div><div class="modalactions"><button class="btn" id="cancelTourBtn">Abbrechen</button><button class="btn primary" id="createTourBtn">Tour anlegen</button></div></div></div>
 <div id="reportModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true" aria-labelledby="reportTitle"><h2 id="reportTitle">Abschlussreport</h2><div class="hint" id="reportHint">Zusammenfassung der aktuellen Feiertagsplanung.</div><div id="reportBody"></div><div class="modalactions"><button class="btn" id="closeReportBtn">Schließen</button><button class="btn" id="reportDownloadBtn">Report HTML</button><button class="btn primary" id="reportExcelBtn">Excel Originalstruktur</button></div></div></div>
 <div id="routeVisualModal" class="modalback" aria-hidden="true"><div class="modal visualmodal" role="dialog" aria-modal="true" aria-labelledby="routeVisualTitle"><h2 id="routeVisualTitle">Tour visualisieren</h2><div class="hint" id="routeVisualHint">Geo-Skizze ab Lüttow-Valluhn (0) entlang der aktuellen Lade-/Fahrfolge. Gerade Linien = geografische Orientierung, kein Straßenrouting.</div><div id="routeVisualBody"></div><div class="modalactions"><button class="btn" id="closeRouteVisualBtn">Schließen</button></div></div></div>
+<div id="mapsModal" class="modalback" aria-hidden="true"><div class="modal mapsmodal" role="dialog" aria-modal="true" aria-labelledby="mapsTitle"><h2 id="mapsTitle">Google Maps</h2><div class="hint" id="mapsHint">Aktuelle Tourreihenfolge ab Valluhn. Google Maps nutzt PKW-Routing und berücksichtigt keine LKW-spezifischen Beschränkungen.</div><div id="mapsBody" class="mapslist"></div><div class="modalactions"><button class="btn" id="closeMapsBtn">Schließen</button></div></div></div>
 <script>eval(atob('{JSZIP_B64}'))</script>
 <script>
 const CUSTOMERS={data_json};
@@ -600,6 +605,8 @@ function initControls(){{
   document.getElementById('reportModal').addEventListener('click',e=>{{if(e.target.id==='reportModal')closeFinalReport()}});
   document.getElementById('closeRouteVisualBtn').addEventListener('click',closeRouteVisual);
   document.getElementById('routeVisualModal').addEventListener('click',e=>{{if(e.target.id==='routeVisualModal')closeRouteVisual()}});
+  document.getElementById('closeMapsBtn').addEventListener('click',closeMapsModal);
+  document.getElementById('mapsModal').addEventListener('click',e=>{{if(e.target.id==='mapsModal')closeMapsModal()}});
   document.getElementById('newTourSource').innerHTML=SOURCES.map(s=>`<option value="${{s}}">${{esc(s.replace('HUPA_','HUPA '))}}</option>`).join('');
   document.getElementById('cancelTourBtn').addEventListener('click',closeNewTour);
   document.getElementById('createTourBtn').addEventListener('click',createNewTour);
@@ -708,7 +715,7 @@ function routeHtml(r){{
   const ref=referenceTourSize(r.day,r.source),clock=routeClockInfo(r);
   const refNote=r.referenceTour?` · Vorlage ${{DAY_LABELS[r.referenceDay]}} Tour ${{esc(r.referenceTour)}}`:'';
   const meta=(r.manuallyCreated?`${{r.items.length}}/${{maxCustomers}} Kunden · neu angelegt`:`${{r.items.length}}/${{maxCustomers}} Kunden · ursprünglich ${{r.originalCount}}`)+` · Wochen-Richtgröße ${{ref.typical}} · automatisch bis ${{ref.soft}}`+refNote+(clock?` · ${{clock}}`:(start?` · Ladebeginn ${{esc(start)}}`:''))+(r.sequenceCalculated?` · Reihenfolge ab Valluhn berechnet${{tc?` · ⚠ ${{tc}} Zeitkonflikt${{tc===1?'':'e'}}`:''}}`:'');
-  return `<section class="route ${{routeChanged(r)?'changed':''}} ${{r.manuallyCreated?'newroute':''}} ${{cap?'overcap':''}} ${{tc?'timeconflict':''}}" data-route="${{r.id}}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${{esc(r.tour)}} ${{r.manuallyCreated?`<span class="newbadge">NEU</span>`:''}} <span class="source">${{esc(r.source.replace('HUPA_','HUPA '))}}</span> <span class="depotchip">0 · Valluhn</span></div><div class="rmeta ${{cap?'capwarn':''}}">${{meta}}</div></div><div class="route-right">${{d!==0?`<span class="delta">${{d>0?'+':''}}${{d}}</span>`:''}}<button class="seqbtn" title="Tour grafisch anzeigen" data-show-visual="${{r.id}}">Visualisieren</button><button class="seqbtn" title="Lade-/Fahrfolge ab Valluhn neu berechnen" data-seq-route="${{r.id}}">Reihenfolge</button>${{r.manuallyCreated?`<button class="route-delete" title="Neue Tour löschen" data-delete-route="${{r.id}}">×</button>`:''}}</div></div><div class="dropzone" data-route="${{r.id}}">${{cards||'<div class="empty">Kunden hierher ziehen</div>'}}</div></section>`;
+  return `<section class="route ${{routeChanged(r)?'changed':''}} ${{r.manuallyCreated?'newroute':''}} ${{cap?'overcap':''}} ${{tc?'timeconflict':''}}" data-route="${{r.id}}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${{esc(r.tour)}} ${{r.manuallyCreated?`<span class="newbadge">NEU</span>`:''}} <span class="source">${{esc(r.source.replace('HUPA_','HUPA '))}}</span> <span class="depotchip">0 · Valluhn</span></div><div class="rmeta ${{cap?'capwarn':''}}">${{meta}}</div></div><div class="route-right">${{d!==0?`<span class="delta">${{d>0?'+':''}}${{d}}</span>`:''}}<button class="seqbtn" title="Aktuelle Tour in Google Maps öffnen" data-google-maps="${{r.id}}">Google Maps</button><button class="seqbtn" title="Tour grafisch anzeigen" data-show-visual="${{r.id}}">Visualisieren</button><button class="seqbtn" title="Lade-/Fahrfolge ab Valluhn neu berechnen" data-seq-route="${{r.id}}">Reihenfolge</button>${{r.manuallyCreated?`<button class="route-delete" title="Neue Tour löschen" data-delete-route="${{r.id}}">×</button>`:''}}</div></div><div class="dropzone" data-route="${{r.id}}">${{cards||'<div class="empty">Kunden hierher ziehen</div>'}}</div></section>`;
 }}
 
 function renderWeek(){{
@@ -731,18 +738,53 @@ function routeVizSvg(r){{
   const nodes=pts.map((p,i)=>{{const cx=x(p),cy=y(p),timeWarn=!p._depot&&p._timeViolation;const fill=p._depot?'#22242a':(timeWarn?'#a03b3b':'#6f54a6');return `<g><circle cx="${{cx}}" cy="${{cy}}" r="${{p._depot?8:7}}" fill="${{fill}}" stroke="#fff" stroke-width="2"/><text x="${{cx}}" y="${{cy+3}}" text-anchor="middle" font-size="8" font-weight="900" fill="#fff">${{esc(p._label)}}</text>${{i>0?`<title>${{esc(p.SAP+' · '+p.Name+' · '+p.Ort)}}</title>`:''}}</g>`}}).join('');
   return `<svg viewBox="0 0 ${{W}} ${{H}}" role="img" aria-label="Geo-Skizze Tour ${{esc(r.tour)}}"><polyline points="${{line}}" fill="none" stroke="#858994" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 3"/>${{nodes}}<text x="12" y="16" font-size="9" fill="#777">Schematisch · nicht maßstabsgetreues Straßenrouting</text></svg>`;
 }}
+const GOOGLE_MAPS_CUSTOMERS_PER_SECTION=10;
+function mapsCustomerAddress(a){{
+  return [a.Strasse,a.Plz,a.Ort,'Deutschland'].map(v=>String(v??'').trim()).filter(Boolean).join(', ');
+}}
+function googleMapsSegments(r){{
+  const pts=r.items.map((a,i)=>({{a,index:i+1,address:mapsCustomerAddress(a)}})).filter(x=>x.address);
+  if(!pts.length)return [];
+  const out=[];let pos=0,origin=DEPOT.address,originLabel='0 Valluhn';
+  while(pos<pts.length){{
+    const slice=pts.slice(pos,pos+GOOGLE_MAPS_CUSTOMERS_PER_SECTION);
+    const last=slice[slice.length-1];
+    const way=slice.slice(0,-1).map(x=>x.address);
+    const params=new URLSearchParams();
+    params.set('api','1');params.set('origin',origin);params.set('destination',last.address);params.set('travelmode','driving');
+    if(way.length)params.set('waypoints',way.join('|'));
+    out.push({{url:'https://www.google.com/maps/dir/?'+params.toString(),from:originLabel,to:`${{last.index}} ${{last.a.Ort||last.a.Name||''}}`,first:pos+1,last:last.index}});
+    origin=last.address;originLabel=`${{last.index}} ${{last.a.Ort||last.a.Name||''}}`;pos+=slice.length;
+  }}
+  return out;
+}}
+function openGoogleMapsRoute(routeId){{
+  const r=getRoute(routeId);if(!r)return;
+  const segs=googleMapsSegments(r);
+  if(!segs.length){{alert('Diese Tour enthält keine Kundenadresse für Google Maps.');return}}
+  if(segs.length===1){{window.open(segs[0].url,'_blank','noopener,noreferrer');return}}
+  document.getElementById('mapsTitle').textContent=`${{DAY_LABELS[r.day]}} · Tour ${{r.tour}} in Google Maps`;
+  document.getElementById('mapsHint').textContent=`${{r.items.length}} Kunden · wegen der Anzahl der Stopps in ${{segs.length}} Maps-Abschnitte geteilt. Die Reihenfolge bleibt erhalten. Google Maps nutzt PKW-Routing, kein LKW-Routing.`;
+  document.getElementById('mapsBody').innerHTML=segs.map((s,i)=>`<a class="btn mapslink" href="${{esc(s.url)}}" target="_blank" rel="noopener noreferrer"><span>Google Maps ${{i+1}}/${{segs.length}}</span><small>${{esc(s.from)}} → ${{esc(s.to)}}</small></a>`).join('');
+  const m=document.getElementById('mapsModal');m.classList.add('show');m.setAttribute('aria-hidden','false');
+}}
+function closeMapsModal(){{
+  const m=document.getElementById('mapsModal');m.classList.remove('show');m.setAttribute('aria-hidden','true');
+}}
+
 function visualCardHtml(r,modalMode=false){{
   if(!r.sequenceCalculated&&r.items.length)optimizeRouteOrder(r);
   const tc=r.items.filter(a=>a._timeViolation).length,clock=routeClockInfo(r);
   const origins=[...new Set(r.items.map(a=>a.originalTour).filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b),'de',{{numeric:true}}));
   const rows=r.items.map((a,i)=>`<div class="vizrow"><span class="vizseq">${{i+1}}</span><span><b>${{esc(a.SAP)}}</b> · ${{esc(a.Name)}} · ${{esc(a.Ort)}}</span><span class="viztime ${{a._timeViolation?'vizwarn':''}}">${{Number.isFinite(a._eta)?esc(formatMin(a._eta)):''}}${{a._timeViolation?' ⚠':''}}</span></div>`).join('');
   const badge=r.manuallyCreated?` <span class="newbadge">NEU</span>`:'';
-  const actionBtn=`<button class="seqbtn" type="button" data-visual-seq="${{r.id}}">Neu sortieren</button>`;
+  const actionBtn=`<span class="actions"><button class="seqbtn" type="button" data-visual-maps="${{r.id}}">Google Maps</button><button class="seqbtn" type="button" data-visual-seq="${{r.id}}">Neu sortieren</button></span>`;
   return `<article class="visualcard ${{modalMode?'visualone':''}}"><div class="visualcardhead"><div><div class="visualtitle">${{DAY_LABELS[r.day]}} · Tour ${{esc(r.tour)}}${{badge}}</div><div class="visualmeta">${{esc(r.source.replace('HUPA_','HUPA '))}} · ${{r.items.length}} Kunden${{clock?' · '+esc(clock):''}}${{tc?' · '+tc+' Zeitkonflikt'+(tc===1?'':'e'):''}}</div><div class="visualmeta">Herkunftstouren: ${{origins.length?origins.map(esc).join(', '):'–'}}</div>${{r.referenceTour?`<div class="visualmeta"><b>Wochen-Vorlage:</b> ${{DAY_LABELS[r.referenceDay]}} · Tour ${{esc(r.referenceTour)}}</div>`:''}}</div>${{actionBtn}}</div><div class="routeviz">${{routeVizSvg(r)}}</div><div class="vizlegend"><span><i class="vizdot" style="background:#22242a"></i>0 Valluhn</span><span><i class="vizdot" style="background:#6f54a6"></i>Kunde</span><span><i class="vizdot" style="background:#a03b3b"></i>Zeitkonflikt</span></div><div class="vizlist"><div class="vizrow"><span class="vizseq">0</span><span><b>Lüttow-Valluhn</b> · Am Heisterbusch 24</span><span class="viztime">${{hasRouteStart(r)?esc(formatMin(departureMinutes(r))+' Abfahrt'):''}}</span></div>${{rows}}</div></article>`
 }}
 
 function bindVisualButtons(root,openAfterRender=false){{
   if(!root)return;
+  root.querySelectorAll('[data-visual-maps]').forEach(b=>b.addEventListener('click',()=>openGoogleMapsRoute(b.dataset.visualMaps)));
   root.querySelectorAll('[data-visual-seq]').forEach(b=>b.addEventListener('click',()=>{{
     const rid=b.dataset.visualSeq;const r=getRoute(rid);
     if(r){{optimizeRouteOrder(r);renderAll();if(openAfterRender)openRouteVisual(rid)}}
@@ -817,6 +859,7 @@ function bindDayActions(){{
   document.querySelectorAll('[data-delete-route]').forEach(b=>b.addEventListener('click',e=>{{e.stopPropagation();deleteNewRoute(b.dataset.deleteRoute)}}));
   document.querySelectorAll('[data-seq-route]').forEach(b=>b.addEventListener('click',e=>{{e.stopPropagation();const r=getRoute(b.dataset.seqRoute);if(r){{optimizeRouteOrder(r);renderAll()}}}}));
   document.querySelectorAll('[data-show-visual]').forEach(b=>b.addEventListener('click',e=>{{e.stopPropagation();openRouteVisual(b.dataset.showVisual)}}));
+  document.querySelectorAll('[data-google-maps]').forEach(b=>b.addEventListener('click',e=>{{e.stopPropagation();openGoogleMapsRoute(b.dataset.googleMaps)}}));
 }}
 
 function renderUnplanned(){{
@@ -1208,7 +1251,7 @@ initControls();buildOriginalPlan();
 def main():
     import streamlit as st
 
-    st.set_page_config(page_title="Feiertags-Wochenplaner V17 – HTML Generator", page_icon="📅", layout="wide")
+    st.set_page_config(page_title="Feiertags-Wochenplaner V18 – HTML Generator", page_icon="📅", layout="wide")
     st.markdown(
         """
         <style>
@@ -1219,8 +1262,8 @@ def main():
         unsafe_allow_html=True,
     )
 
-    st.title("Feiertags-Wochenplaner V17 – HTML Generator")
-    st.caption("Excel + Normal_Tourenstart.csv + Kisoft_Kunden.csv hochladen → HTML erzeugen. Neue Touren werden in V17 zusätzlich anhand passender Referenztouren aus der gesamten Woche aufgebaut und als Geo-Skizze ab Valluhn visualisiert. Zusätzlich besitzt nun jede Tour einen eigenen Visualisieren-Button. Ausfalltag, Zieltag, Startbereich, Zeitrestriktionen, Tourgröße, Ladezeit und Ladefolge bleiben berücksichtigt.")
+    st.title("Feiertags-Wochenplaner V18 – HTML Generator")
+    st.caption("Excel + Normal_Tourenstart.csv + Kisoft_Kunden.csv hochladen → HTML erzeugen. Neue Touren werden in V18 zusätzlich anhand passender Referenztouren aus der gesamten Woche aufgebaut und als Geo-Skizze ab Valluhn visualisiert. Zusätzlich besitzt jede Tour einen Visualisieren-Button und einen Google-Maps-Button für die aktuelle Reihenfolge. Ausfalltag, Zieltag, Startbereich, Zeitrestriktionen, Tourgröße, Ladezeit und Ladefolge bleiben berücksichtigt.")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -1231,7 +1274,7 @@ def main():
         info_upload = st.file_uploader("Kisoft_Kunden.csv", type=["csv"])
 
     if upload is None or starts_upload is None or info_upload is None:
-        st.info("Für V17 bitte alle drei aktuellen Dateien hochladen. Benötigte Excel-Blätter: DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
+        st.info("Für V18 bitte alle drei aktuellen Dateien hochladen. Benötigte Excel-Blätter: DIREKT, MK, HUPA_NMS und HUPA_MALCHOW.")
         return
 
     try:
@@ -1263,14 +1306,14 @@ def main():
     st.download_button(
         "Feiertags_Wochenplaner.html herunterladen",
         data=html.encode("utf-8"),
-        file_name="Feiertags_Wochenplaner_V17.html",
+        file_name="Feiertags_Wochenplaner_V18.html",
         mime="text/html",
         use_container_width=True,
     )
 
     st.markdown(
         """
-        **Neu in V17:**
+        **Neu in V18:**
         - neue Touren sind in der Wochenansicht klar mit **NEU** markiert
         - neue Touren dürfen sich an **Touren anderer Wochentage** im gleichen Startbereich orientieren; der Referenztag dient nur als Vorlage, eingeplant wird immer am gewählten Zieltag
         - Wochen-Referenzen beeinflussen Gebiet, typische Tourgröße, Startzeit-Vorlage und Gruppierung der Restkunden

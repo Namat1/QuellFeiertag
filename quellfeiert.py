@@ -46,6 +46,7 @@ ORS_HOST = "https://api.heigit.org"
 # Endpunkte laut HeiGIT-API-Doku (ORS Core 9.x); alte api.openrouteservice.org-Pfade als Ausweich
 ORS_ENDPOINTS = {
     "geocode": ["{host}/pelias/v1/search/structured", "https://api.openrouteservice.org/geocode/search/structured"],
+    "geocode_text": ["{host}/pelias/v1/search", "https://api.openrouteservice.org/geocode/search"],
     "matrix": ["{host}/openrouteservice/v2/matrix/{profile}", "https://api.openrouteservice.org/v2/matrix/{profile}"],
 }
 _ORS_WORKING: dict = {}                                        # Dienst → funktionierende URL-Vorlage
@@ -291,85 +292,163 @@ def ors_request(session, method: str, service: str, key: str, profile: str = "",
     raise last or RuntimeError("OpenRouteService nicht erreichbar")
 
 
-def geocode_ors(session, key: str, street: str, plz: str, city: str):
-    r = ors_request(
-        session, "GET", "geocode", key,
-        params={"address": street, "postalcode": plz, "locality": city, "country": "DE", "size": 1},
-        timeout=25,
-    )
+GEO_CACHE_VERSION = 2   # ältere Fehlschläge werden mit der verbesserten Suche automatisch erneut versucht
+_LAYER_Q = {"address": "addr", "venue": "addr", "street": "street"}
+
+
+def clean_street(s: str) -> str:
+    """'Hauptstr. 12-14 (Hof)' → 'Hauptstraße 12'."""
+    t = _txt(s)
+    t = re.sub(r"\([^)]*\)", " ", t)                                    # Klammerzusätze
+    t = re.sub(r"(?i)(\w)str\.?(?=\s|\d|$)", r"\1straße", t)            # Hauptstr. → Hauptstraße
+    t = re.sub(r"(?i)\bstr\.?(?=\s|\d|$)", "Straße", t)                  # Str. → Straße
+    t = re.sub(r"(?i)(\w)pl\.(?=\s|\d|$)", r"\1platz", t)                # Marktpl. → Marktplatz
+    t = re.sub(r"(?i)([a-zäöüß])(\d)", r"\1 \2", t)                        # Straße5 → Straße 5
+    t = re.sub(r"(\d+\s*[a-zA-Z]?)\s*[-–/+]\s*(?:\d+\s*[a-zA-Z]?|[a-zA-Z])\b", r"\1", t)   # 12-14, 12a-c → 12 / 12a
+    t = re.split(r"\s+/\s+|;|\s+-\s+", t)[0]                             # Zusatzinfos abtrennen
+    return re.sub(r"\s+", " ", t).strip(" ,.")
+
+
+def clean_city(s: str) -> str:
+    """'Neumünster OT Einfeld' → 'Neumünster', 'Hamburg (Altona)' → 'Hamburg'."""
+    t = _txt(s)
+    t = re.sub(r"\([^)]*\)", " ", t)
+    t = re.split(r"(?i)\s+OT\s+|\s*/\s*|,", t)[0]
+    return re.sub(r"\s+", " ", t).strip(" ,.")
+
+
+def _pick_feature(feats: list, center) -> tuple[dict | None, str]:
+    why = "kein Treffer" if not feats else ""
+    for f in feats:
+        props = f.get("properties") or {}
+        q = _LAYER_Q.get(props.get("layer", ""))
+        if not q:
+            why = why or f"nur {props.get('layer', '?')}-Ebene"
+            continue
+        lon, lat = f["geometry"]["coordinates"][:2]
+        if center and float(haversine(center[0], center[1], lat, lon)) > GEO_MAX_DEVIATION_KM:
+            why = why or "zu weit vom PLZ-Gebiet"
+            continue
+        return {"lat": float(lat), "lon": float(lon), "q": q}, ""
+    return None, why or "kein Treffer"
+
+
+def _ors_json(session, service: str, key: str, params: dict):
+    r = ors_request(session, "GET", service, key, params=params, timeout=25)
     if r.status_code in (401, 403, 429):
         raise QuotaError(f"OpenRouteService Geocoding: HTTP {r.status_code}")
     r.raise_for_status()
-    feats = r.json().get("features") or []
-    if not feats:
-        return None
-    f = feats[0]
-    lon, lat = f["geometry"]["coordinates"][:2]
-    q = {"address": "addr", "venue": "addr", "street": "street"}.get((f.get("properties") or {}).get("layer", ""))
-    return {"lat": float(lat), "lon": float(lon), "q": q, "src": "ors"} if q else None
+    return r.json().get("features") or []
 
 
-def geocode_nominatim(session, street: str, plz: str, city: str):
-    r = session.get(
-        NOMINATIM_URL,
-        params={"street": street, "postalcode": plz, "city": city, "country": "de", "format": "jsonv2", "limit": 1},
-        timeout=25,
-    )
-    if r.status_code in (403, 429):
-        raise QuotaError(f"Nominatim: HTTP {r.status_code}")
-    r.raise_for_status()
-    js = r.json()
-    if not js:
-        return None
-    h = js[0]
-    rank = int(h.get("place_rank") or 0)
-    q = "addr" if rank >= 28 else "street" if rank >= 26 else None
-    return {"lat": float(h["lat"]), "lon": float(h["lon"]), "q": q, "src": "osm"} if q else None
+def geocode_ors(session, key: str, street: str, plz: str, city: str, center=None):
+    """1) strukturiert, 2) Freitext mit Fokus auf PLZ-Zentrum. Rückgabe (Treffer, Grund)."""
+    feats = _ors_json(session, "geocode", key,
+                      {"address": street, "postalcode": plz, "locality": city, "country": "DE", "size": 3})
+    res, why = _pick_feature(feats, center)
+    if res:
+        return {**res, "src": "ors"}, ""
+    params = {"text": f"{street}, {plz} {city}", "boundary.country": "DEU", "size": 3}
+    if center:
+        params.update({"focus.point.lat": center[0], "focus.point.lon": center[1]})
+    time.sleep(0.65)
+    res, why2 = _pick_feature(_ors_json(session, "geocode_text", key, params), center)
+    return ({**res, "src": "ors-text"}, "") if res else (None, why2 or why)
+
+
+def geocode_nominatim(session, street: str, plz: str, city: str, center=None):
+    for params in (
+        {"street": street, "postalcode": plz, "city": city, "country": "de"},
+        {"q": f"{street}, {plz} {city}", "countrycodes": "de"},
+    ):
+        r = session.get(NOMINATIM_URL, params={**params, "format": "jsonv2", "limit": 3}, timeout=25)
+        if r.status_code in (403, 429):
+            raise QuotaError(f"Nominatim: HTTP {r.status_code}")
+        r.raise_for_status()
+        for h in r.json() or []:
+            rank = int(h.get("place_rank") or 0)
+            q = "addr" if rank >= 28 else "street" if rank >= 26 else None
+            if not q:
+                continue
+            lat, lon = float(h["lat"]), float(h["lon"])
+            if center and float(haversine(center[0], center[1], lat, lon)) > GEO_MAX_DEVIATION_KM:
+                continue
+            return {"lat": lat, "lon": lon, "q": q, "src": "osm"}, ""
+        time.sleep(1.1)
+    return None, "Nominatim ohne Treffer"
 
 
 def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_failed: bool = False,
-                      progress: Callable[[int, int], None] | None = None) -> tuple[pd.DataFrame, dict]:
-    """provider: 'ors' | 'osm' | 'cache' (nur vorhandenen Cache nutzen)."""
+                      progress: Callable[[int, int], None] | None = None,
+                      osm_fallback: bool = True) -> tuple[pd.DataFrame, dict]:
+    """provider: 'ors' | 'osm' | 'cache'. Bei 'ors' optional Nominatim als zweite Quelle."""
     cache = load_cache("geo_cache.json")
-    stats = {"neu": 0, "fehl": 0, "offen": 0, "abbruch": ""}
+    stats = {"neu": 0, "fehl": 0, "offen": 0, "abbruch": "", "gruende": {}}
     todo = []
-    for street, plz, city in df[["Strasse", "Plz", "Ort"]].drop_duplicates().itertuples(index=False, name=None):
-        if not _txt(street):
-            continue
+    seen = set()
+    for street, plz, city, plat, plon in df[["Strasse", "Plz", "Ort", "lat", "lon"]].itertuples(index=False, name=None):
         k = addr_key(street, plz, city)
+        if k in seen or not _txt(street):
+            continue
+        seen.add(k)
         c = cache.get(k)
-        if c is None or (retry_failed and c.get("fail")):
-            todo.append((k, _txt(street), _txt(plz), _txt(city)))
+        stale = c is not None and c.get("fail") and (retry_failed or c.get("v", 1) < GEO_CACHE_VERSION)
+        if c is None or stale:
+            center = None if plat is None or pd.isna(plat) else (float(plat), float(plon))
+            todo.append((k, clean_street(street), _txt(plz), clean_city(city), center))
     stats["offen"] = len(todo)
-    if todo and provider in ("ors", "osm") and (provider == "osm" or key):
+    can_ors = provider == "ors" and bool(key)
+    can_osm = provider == "osm" or (provider == "ors" and osm_fallback)
+    if todo and (can_ors or can_osm):
         import requests
         sess = requests.Session()
         sess.headers["User-Agent"] = HTTP_UA
-        delay = 0.65 if provider == "ors" else 1.1
-        for i, (k, street, plz, city) in enumerate(todo):
+        ors_dead = not can_ors
+        for i, (k, street, plz, city, center) in enumerate(todo):
             if progress:
                 progress(i, len(todo))
-            try:
-                res = geocode_ors(sess, key, street, plz, city) if provider == "ors" else geocode_nominatim(sess, street, plz, city)
-            except QuotaError as exc:
-                stats["abbruch"] = str(exc)
+            res, why = None, ""
+            if not ors_dead:
+                try:
+                    res, why = geocode_ors(sess, key, street, plz, city, center)
+                except QuotaError as exc:
+                    stats["abbruch"] = str(exc) + (" – weiter mit Nominatim" if can_osm else "")
+                    ors_dead = True
+                except Exception as exc:
+                    why = f"Fehler: {str(exc)[:60]}"
+                time.sleep(0.65)
+            if res is None and can_osm:
+                try:
+                    res, why_osm = geocode_nominatim(sess, street, plz, city, center)
+                    why = why or why_osm
+                except QuotaError as exc:
+                    stats["abbruch"] = str(exc)
+                    can_osm = False
+                except Exception as exc:
+                    why = why or f"Fehler: {str(exc)[:60]}"
+                time.sleep(1.1)
+            if res is None and ors_dead and not can_osm:
                 break
-            except Exception:
-                res = None
-            cache[k] = res or {"fail": True}
-            stats["neu" if res else "fehl"] += 1
+            cache[k] = {**res, "v": GEO_CACHE_VERSION} if res else {"fail": True, "why": why, "v": GEO_CACHE_VERSION}
+            if res:
+                stats["neu"] += 1
+            else:
+                stats["fehl"] += 1
+                stats["gruende"][why] = stats["gruende"].get(why, 0) + 1
             stats["offen"] -= 1
             if i % 25 == 24:
                 save_cache("geo_cache.json", cache)
-            time.sleep(delay)
         save_cache("geo_cache.json", cache)
 
     out = df.copy()
     lat, lon, gq = out["lat"].tolist(), out["lon"].tolist(), out["gq"].tolist()
     rejected = 0
+    reasons: dict = {}
     for i, (street, plz, city) in enumerate(out[["Strasse", "Plz", "Ort"]].itertuples(index=False, name=None)):
         c = cache.get(addr_key(street, plz, city))
         if not c or c.get("fail"):
+            if c and c.get("why"):
+                reasons[c["why"]] = reasons.get(c["why"], 0) + 1
             continue
         plat, plon = lat[i], lon[i]
         if plat is not None and not pd.isna(plat) and float(haversine(plat, plon, c["lat"], c["lon"])) > GEO_MAX_DEVIATION_KM:
@@ -377,7 +456,12 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
             continue
         lat[i], lon[i], gq[i] = c["lat"], c["lon"], c.get("q", "addr")
     out["lat"], out["lon"], out["gq"] = lat, lon, gq
+    out["geo_grund"] = [
+        (cache.get(addr_key(st_, pz, ct)) or {}).get("why", "") if g_ == "plz" else ""
+        for st_, pz, ct, g_ in out[["Strasse", "Plz", "Ort", "gq"]].itertuples(index=False, name=None)
+    ]
     stats["verworfen"] = rejected
+    stats["gruende_gesamt"] = reasons
     return out, stats
 
 
@@ -1743,6 +1827,8 @@ def main():
             k_neighbors = st.slider("Nachbarn je Kunde in der Matrix", 8, 40, 20,
                                     help="Straßenwerte für Depot↔Kunde und die k nächsten Kunden je Startbereich. "
                                          "Übrige Paare: Luftlinie × kalibrierter Umwegfaktor.")
+            osm_fallback = st.checkbox("Nominatim (OSM) als zweite Quelle", value=True,
+                                       help="Adressen, die ORS nicht findet, zusätzlich bei OpenStreetMap suchen (1 Adresse/Sek.).")
             retry_failed = st.checkbox("Nicht gefundene Adressen erneut versuchen", value=False)
         with g3:
             coord_upload = st.file_uploader("Koordinaten-CSV (optional)", type=["csv"],
@@ -1772,10 +1858,13 @@ def main():
         st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt.")
     bar = st.progress(0.0, text="Adressen verorten …")
     geo, gstats = geocode_addresses(
-        geo, provider, ors_key, retry_failed,
+        geo, provider, ors_key, retry_failed, osm_fallback=osm_fallback,
         progress=lambda i, n: bar.progress(min(1.0, (i + 1) / max(1, n)), text=f"Adressen verorten … {i + 1}/{n}"),
     )
     bar.empty()
+    if gstats["neu"] or gstats["fehl"]:
+        st.caption(f"Geocoding: {gstats['neu']} neu gefunden, {gstats['fehl']} nicht gefunden"
+                   + (f", {gstats['verworfen']} verworfen (> {GEO_MAX_DEVIATION_KM:.0f} km vom PLZ-Gebiet)" if gstats.get("verworfen") else ""))
     if gstats["abbruch"]:
         st.warning(f"Geocoding abgebrochen: {gstats['abbruch']} – {gstats['offen']} Adressen offen, nächster Lauf macht weiter.")
     if coord_upload is not None:
@@ -1842,9 +1931,12 @@ def main():
             file_name="Kunden_Koordinaten.csv", mime="text/csv", use_container_width=True,
             help="Prüfen/korrigieren und als Koordinaten-CSV wieder hochladen. Zeilen mit gq=plz werden dabei ignoriert.",
         )
-    bad = geo[geo["gq"].isin(["plz", None]) | geo["gq"].isna()][["SAP", "Name", "Strasse", "Plz", "Ort", "gq"]].drop_duplicates("SAP")
+    cols_bad = [c for c in ["SAP", "Name", "Strasse", "Plz", "Ort", "gq", "geo_grund"] if c in geo.columns]
+    bad = geo[geo["gq"].isin(["plz"]) | geo["gq"].isna()][cols_bad].drop_duplicates("SAP")
     if len(bad):
         with st.expander(f"{len(bad)} Kunden nicht adressgenau verortet"):
+            if "geo_grund" in bad.columns:
+                st.write(bad["geo_grund"].replace("", "nicht abgefragt / keine Straße").value_counts())
             st.dataframe(bad, use_container_width=True, hide_index=True)
     if matched is not None:
         st.caption("Mit Referenzplan: Ausfalltage und Zieltag werden in der HTML automatisch erkannt. "

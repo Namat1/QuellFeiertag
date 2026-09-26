@@ -3,7 +3,8 @@
 Neu in V28:
 - Geocoding je Adresse (OpenRouteService oder Nominatim) mit lokalem Cache, Plausibilitätsprüfung gegen PLZ,
   Fallback PLZ-Zentrum; optionale Koordinaten-CSV (SAP;lat;lon) hat Vorrang
-- Straßenmatrix (ORS driving-hgv oder driving-car, Basis-URL api.heigit.org/openrouteservice mit Ausweich auf api.openrouteservice.org) für Depot↔Kunde und die k nächsten Nachbarn je Startbereich,
+- Straßenmatrix (ORS driving-hgv oder driving-car) über api.heigit.org (/openrouteservice/v2/matrix, Adresssuche
+  /pelias/v1/search/structured), Ausweich auf die alten api.openrouteservice.org-Pfade für Depot↔Kunde und die k nächsten Nachbarn je Startbereich,
   lokal gecacht; fehlende Paare per kalibriertem Umwegfaktor/Tempo aus den echten Paaren
 - HTML rechnet Fahrzeiten, km, ETA und Zeitkonflikte mit Straßenwerten (offline, Matrix eingebettet)
 - Nachoptimierung: 2-opt/Or-opt je Tour mit Zeitfenstern, Relocate/Swap zwischen Touren eines Startbereichs,
@@ -41,9 +42,13 @@ DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 CACHE_DIR = Path(__file__).resolve().parent / "feiertags_cache"
-ORS_BASE = "https://api.heigit.org/openrouteservice"          # neue HeiGIT-Adresse
-ORS_FALLBACK_BASES = ["https://api.openrouteservice.org"]     # alte Adresse als Ausweich
-_ORS_WORKING: dict = {}                                        # Dienst → funktionierende Basis-URL
+ORS_HOST = "https://api.heigit.org"
+# Endpunkte laut HeiGIT-API-Doku (ORS Core 9.x); alte api.openrouteservice.org-Pfade als Ausweich
+ORS_ENDPOINTS = {
+    "geocode": ["{host}/pelias/v1/search/structured", "https://api.openrouteservice.org/geocode/search/structured"],
+    "matrix": ["{host}/openrouteservice/v2/matrix/{profile}", "https://api.openrouteservice.org/v2/matrix/{profile}"],
+}
+_ORS_WORKING: dict = {}                                        # Dienst → funktionierende URL-Vorlage
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 HTTP_UA = "NFC-Feiertagsplaner/28 (interne Tourenplanung)"
 MATRIX_MAX_ELEMENTS = 2500      # Quellen × Ziele je ORS-Anfrage (Free-Tier: 3500)
@@ -263,31 +268,32 @@ def addr_key(street, plz, city) -> str:
     return "|".join(_txt(x).lower() for x in (street, plz, city))
 
 
-def ors_request(session, method: str, service: str, path: str, key: str, **kw):
-    """Probiert ORS_BASE und danach die Ausweich-Adressen; merkt sich je Dienst die funktionierende Basis.
-    Key wird als Header und (bei GET) als api_key-Parameter übergeben."""
-    bases = list(dict.fromkeys([_ORS_WORKING.get(service), ORS_BASE, *ORS_FALLBACK_BASES]))
+def ors_request(session, method: str, service: str, key: str, profile: str = "", **kw):
+    """HeiGIT-Endpunkt zuerst, bei 404/405/Netzwerkfehler der alte ORS-Pfad; merkt sich den funktionierenden.
+    Key als Authorization-Header, bei GET zusätzlich als api_key-Parameter."""
+    templates = [t for t in dict.fromkeys([_ORS_WORKING.get(service), *ORS_ENDPOINTS[service]]) if t]
     headers = {"Authorization": key}
     if method == "GET":
         kw.setdefault("params", {})["api_key"] = key
     last = None
-    for base in [b for b in bases if b]:
+    for i, tpl in enumerate(templates):
+        url = tpl.format(host=ORS_HOST.rstrip("/"), profile=profile)
         try:
-            r = session.request(method, base.rstrip("/") + path, headers=headers, **kw)
+            r = session.request(method, url, headers=headers, **kw)
         except Exception as exc:
             last = exc
             continue
-        if r.status_code in (404, 405) or (r.status_code >= 500 and base != bases[-1]):
-            last = RuntimeError(f"{base}{path}: HTTP {r.status_code}")
+        if r.status_code in (404, 405) or (r.status_code >= 500 and i < len(templates) - 1):
+            last = RuntimeError(f"{url}: HTTP {r.status_code}")
             continue
-        _ORS_WORKING[service] = base
+        _ORS_WORKING[service] = tpl
         return r
     raise last or RuntimeError("OpenRouteService nicht erreichbar")
 
 
 def geocode_ors(session, key: str, street: str, plz: str, city: str):
     r = ors_request(
-        session, "GET", "geocode", "/geocode/search/structured", key,
+        session, "GET", "geocode", key,
         params={"address": street, "postalcode": plz, "locality": city, "country": "DE", "size": 1},
         timeout=25,
     )
@@ -515,7 +521,7 @@ def fetch_matrix(nodes: list, pairs: set, key: str = "", max_requests: int = 450
                 "metrics": ["distance", "duration"], "units": "km",
             }
             try:
-                r = ors_request(sess, "POST", "matrix", f"/v2/matrix/{profile}", key, json=body, timeout=90)
+                r = ors_request(sess, "POST", "matrix", key, profile=profile, json=body, timeout=90)
             except Exception as exc:
                 stats["abbruch"] = f"Netzwerkfehler: {exc}"
                 break
@@ -1690,7 +1696,7 @@ initControls();buildOriginalPlan();
 # ---------------------------------------------------------------------------
 
 def main():
-    global ORS_BASE
+    global ORS_HOST
     import os
 
     import streamlit as st
@@ -1723,8 +1729,9 @@ def main():
         with g1:
             ors_key = st.text_input("OpenRouteService API-Key", value=default_key, type="password",
                                     help="HeiGIT-Account (account.heigit.org). Alternativ Umgebungsvariable ORS_API_KEY.")
-            ors_base = st.text_input("ORS-Basis-URL", value=ORS_BASE,
-                                     help="Standard: api.heigit.org/openrouteservice – bei 404 automatisch api.openrouteservice.org.")
+            ors_base = st.text_input("ORS-Server", value=ORS_HOST,
+                                     help="Standard https://api.heigit.org – Adresssuche über /pelias/v1/search/structured, "
+                                          "Matrix über /openrouteservice/v2/matrix/{Profil}. Ein eingefügter Pfad wird ignoriert.")
             provider_label = st.radio(
                 "Adressen verorten über",
                 ["OpenRouteService", "Nominatim (OSM, 1 Adresse/Sek.)", "nur Cache / PLZ"], horizontal=True,
@@ -1757,10 +1764,9 @@ def main():
         st.error(f"Fehler: {exc}")
         return
 
-    ORS_BASE = (ors_base or ORS_BASE).strip().rstrip("/")
-    for suffix in ("/v2/directions/driving-car", "/v2/directions/driving-hgv", "/v2/matrix/driving-hgv", "/v2/matrix/driving-car"):
-        if ORS_BASE.endswith(suffix):
-            ORS_BASE = ORS_BASE[: -len(suffix)]
+    from urllib.parse import urlparse
+    u = urlparse((ors_base or ORS_HOST).strip())
+    ORS_HOST = f"{u.scheme or 'https'}://{u.netloc or u.path.split('/')[0]}"
     provider = {"OpenRouteService": "ors", "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
     if provider == "ors" and not ors_key:
         st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt.")

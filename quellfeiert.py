@@ -42,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-9 (Overpass als Auswahl)"
+APP_BUILD = "V28 · Build 27.09.-10 (Photon + Overpass ohne Kontingent)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -57,6 +57,7 @@ ORS_ENDPOINTS = {
 }
 _ORS_WORKING: dict = {}                                        # Dienst → funktionierende URL-Vorlage
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+PHOTON_URL = "https://photon.komoot.io/api/"
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -276,7 +277,8 @@ class RateLimiter:
 
 LIM_ORS_GEO = RateLimiter(95)   # HeiGIT Standard: 100 Geocoding-Anfragen/Minute
 LIM_OSM = RateLimiter(57)       # Nominatim: max. 1 Anfrage/Sekunde
-LIM_OVP = RateLimiter(60)       # Overpass: fair use
+LIM_OVP = RateLimiter(30)       # Overpass: fair use (schonend)
+LIM_PHOTON = RateLimiter(50)    # Photon (komoot): fair use
 
 
 def _read_json(path: Path) -> dict:
@@ -641,11 +643,49 @@ def _el_latlon(el):
     return (float(c["lat"]), float(c["lon"])) if "lat" in c else None
 
 
+def geocode_photon(session, street: str, plz: str, city: str, center=None):
+    """Photon (komoot, OSM-basiert): kein Key, kein Tageskontingent. Rückgabe (Treffer, Grund)."""
+    params = {"q": f"{street}, {plz} {city}".strip(" ,"), "limit": 5, "lang": "de"}
+    if center:
+        params.update({"lat": round(center[0], 4), "lon": round(center[1], 4)})
+    for attempt in range(2):
+        LIM_PHOTON.wait()
+        r = session.get(PHOTON_URL, params=params, timeout=25)
+        if r.status_code not in (429, 502, 503, 504):
+            break
+        time.sleep(10)
+    if r.status_code in (403, 429):
+        raise QuotaError(f"Photon: HTTP {r.status_code}")
+    r.raise_for_status()
+    _, hn = split_street(street)
+    best, best_q = None, None
+    for f in r.json().get("features") or []:
+        p = f.get("properties") or {}
+        lon, lat = f["geometry"]["coordinates"][:2]
+        if center and float(haversine(center[0], center[1], lat, lon)) > GEO_MAX_DEVIATION_KM:
+            continue
+        if plz and p.get("postcode") and str(p["postcode"])[:5] != str(plz)[:5]:
+            continue
+        typ = p.get("type")
+        if typ == "house" or p.get("housenumber"):
+            same_hn = not hn or re.sub(r"\D", "", str(p.get("housenumber", ""))) == re.sub(r"\D", "", hn)
+            q = "addr" if same_hn else "street"
+        elif typ == "street" or p.get("osm_key") == "highway":
+            q = "street"
+        else:
+            continue
+        if best is None or (q == "addr" and best_q != "addr"):
+            best, best_q = {"lat": float(lat), "lon": float(lon), "q": q, "src": "photon"}, q
+            if q == "addr":
+                break
+    return (best, "") if best else (None, "Photon: kein Treffer")
+
+
 def hn_of(street: str) -> str:
     return split_street(street)[1]
 
 
-def geocode_overpass(session, street: str, center, radius_m: int = 12000):
+def geocode_overpass(session, street: str, center, radius_m: int = 6000):
     """Adresse direkt in OpenStreetMap: Gebäude/Knoten mit addr:street + addr:housenumber im Umkreis des PLZ-Zentrums.
     Ohne Tageskontingent. Fallback: Mitte der Straße. Rückgabe (Treffer, Grund)."""
     if not center:
@@ -730,6 +770,15 @@ def connection_test(key: str) -> list:
     run("ORS Adresssuche", ors_geo)
     run("ORS Matrix (LKW)", ors_mat)
     run("Nominatim (OSM)", osm)
+
+    def photon():
+        r = sess.get(PHOTON_URL, params={"q": "Am Heisterbusch 24, 19246 Lüttow-Valluhn", "limit": 1}, timeout=25)
+        f = (r.json().get("features") or [{}])[0] if r.ok else {}
+        p = f.get("properties") or {}
+        return f"HTTP {r.status_code}", (f"{p.get('type')} · {p.get('street')} {p.get('housenumber', '')} · {p.get('city')} · "
+                                         f"{(f.get('geometry') or {}).get('coordinates')}" if r.ok else r.text[:160])
+
+    run("Photon (komoot)", photon)
     for url in OVERPASS_URLS:
         def ovp(url=url):
             q = f'[out:json][timeout:30];way(around:800,{DEPOT_LATLON[0]},{DEPOT_LATLON[1]})["highway"]["name"];out tags center;'
@@ -767,7 +816,7 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
     stats["offen"] = len(todo)
     can_ors = provider == "ors" and bool(key)
     can_osm = provider == "osm" or (provider == "ors" and osm_fallback)
-    if todo and provider in ("ors", "osm", "ovp"):
+    if todo and provider in ("ors", "osm", "ovp", "photon"):
         # Pipeline: Hauptthread fragt ORS ab, ein zweiter Thread erledigt parallel OSM (Nominatim + Straßenabgleich)
         # für die ORS-Fehlschläge. Beide Dienste haben eigene Tempolimits → Gesamtzeit ≈ max statt Summe.
         import requests
@@ -778,7 +827,8 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
             return ss
 
         lock = threading.Lock()
-        state = {"ors_dead": not can_ors, "can_osm": can_osm, "street_fail": 0, "done": 0}
+        state = {"ors_dead": not can_ors, "can_osm": can_osm, "street_fail": 0, "done": 0,
+                 "can_photon": provider != "ovp"}
         street_cache = load_cache("street_cache.json")
         jobs: queue.Queue = queue.Queue()
 
@@ -813,6 +863,25 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                     why = join(why, str(exc))
                 except Exception as exc:
                     why = join(why, f"OSM-Fehler: {str(exc)[:50]}")
+            if res is None and state.get("can_photon", True):
+                try:
+                    r_ph, w_ph = geocode_photon(ss, street, plz, city, center)
+                    if r_ph:
+                        res, why = r_ph, ""
+                    else:
+                        why = join(why, w_ph)
+                except QuotaError as exc:
+                    state["can_photon"] = False
+                    why = join(why, str(exc))
+                except Exception as exc:
+                    why = join(why, f"Photon-Fehler: {type(exc).__name__}")
+            if res is not None and res.get("q") == "street" and hn_of(street) and center is not None and state["street_fail"] < 6:
+                try:   # Straßenmitte von Photon → Overpass versucht noch die Hausnummer
+                    r_ovp, _ = geocode_overpass(ss, street, center)
+                    if r_ovp and r_ovp.get("q") == "addr":
+                        res = r_ovp
+                except Exception:
+                    pass
             if res is None and center is not None and state["street_fail"] < 6:
                 try:
                     r_ovp, w_ovp = geocode_overpass(ss, street, center)
@@ -2453,9 +2522,11 @@ def main():
                                           "Matrix über /openrouteservice/v2/matrix/{Profil}. Ein eingefügter Pfad wird ignoriert.")
             provider_label = st.radio(
                 "Adressen verorten über",
-                ["OpenRouteService", "Overpass (OSM, ohne Kontingent)", "Nominatim (OSM, 1 Adresse/Sek.)", "nur Adressdatei / PLZ"],
+                ["OpenRouteService", "Photon (OSM, ohne Kontingent)", "Overpass (OSM, ohne Kontingent)",
+                 "Nominatim (OSM, 1 Adresse/Sek.)", "nur Adressdatei / PLZ"],
                 horizontal=True,
-                help="Overpass: sucht Hausnummer bzw. Straße direkt in OpenStreetMap – kein Tageskontingent, kein API-Key. "
+                help="Photon: schnelle OSM-Adresssuche (komoot) – kein Key, kein Tageskontingent. "
+                     "Overpass: sucht Hausnummer bzw. Straße direkt in OpenStreetMap – kein Tageskontingent, kein API-Key. "
                      "Ideal, wenn das ORS-Kontingent aufgebraucht ist oder die Adressen bereits sauber ausgeschrieben sind.",
             )
         with g2:
@@ -2514,7 +2585,7 @@ def main():
 
     ORS_HOST = _host_from(ors_base)
     LIM_ORS_GEO.set(ors_rate)
-    provider = {"OpenRouteService": "ors", "Overpass (OSM, ohne Kontingent)": "ovp",
+    provider = {"OpenRouteService": "ors", "Overpass (OSM, ohne Kontingent)": "ovp", "Photon (OSM, ohne Kontingent)": "photon",
                 "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
     if provider == "ors" and not ors_key:
         st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt.")

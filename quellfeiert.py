@@ -898,7 +898,7 @@ def apply_coordinate_overrides(df: pd.DataFrame, file_bytes: bytes) -> tuple[pd.
 ADDR_SHEET, MATRIX_SHEET = "Adressen", "Strassenmatrix"
 ADDR_COLUMNS = ["SAP", "Quelle", "Name", "Strasse_SAP", "Strasse", "Plz", "Ort", "lat", "lon", "Status", "Hinweis"]
 STATUS_LABEL = {"datei": "fest (Datei)", "manuell": "fest (manuell)", "addr": "adressgenau",
-                "street": "Straßenmitte", "plz": "PLZ – bitte prüfen"}
+                "street": "Straßenmitte", "plz": "PLZ – bitte prüfen", "geprueft": "Adresse geprüft – wird gesucht"}
 
 
 def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, dict]:

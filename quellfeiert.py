@@ -42,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-13 (gesperrte Touren, Parameter-Vergleich)"
+APP_BUILD = "V28 · Build 27.09.-17 (Kundengedächtnis, Reformationstag, Datumsgewichtung)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -1044,20 +1044,32 @@ def apply_coordinate_overrides(df: pd.DataFrame, file_bytes: bytes) -> tuple[pd.
 # Adressdatei (xlsx): einziger dauerhafter Speicher für Adressen, Koordinaten und Straßenentfernungen
 # ---------------------------------------------------------------------------
 
-ADDR_SHEET, MATRIX_SHEET = "Adressen", "Strassenmatrix"
+ADDR_SHEET, MATRIX_SHEET, HIST_SHEET = "Adressen", "Strassenmatrix", "Planungsgedaechtnis"
 ADDR_COLUMNS = ["SAP", "Quelle", "Name", "Strasse_SAP", "Strasse", "Plz", "Ort", "lat", "lon", "Status", "Hinweis"]
 STATUS_LABEL = {"datei": "fest (Datei)", "manuell": "fest (manuell)", "addr": "adressgenau",
                 "street": "Straßenmitte", "plz": "PLZ – bitte prüfen", "geprueft": "Adresse geprüft – wird gesucht"}
 
 
+LAST_HISTORY: dict = {}
+
+
 def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, dict]:
-    """Liest die Adressdatei (xlsx oder csv). Rückgabe: Adresstabelle, Matrix-Cache {coordkey: [km, min]}."""
+    """Liest die Adressdatei (xlsx oder csv). Rückgabe: Adresstabelle, Matrix-Cache {coordkey: [km, min]}.
+    Ein vorhandenes Planungsgedächtnis landet in LAST_HISTORY."""
+    global LAST_HISTORY
+    LAST_HISTORY = {}
     matrix: dict = {}
     if name.lower().endswith(".csv"):
         adr = pd.read_csv(io.BytesIO(file_bytes), sep=None, engine="python", dtype=str, encoding="utf-8-sig")
     else:
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
         adr = pd.read_excel(xl, sheet_name=ADDR_SHEET if ADDR_SHEET in xl.sheet_names else 0, dtype=str)
+        if HIST_SHEET in xl.sheet_names:
+            try:
+                hs = pd.read_excel(xl, sheet_name=HIST_SHEET, dtype=str)
+                LAST_HISTORY = json.loads("".join(hs["json"].fillna("").tolist()))
+            except Exception:
+                LAST_HISTORY = {}
         if MATRIX_SHEET in xl.sheet_names:
             m = pd.read_excel(xl, sheet_name=MATRIX_SHEET)
             for r in m.itertuples(index=False):
@@ -1124,7 +1136,7 @@ def apply_address_file(df: pd.DataFrame, adr: pd.DataFrame, addresses: bool = Tr
 
 
 def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrix_cache: dict,
-                           prev: pd.DataFrame | None = None) -> bytes:
+                           prev: pd.DataFrame | None = None, history: dict | None = None) -> bytes:
     """Aktualisierte Adressdatei: alle Kunden mit bester Koordinate + Straßenmatrix (koordinatenbasiert)."""
     from openpyxl.styles import Alignment, Font, PatternFill
     orig = original.drop_duplicates("SAP").set_index("SAP")
@@ -1172,6 +1184,10 @@ def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrix_cac
         adr.to_excel(w, sheet_name=ADDR_SHEET, index=False)
         mat.to_excel(w, sheet_name=MATRIX_SHEET, index=False)
         info.to_excel(w, sheet_name="Info", index=False)
+        if history:
+            js = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
+            pd.DataFrame({"json": [js[i:i + 30000] for i in range(0, len(js), 30000)]}).to_excel(w, sheet_name=HIST_SHEET, index=False)
+            w.sheets[HIST_SHEET].column_dimensions["A"].width = 60
         ws = w.sheets[ADDR_SHEET]
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
@@ -1194,6 +1210,232 @@ def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrix_cac
         for c in w.sheets["Info"]["A"]:
             c.alignment = Alignment(wrap_text=False)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Planungsgedächtnis: historische Feiertagspläne auswerten (Vortag/Folgetag, Zieltouren)
+# ---------------------------------------------------------------------------
+
+HIST_SHEETS = {"Direkt 1 - 99": "DIREKT", "Hupa MK 882": "MK", "Hupa 2221-4444": "HUPA_NMS", "Hupa 7773-7779": "HUPA_MALCHOW",
+               "DIREKT": "DIREKT", "MK": "MK", "HUPA_NMS": "HUPA_NMS", "HUPA_MALCHOW": "HUPA_MALCHOW",
+               "Direktkunden": "DIREKT", "HUPA NMS + ZAR": "HUPA_NMS", "HUPA MAL": "HUPA_MALCHOW"}
+HIST_DAY_ALIAS = {"MO": "Mo", "DI": "Die", "MI": "Mitt", "DO": "Don", "FR": "Fr", "SA": "Sam",
+                  "Mo": "Mo", "Die": "Die", "Mitt": "Mitt", "Don": "Don", "Fr": "Fr", "Sam": "Sam"}
+HIST_ART = {"DIREKT": "DIREKT", "MK": "MK", "HUPA NMS": "HUPA_NMS", "HUPA ZAR": "HUPA_NMS", "HUPA MAL": "HUPA_MALCHOW",
+            "HUPA MALCHOW": "HUPA_MALCHOW"}
+
+
+def _parse_plan_sheet(raw: pd.DataFrame, quelle: str | None) -> pd.DataFrame | None:
+    """Kopfzeile suchen (Zeile mit ≥4 Wochentagen + Nr/SAP) – deckt alte und neue Formate ab."""
+    hr, dated = None, False
+    is_date = lambda v: bool(re.fullmatch(r"\d{1,2}\.\d{1,2}\.?(\d{2,4})?", v))
+    for i in range(min(8, len(raw))):
+        vals = [str(v).strip() for v in raw.iloc[i].tolist()]
+        if not any(v in ("Nr", "CSB") or v.startswith("SAP") for v in vals):
+            continue
+        if sum(v in HIST_DAY_ALIAS for v in vals) >= 4:
+            hr = i
+            break
+        if sum(is_date(v) for v in vals[:20]) >= 5:   # Kopf mit Datumsangaben '29.10.' … statt Wochentagen
+            hr, dated = i, True
+            break
+    if hr is None:
+        return None
+    col = {}
+    hdr = [str(v).strip() for v in raw.iloc[hr].tolist()]
+    if dated:
+        first = next(i for i, v in enumerate(hdr) if is_date(v))
+        for j, d in enumerate(DAY_COLUMNS):
+            if first + j < len(hdr) and is_date(hdr[first + j]):
+                col[d] = first + j
+    for i, h in enumerate(hdr):
+        if h in HIST_DAY_ALIAS and HIST_DAY_ALIAS[h] not in col:
+            col[HIST_DAY_ALIAS[h]] = i
+        elif h in ("Nr", "CSB") and "CSB" not in col:
+            col["CSB"] = i
+        elif h.startswith("SAP") and "SAP" not in col:
+            col["SAP"] = i
+        elif h == "Art" and "Art" not in col:
+            col["Art"] = i
+    d = pd.DataFrame({k: raw.iloc[hr + 1:, i].values for k, i in col.items()})
+    if quelle is None:
+        if "Art" not in d:
+            return None
+        d["Quelle"] = d["Art"].astype(str).str.strip().str.upper().map(HIST_ART)
+    else:
+        d["Quelle"] = quelle
+    for k in DAY_COLUMNS + ["CSB", "SAP"]:
+        d[k] = pd.to_numeric(d[k], errors="coerce") if k in d.columns else np.nan
+    d = d[(d["CSB"].notna() | d["SAP"].notna()) & d["Quelle"].notna()]
+    return d[["Quelle", "CSB", "SAP", *DAY_COLUMNS]]
+
+
+def load_plan_any(file_bytes: bytes) -> pd.DataFrame:
+    """Liest Wochen-/Feiertagspläne in allen bekannten Formaten: aktuelle Quelldatei, alte Blätter
+    ('Direkt 1 - 99' …, Spalte 'Nr' = CSB), 'Direktkunden'/'HUPA MAL' und Einblatt-Listen mit Spalte 'Art'."""
+    xl = pd.ExcelFile(io.BytesIO(file_bytes))
+    out = []
+    for sheet in xl.sheet_names:
+        single = len(xl.sheet_names) == 1 or str(sheet).upper().startswith("KW")
+        if sheet not in HIST_SHEETS and not single:
+            continue
+        raw = pd.read_excel(xl, sheet_name=sheet, header=None)
+        if raw.empty:
+            continue
+        d = _parse_plan_sheet(raw, HIST_SHEETS.get(sheet))
+        if d is not None and len(d):
+            out.append(d)
+    if not out:
+        raise ValueError("keine Tourenblätter gefunden")
+    return pd.concat(out, ignore_index=True)
+
+
+def plan_date(file_bytes: bytes):
+    """Letzte Speicherung laut Office-Metadaten – dient zum Paaren von Plänen aus derselben Zeit."""
+    try:
+        import zipfile
+        core = zipfile.ZipFile(io.BytesIO(file_bytes)).read("docProps/core.xml").decode("utf-8", "ignore")
+        m = re.search(r"<dcterms:modified[^>]*>(\d{4}-\d{2}-\d{2})", core)
+        return pd.Timestamp(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+def _detect_outage(h: pd.DataFrame, n: pd.DataFrame):
+    """Ausfalltag = Tag, dessen Kunden (laut Normalplan n) im Plan h fehlen und/oder auf Nachbartage wandern."""
+    m = h.merge(n, on="k", suffixes=("", "_n"))
+    best, best_score = None, 0
+    for i, d in enumerate(DAY_COLUMNS):
+        nb = [DAY_COLUMNS[j] for j in (i - 1, i + 1) if 0 <= j < len(DAY_COLUMNS)]
+        isd = m[d + "_n"].notna()
+        aff = m[isd]
+        if not len(aff):
+            continue
+        score = 0
+        for x in nb:   # neue Lieferungen am Nachbartag – müssen fast nur Kunden dieses Tages betreffen
+            add = m[x].notna() & (m[x + "_n"].isna() | (m[x] != m[x + "_n"]))
+            score += int((add & isd).sum()) - 2 * int((add & ~isd).sum())
+        if aff[d].isna().mean() > 0.8:
+            score += len(aff)
+        wiped = aff[d].isna().mean() > 0.8
+        if h[d].notna().sum() < 0.05 * max(1, n[d].notna().sum()):   # Spalte komplett geleert = eindeutig
+            score += 10 * len(aff)
+        # nicht geleerte Spalte: mind. 30 % der Kunden muss auf Nachbartage gewandert sein
+        if not wiped and score < 0.3 * len(aff):
+            continue
+        if score > best_score:
+            best, best_score = d, score
+    return (best if best_score >= 25 else None), m
+
+
+def analyze_history(base: pd.DataFrame, files: list) -> tuple[dict, list]:
+    """files: [(name, bytes)]. Ergebnis: {Ausfalltag: {'tours': {Quelle|Tour: {prev,next,both,cov,tt:{Tag|Tour:n}}},
+    'sap': {Quelle|SAP: {prev,next}}, 'files': [...]}} + Protokoll.
+    Normalplan je Datei: ein anderer hochgeladener Plan aus derselben Zeit (±21 Tage), in dem der Ausfalltag
+    normal beliefert wird (z. B. Karfreitag ↔ Ostermontag); sonst die aktuelle Quelldatei.
+    Jüngere Pläne zählen stärker (Disponenten übernehmen meist den Vorjahresplan)."""
+    import hashlib
+    b = base[["Quelle", "SAP", "CSB", *DAY_COLUMNS]].copy()
+    plans, log, seen = [], [], set()
+    for name, data in files:
+        hsh = hashlib.md5(data).hexdigest()
+        if hsh in seen:
+            log.append({"Datei": name, "Ausfalltag": "–", "Kunden": 0, "Hinweis": "doppelt hochgeladen – übersprungen"})
+            continue
+        seen.add(hsh)
+        try:
+            plans.append({"name": name, "df": load_plan_any(data), "date": plan_date(data)})
+        except Exception as exc:
+            log.append({"Datei": name, "Ausfalltag": "–", "Kunden": 0, "Hinweis": f"nicht lesbar: {exc}"})
+    # CSB → SAP (alte Pläne ohne SAP-Spalte)
+    c2s = {}
+    for d in [b] + [p["df"] for p in plans]:
+        for c, sp in d.loc[d["CSB"].notna() & d["SAP"].notna(), ["CSB", "SAP"]].itertuples(index=False):
+            c2s.setdefault(int(c), int(sp))
+    def keyed(d):
+        d = d.copy()
+        d["SAP"] = d["SAP"].fillna(d["CSB"].map(lambda c: c2s.get(int(c)) if pd.notna(c) else np.nan))
+        d = d[d["SAP"].notna()]
+        d["k"] = d["SAP"].astype("int64")
+        return d.drop_duplicates("k")
+    bk = keyed(b)
+    base_q = dict(zip(bk["k"], bk["Quelle"]))
+    for p in plans:
+        p["df"] = keyed(p["df"])
+        p["out"], _ = _detect_outage(p["df"], bk)
+    hist: dict = {}
+    for p in plans:
+        name, h, best = p["name"], p["df"], p["out"]
+        if not best:
+            log.append({"Datei": name, "Ausfalltag": "–", "Kunden": len(h), "Hinweis": "kein Ausfalltag erkennbar"})
+            continue
+        # Normalplan aus derselben Zeit suchen
+        normal, nname = bk, "aktuelle Quelldatei"
+        if p["date"] is not None:
+            cands = [q for q in plans if q is not p and q["date"] is not None and abs((q["date"] - p["date"]).days) <= 21
+                     and q["out"] != best and q["df"][best].notna().sum() >= 0.7 * max(1, bk[best].notna().sum())]
+            if cands:
+                q = min(cands, key=lambda q: abs((q["date"] - p["date"]).days))
+                normal, nname = q["df"], q["name"]
+        m = h.merge(normal, on="k", suffixes=("", "_n"))
+        i = DAY_COLUMNS.index(best)
+        prev = DAY_COLUMNS[i - 1] if i > 0 else None
+        nxt = DAY_COLUMNS[i + 1] if i + 1 < len(DAY_COLUMNS) else None
+        # jüngere Pläne zählen mehr: Gewicht verdoppelt sich je Halbjahr (Disponenten kopieren meist den letzten Plan)
+        w = round(2 ** ((p["date"] - pd.Timestamp("2020-01-01")).days / 182.5), 3) if p["date"] is not None else 0.5
+        H = hist.setdefault(best, {"tours": {}, "sap": {}, "files": []})
+        H["files"].append(name)
+        cnt = {"prev": 0, "next": 0, "both": 0, "cov": 0}
+        def moved(r, d):
+            return bool(d and pd.notna(r[d]) and (pd.isna(r[d + "_n"]) or r[d] != r[d + "_n"]))
+        for r in m[m[best + "_n"].notna()].to_dict("records"):
+            np_, nn_ = moved(r, prev), moved(r, nxt)
+            kind = "both" if np_ and nn_ else "prev" if np_ else "next" if nn_ else "cov"
+            cnt[kind] += 1
+            q = base_q.get(r["k"], r["Quelle_n"])
+            T = H["tours"].setdefault(f"{q}|{int(r[best + '_n'])}", {"prev": 0, "next": 0, "both": 0, "cov": 0, "tt": {}})
+            T[kind] = round(T[kind] + w, 2)
+            for side_day, flag in ((prev, np_), (nxt, nn_)):
+                if flag:
+                    k2 = f"{side_day}|{int(r[side_day])}"
+                    T["tt"][k2] = round(T["tt"].get(k2, 0) + w, 2)
+            if kind != "cov":
+                S = H["sap"].setdefault(f"{q}|{int(r['k'])}", {"prev": 0, "next": 0, "tt": {}})
+                S.setdefault("tt", {})
+                if kind in ("prev", "both"):
+                    S["prev"] = round(S["prev"] + w, 2)
+                if kind in ("next", "both"):
+                    S["next"] = round(S["next"] + w, 2)
+                for side_day, flag in ((prev, np_), (nxt, nn_)):
+                    if flag:
+                        k2 = f"{side_day}|{int(r[side_day])}"
+                        S["tt"][k2] = round(S["tt"].get(k2, 0) + w, 3)
+        log.append({"Datei": name, "Ausfalltag": best, "Kunden": int(m[best + "_n"].notna().sum()),
+                    "Hinweis": f"Vortag {cnt['prev']} · Folgetag {cnt['next']} · beide {cnt['both']} · "
+                               f"entfallen/abgedeckt {cnt['cov']} · Normalplan: {nname}"
+                               + (f" · Stand {p['date']:%m/%Y}" if p["date"] is not None else "")})
+    return hist, log
+
+
+def merge_history(a: dict, b: dict) -> dict:
+    out = json.loads(json.dumps(a or {}))
+    for day, H in (b or {}).items():
+        O = out.setdefault(day, {"tours": {}, "sap": {}, "files": []})
+        O["files"] = list(dict.fromkeys(O.get("files", []) + H.get("files", [])))
+        for k, T in H.get("tours", {}).items():
+            X = O["tours"].setdefault(k, {"prev": 0, "next": 0, "both": 0, "cov": 0, "tt": {}})
+            for f in ("prev", "next", "both", "cov"):
+                X[f] = X.get(f, 0) + T.get(f, 0)
+            for k2, n in T.get("tt", {}).items():
+                X["tt"][k2] = X["tt"].get(k2, 0) + n
+        for k, S in H.get("sap", {}).items():
+            X = O["sap"].setdefault(k, {"prev": 0, "next": 0, "tt": {}})
+            X["prev"] += S.get("prev", 0)
+            X["next"] += S.get("next", 0)
+            X.setdefault("tt", {})
+            for k2, n in S.get("tt", {}).items():
+                X["tt"][k2] = X["tt"].get(k2, 0) + n
+    return out
 
 
 def build_nodes(df: pd.DataFrame) -> tuple[pd.DataFrame, list, dict]:
@@ -1366,7 +1608,13 @@ def _match_keys(df: pd.DataFrame) -> pd.DataFrame:
 def attach_reference(df: pd.DataFrame, ref_bytes: bytes) -> tuple[pd.DataFrame, int]:
     """Hängt den Referenzplan (gleiche Blattstruktur) je Kundenzeile als REF-Tage an.
     Abgleich über Blatt + SAP + CSB (+ laufende Nummer bei Mehrfachzeilen)."""
-    ref = _match_keys(read_source(ref_bytes))
+    try:
+        ref = read_source(ref_bytes)
+    except Exception:   # altes Format ('Direkt 1 - 99' …)
+        ref = load_plan_any(ref_bytes)
+        ref["SAP"] = ref["SAP"].astype("Int64")
+        ref["CSB"] = ref["CSB"].astype("Int64")
+    ref = _match_keys(ref)
     base = _match_keys(df)
     lookup = {
         (k, o): {d: json_ready(v) for d, v in zip(DAY_COLUMNS, vals)}
@@ -1435,7 +1683,7 @@ def _fill(template: str, mapping: dict[str, str]) -> str:
 
 
 def build_html(customers, tour_starts, source_name, source_xlsx, day_col_map,
-               info_name="", starts_name="", ref_name="", matrix=None, net=None) -> str:
+               info_name="", starts_name="", ref_name="", matrix=None, net=None, history=None) -> str:
     aux = " · ".join(x for x in [info_name, starts_name, (f"Referenz: {ref_name}" if ref_name else "")] if x)
     return _fill(HTML_TEMPLATE, {
         "SRC": escape(source_name),
@@ -1450,6 +1698,7 @@ def build_html(customers, tour_starts, source_name, source_xlsx, day_col_map,
         "HAS_REF": "true" if ref_name else "false",
         "REF_NAME": _js(ref_name),
         "MATRIX": _js(matrix or {}),
+        "HISTORY": _js(history or {}),
         "NET": _js(net or {"factor": DEFAULT_ROAD_FACTOR, "kmh": DEFAULT_KMH, "pairs": 0, "needed": 0}),
     })
 
@@ -1638,7 +1887,7 @@ main{padding:9px 12px 22px}
     <div class="plannerflow">
       <div class="flowfield"><span>Ausfalltage · mehrere möglich</span><div class="outagedays" id="outageDays"></div></div>
       <div class="flowarrow">→</div>
-      <div class="flowfield"><span>Zieltag</span><select id="toDay"></select></div>
+      <div class="flowfield"><span>Zieltag(e)</span><select id="toDay"></select></div>
       <button class="btn primary" id="suggestBtn" type="button">Vorschläge</button>
       <button class="btn" id="optimizeBtn" type="button" title="Reihenfolge je Tour (2-opt/Or-opt) und Kundentausch zwischen Touren am Zieltag">Touren optimieren</button>
       <button class="btn" id="undoBtn" type="button" style="display:none">Rückgängig</button>
@@ -1650,12 +1899,12 @@ main{padding:9px 12px 22px}
   <details class="settingspanel">
     <summary><span>Regeln &amp; Ausschlüsse</span><span class="summaryhint">Max. Kunden · SAP ausschließen · Sortierung</span></summary>
     <div class="planningrules">
-      <div class="rulefield"><label for="maxCustomers">Max. Kunden je Tour</label><input id="maxCustomers" type="number" min="1" max="30" step="1" value="12"><div class="rulemeta">Harte Obergrenze. Vorschläge orientieren sich an der Größe der Tourfamilie (+2).</div></div>
+      <div class="rulefield"><label for="maxCustomers">Max. Kunden je Tour</label><input id="maxCustomers" type="number" min="1" max="30" step="1" value="12"><div class="rulemeta">Harte Obergrenze für Direkt-Touren. Startbereiche mit größeren Touren (Hupa) dürfen bis zur doppelten Normalgröße wachsen.</div></div>
       <div class="rulefield"><label for="excludeSaps">SAP nicht berücksichtigen</label><textarea id="excludeSaps" placeholder="SAP-Nummern einfügen – Zeile, Leerzeichen, Komma oder Semikolon"></textarea><div class="rulemeta" id="excludeMeta">0 SAP ausgeschlossen</div></div>
       <button class="btn" id="applyRulesBtn" type="button">Regeln übernehmen</button>
       <button class="btn" id="sequenceAllBtn" type="button">Geänderte Touren sortieren</button>
     </div>
-    <div class="compactnotice"><label><input type="checkbox" id="optRegular"> Optimierung darf auch Stammkunden der Zieltag-Touren verschieben</label> · <label>Tour-DNA-Bonus <input type="number" id="dnaWeight" min="0" max="30" step="1" value="4" style="width:48px"> Min. je Partner</label> · <label>Fixkosten je Tour <input type="number" id="tourFixed" min="0" max="240" step="10" value="60" style="width:56px"> Min.</label> · <label>Gesperrte Touren <input type="text" id="lockedTours" value="1058, 2058, 3058, 4058, 5058, 6030" style="width:230px" title="Nichts hinzufügen, nichts herausnehmen – am Ausfalltag entfällt die Tour komplett"></label> · <label>Übergröße neuer Touren + <input type="number" id="autoOver" min="0" max="10" step="1" value="2" style="width:44px"> Kunden ggü. Tourfamilie</label></div>
+    <div class="compactnotice"><label title="Die offenen Kunden einer Ausfalltour bleiben zusammen: große Blöcke bekommen eine eigene Tour (nächste freie Nummer), kleine gehen in die passendste bestehende Zieltag-Tour – so planen die Disponenten in den Historien."><input type="checkbox" id="blockMode" checked> Ausfalltouren als Block umplanen</label> · <label><input type="checkbox" id="optRegular"> Optimierung darf auch Stammkunden der Zieltag-Touren verschieben</label> · <label>Tour-DNA-Bonus <input type="number" id="dnaWeight" min="0" max="30" step="1" value="4" style="width:48px"> Min. je Partner</label> · <label>Fixkosten je Tour <input type="number" id="tourFixed" min="0" max="240" step="10" value="60" style="width:56px"> Min.</label> · <label>Gesperrte Touren <input type="text" id="lockedTours" value="1058, 2058, 3058, 4058, 5058, 6030" style="width:230px" title="Nichts hinzufügen, nichts herausnehmen – am Ausfalltag entfällt die Tour komplett"></label> · <label>Übergröße neuer Touren + <input type="number" id="autoOver" min="0" max="10" step="1" value="2" style="width:44px"> Kunden ggü. Tourfamilie</label></div>
     <div class="compactnotice"><b>Zeit:</b> CSV-Start = Ladebeginn, +60 Min. Laden → Abfahrt. Valluhn = Stopp 0. <b>Reihenfolge:</b> Reihenfolge der Vorlage-Tour bleibt Anker, neue Kunden werden an der günstigsten Stelle eingefügt; Zeitfenster können die Reihenfolge ändern. Manuell an eine Position gezogene Kunden bleiben dort, bis „Sort.“ gedrückt wird.</div>
   </details>
 
@@ -1705,6 +1954,7 @@ const DAY_CELL_COLUMNS=__DAY_COLS__;
 const HAS_REF=__HAS_REF__;
 const REF_NAME=__REF_NAME__;
 const MATRIX=__MATRIX__;
+const HISTORY=__HISTORY__;
 const NET=__NET__;
 const DAY_ORDER=['Mo','Die','Mitt','Don','Fr','Sam'];
 const DAY_LABELS={Mo:'Montag',Die:'Dienstag',Mitt:'Mittwoch',Don:'Donnerstag',Fr:'Freitag',Sam:'Samstag'};
@@ -1713,6 +1963,7 @@ const DAY_DIGIT={Mo:'1',Die:'2',Mitt:'3',Don:'4',Fr:'5',Sam:'6'};
 const SOURCES=['DIREKT','MK','HUPA_NMS','HUPA_MALCHOW'];
 const DEPOT={name:'Lüttow-Valluhn',address:'Am Heisterbusch 24, 19246 Lüttow-Valluhn',lat:53.512501,lon:10.83948};
 const SERVICE_MIN=12,LOAD_MIN=60,MAPS_PER_SECTION=9;
+let BLOCK_MODE=true,BLOCK_SOLO=true; // Ausfalltouren als Block umplanen (Muster aus den Feiertags-Historien)
 let AUTO_OVER=2;   // neue/erweiterte Touren dürfen um so viele Kunden größer werden als die Tourfamilie
 const ROAD_FACTOR=Number(NET.factor)||1.28,AVG_KMH=Number(NET.kmh)||62,HAS_MATRIX=(NET.pairs||0)>0;
 DEPOT.node=0;
@@ -1787,8 +2038,13 @@ function travelMinutes(a,b){const l=leg(a,b);return l?l.min:NaN}
 
 /* ---------- Tourgrößen ---------- */
 function referenceTourSize(day,source){const vals=routes.filter(r=>r.source===source&&!r.manuallyCreated&&r.originalCount>0).map(r=>r.originalCount);const med=median(vals);const typical=Number.isFinite(med)?Math.max(1,Math.round(med)):Math.min(maxCustomers,8);return {typical,soft:Math.min(maxCustomers,typical+AUTO_OVER)}}
-function routeSoftLimit(r){const fam=r.familyTypical||referenceTourSize(r.day,r.source).typical;return Math.min(maxCustomers,Math.max(r.originalCount||0,fam)+AUTO_OVER)}
-function capacityFull(r,a=null){const already=a&&r.items.some(x=>x.aid===a.aid);return !already&&r.items.length>=maxCustomers}
+/* Obergrenze je Tour: Direkt-Touren = Eingabe; Startbereiche mit großen Touren (Hupa) bis doppelte Normalgröße */
+const SRC_TYP=new Map();
+function srcTypical(source){if(!SRC_TYP.has(source))SRC_TYP.set(source,referenceTourSize('',source).typical);return SRC_TYP.get(source)}
+function srcCap(source){return Math.max(maxCustomers,2*srcTypical(source))}
+function capOf(r){if(!r)return maxCustomers;const big=2*srcTypical(r.source)>maxCustomers;return Math.max(srcCap(r.source),r.originalCount||0,big?2*(r.originalCount||0):0)}
+function routeSoftLimit(r){const fam=r.familyTypical||referenceTourSize(r.day,r.source).typical;return Math.min(capOf(r),Math.max(r.originalCount||0,fam)+AUTO_OVER)}
+function capacityFull(r,a=null){const already=a&&r.items.some(x=>x.aid===a.aid);return !already&&r.items.length>=capOf(r)}
 
 /* ---------- Reihenfolge ---------- */
 function evalSequence(items,r){
@@ -1869,7 +2125,7 @@ function getAssignment(aid){return assignments.find(a=>a.aid===aid)}
 function daySort(a,b){const dd=DAY_ORDER.indexOf(a.day)-DAY_ORDER.indexOf(b.day);if(dd)return dd;return String(a.tour).localeCompare(String(b.tour),'de',{numeric:true})||a.source.localeCompare(b.source)}
 function sortOriginal(r){r.items.sort((x,y)=>(x.originalRouteId===r.id?x.origIndex:1e6)-(y.originalRouteId===r.id?y.origIndex:1e6))}
 function buildOriginalPlan(){
-  assignments=[];routes=[];unplanned=[];clusters=[];cancelledAids=new Set();cancelReasons=new Map();autoCoveredAids=new Set();SAP_ROUTES=new Map();FAM_CACHE.clear();AFF_CACHE.clear();UNDO=null;LAST_OPT=null;{const ub=document.getElementById('undoBtn');if(ub)ub.style.display='none'}
+  assignments=[];routes=[];unplanned=[];clusters=[];cancelledAids=new Set();cancelReasons=new Map();autoCoveredAids=new Set();SAP_ROUTES=new Map();FAM_CACHE.clear();AFF_CACHE.clear();SRC_TYP.clear();UNDO=null;LAST_OPT=null;{const ub=document.getElementById('undoBtn');if(ub)ub.style.display='none'}
   document.getElementById('suggestions').classList.remove('show');
   CUSTOMERS.forEach(c=>DAY_ORDER.forEach(day=>{
     const tour=c[day];if(tour==null||tour==='')return;
@@ -1896,6 +2152,8 @@ function selectedOutageDays(){return DAY_ORDER.filter(d=>outageDays.has(d))}
 function outageDaysLabel(days=selectedOutageDays()){return days.map(d=>DAY_LABELS[d]).join(' + ')}
 function syncTargetDayOptions(){
   const sel=document.getElementById('toDay');[...sel.options].forEach(o=>o.disabled=outageDays.has(o.value));
+  const n=neighborDays(),ao=[...sel.options].find(o=>o.value==='auto');if(ao)ao.textContent=`Vortag + Folgetag (${[n.prev,n.next].filter(Boolean).map(d=>DAY_SHORT[d]).join(' + ')||'–'})`;
+  if(sel.value==='auto')return;
   if(!sel.value||outageDays.has(sel.value)){const ch=selectedOutageDays(),first=ch.length?Math.min(...ch.map(d=>DAY_ORDER.indexOf(d))):DAY_ORDER.length;let fb=null;for(let i=first-1;i>=0;i--)if(!outageDays.has(DAY_ORDER[i])){fb=DAY_ORDER[i];break}sel.value=fb||DAY_ORDER.find(d=>!outageDays.has(d))||''}
 }
 function renderOutageButtons(){
@@ -1903,20 +2161,71 @@ function renderOutageButtons(){
   box.innerHTML=DAY_ORDER.map(d=>`<button type="button" class="outageday ${outageDays.has(d)?'active':''}" data-outage-day="${d}">${DAY_SHORT[d]}</button>`).join('');
   box.querySelectorAll('[data-outage-day]').forEach(b=>b.addEventListener('click',()=>{const d=b.dataset.outageDay;if(outageDays.has(d)){if(outageDays.size===1){showInfo('Hinweis','Mindestens ein Ausfalltag muss ausgewählt bleiben.');return}outageDays.delete(d)}else outageDays.add(d);renderOutageButtons();syncTargetDayOptions();autoResolveCoveredDeliveries(true);if(document.getElementById('suggestions').classList.contains('show'))computeSuggestions()}));
 }
+/* Vortag/Folgetag: Ausfall-Kunden gehen – wie in den historischen Plänen – auf den Tag davor oder danach */
+const DEFAULT_SIDE={Mo:'next',Die:'next',Mitt:'next',Don:'prev',Fr:'prev',Sam:'prev'};
+function neighborDays(){
+  const out=selectedOutageDays();if(!out.length)return {prev:null,next:null};
+  const lo=Math.min(...out.map(d=>DAY_ORDER.indexOf(d))),hi=Math.max(...out.map(d=>DAY_ORDER.indexOf(d)));
+  let prev=null,next=null;
+  for(let i=lo-1;i>=0;i--)if(!outageDays.has(DAY_ORDER[i])){prev=DAY_ORDER[i];break}
+  for(let i=hi+1;i<DAY_ORDER.length;i++)if(!outageDays.has(DAY_ORDER[i])){next=DAY_ORDER[i];break}
+  return {prev,next};
+}
+function targetDays(){
+  const v=document.getElementById('toDay')?.value;
+  if(v==='auto'){const n=neighborDays();return [n.prev,n.next].filter(Boolean)}
+  return v&&!outageDays.has(v)?[v]:[];
+}
+function targetLabel(){const t=targetDays();return t.length?t.map(d=>DAY_LABELS[d]).join(' + '):'–'}
+function chooseSideDay(a){
+  const t=targetDays();if(t.length<=1)return {day:t[0]||null,why:''};
+  const n=neighborDays(),H=HISTORY?.[a.originalDay];
+  const pick=side=>side==='prev'?n.prev:n.next;
+  const S=H?.sap?.[a.Quelle+'|'+sapOf(a)];
+  if(S&&S.prev!==S.next)return {day:pick(S.prev>S.next?'prev':'next'),why:'Kunde in früheren Feiertagen'};
+  const T=H?.tours?.[a.Quelle+'|'+a.originalTour];
+  if(T&&(T.prev+T.both)!==(T.next+T.both)&&(T.prev||T.next))return {day:pick(T.prev>T.next?'prev':'next'),why:`Tour ${a.originalTour} in früheren Feiertagen`};
+  return {day:pick(DEFAULT_SIDE[a.originalDay]||'prev'),why:'Standardrichtung für '+DAY_LABELS[a.originalDay]};
+}
+/* Seite je Ausfalltour: die Tour bleibt zusammen – Mehrheit der Einzelentscheidungen (Historie Kunde/Tour, sonst Standard) */
+function sideMap(){
+  const m=new Map(),tds=targetDays();
+  routes.filter(r=>outageDays.has(r.day)).forEach(r=>{
+    const list=(r.origItems||r.items).filter(a=>a.originalDay===r.day);
+    const ch=list.map(a=>({a,c:chooseSideDay(a)}));
+    if(tds.length>1&&ch.length){
+      // Kunden mit eigener Feiertags-Historie behalten ihre Seite; der Rest folgt der Mehrheit der Tour
+      const own=x=>{const S=HISTORY?.[x.a.originalDay]?.sap?.[x.a.Quelle+'|'+sapOf(x.a)];return S&&S.prev!==S.next};
+      const cnt={};ch.forEach(x=>{if(x.c.day)cnt[x.c.day]=(cnt[x.c.day]||0)+(own(x)?2:1)});
+      const best=Object.entries(cnt).sort((p,q)=>q[1]-p[1])[0];
+      if(best){const why=ch.find(x=>x.c.day===best[0])?.c.why||'';ch.forEach(x=>{if(!own(x))x.c={day:best[0],why:why+(Object.keys(cnt).length>1?' · Tour bleibt zusammen':'')}})}
+    }
+    ch.forEach(x=>{m.set(x.a.aid,x.c);x.a.sideWhy=x.c.why});
+  });
+  return m;
+}
+function historyTargetTour(a,toDay){
+  const H=HISTORY?.[a.originalDay];if(!H)return null;
+  const pick=tt=>{let best=null,bn=0;Object.entries(tt||{}).forEach(([k,n])=>{const [d,tour]=k.split('|');if(d===toDay&&n>bn){best=tour;bn=n}});return best?{tour:best,n:bn}:null};
+  // 1. derselbe Kunde bei früheren Feiertagen (jüngster Plan zählt am meisten), 2. seine Ausfalltour
+  return pick(H.sap?.[a.Quelle+'|'+sapOf(a)]?.tt)||pick(H.tours?.[a.Quelle+'|'+a.originalTour]?.tt);
+}
 function restoreAutoCovered(){
   [...autoCoveredAids].forEach(aid=>{const i=unplanned.findIndex(a=>a.aid===aid);if(i<0)return;const a=unplanned.splice(i,1)[0],r=getRoute(a.originalRouteId);if(r){r.items.push(a);sortOriginal(r);r.items.forEach((x,j)=>x.currentLoadOrder=j+1)}cancelledAids.delete(aid);cancelReasons.delete(aid)});
   autoCoveredAids.clear();
 }
 function autoResolveCoveredDeliveries(notify=true){
   restoreAutoCovered();
-  const fromDays=selectedOutageDays(),toDay=document.getElementById('toDay').value,daySet=new Set(fromDays);
-  if(!fromDays.length||!toDay||daySet.has(toDay)){renderAll();return}
+  const fromDays=selectedOutageDays(),tds=targetDays(),daySet=new Set(fromDays);
+  if(!fromDays.length||!tds.length){renderAll();return}
   const locked=routes.filter(r=>daySet.has(r.day)&&isLocked(r)).flatMap(r=>r.items);
   locked.forEach(a=>{const f=removeFromCurrent(a.aid);if(!f)return;cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);cancelReasons.set(a.aid,`gesperrte Tour ${a.originalTour} – entfällt am Ausfalltag`);unplanned.push(f.a)});
-  const hits=routes.filter(r=>daySet.has(r.day)).flatMap(r=>r.items).filter(a=>!isExcluded(a)&&targetDayAlreadyHas(a,toDay));
+  // „bereits vorhanden“ nur für den Tag, auf den der Kunde gehen würde (Vortag ODER Folgetag) – wie in den Historien
+  const side=tds.length>1?sideMap():null;
+  const hits=routes.filter(r=>daySet.has(r.day)).flatMap(r=>r.items).filter(a=>!isExcluded(a)&&(side?[side.get(a.aid)?.day].filter(Boolean):tds).some(d=>targetDayAlreadyHas(a,d)));
   hits.forEach(a=>{const f=removeFromCurrent(a.aid);if(!f)return;cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);cancelReasons.set(a.aid,'Zieltag bereits vorhanden');unplanned.push(f.a)});
   renderAll();
-  if(notify&&hits.length)showInfo('Bereits am Zieltag erledigt',`${hits.length} Lieferung(en) aus ${outageDaysLabel(fromDays)} entfernt – dieselben SAP werden am ${DAY_LABELS[toDay]} bereits beliefert.`,'good');
+  if(notify&&hits.length)showInfo('Bereits am Zieltag erledigt',`${hits.length} Lieferung(en) aus ${outageDaysLabel(fromDays)} entfernt – dieselben SAP werden am ${targetLabel()} bereits beliefert.`,'good');
 }
 function updateOutageStatus(){
   const daySet=new Set(selectedOutageDays());
@@ -1943,7 +2252,7 @@ function moveBlockReason(a,to){
   if(isExcluded(a))return `SAP ${a.SAP} steht auf der Ausschlussliste und wird nicht umgeplant.`;
   if(String(a.Quelle)!==String(to.source))return `Startbereich darf nicht wechseln: ${srcLabel(a.Quelle)} → ${srcLabel(to.source)}.`;
   if(duplicateOnDay(a,to.day))return `Neue Doppelbelieferung ausgeschlossen: SAP ${a.SAP} wäre am ${DAY_LABELS[to.day]} häufiger beliefert als im Original.`;
-  if(capacityFull(to,a))return `Tour ${to.tour} ist voll: maximal ${maxCustomers} Kunden.`;
+  if(capacityFull(to,a))return `Tour ${to.tour} ist voll: maximal ${capOf(to)} Kunden.`;
   return '';
 }
 
@@ -1981,18 +2290,28 @@ function compactness(list){
 }
 
 /* ---------- Cluster-Vorschläge ---------- */
-function newTourName(rep,toDay,source,used,members){
+function newTourName(rep,toDay,source,used,members,forced){
   let base;
-  if(rep&&/^[1-6]\d{3,5}$/.test(String(rep.tour)))base=DAY_DIGIT[toDay]+String(rep.tour).slice(1);
+  const cnt={};(members||[]).forEach(x=>{const t=String(x.from?.tour||x.a?.originalTour||'');if(/^[1-6]\d{3,4}$/.test(t))cnt[t]=(cnt[t]||0)+1});
+  const origin=Object.entries(cnt).sort((a,b)=>b[1]-a[1])[0]?.[0];
+  if(forced)base=String(forced);
+  else if(origin)base=DAY_DIGIT[toDay]+origin.slice(1);          // wie in den Historien: 5045 → 6045
+  else if(rep&&/^[1-6]\d{3,5}$/.test(String(rep.tour)))base=DAY_DIGIT[toDay]+String(rep.tour).slice(1);
   else if(rep)base='FT-'+rep.tour;else base='REST-'+(members[0]?.from?.tour||'X');
-  let name=base,n=2;while(used.has(source+'::'+name))name=base+'-'+(n++);used.add(source+'::'+name);return name;
+  let name=base;
+  if(used.has(source+'::'+name)||LOCKED.has(name)){
+    // wie die Disponenten: nächste freie Tournummer (4006 belegt → 4007), sonst Zusatz -2
+    let alt=null;if(/^\d{4,5}$/.test(base)){const n0=Number(base);for(let k=1;k<=15&&!alt;k++){const c=String(n0+k);if(c[0]===base[0]&&!used.has(source+'::'+c)&&!LOCKED.has(c))alt=c}}
+    if(alt)name=alt;else{let n=2;while(used.has(source+'::'+base+'-'+n))n++;name=base+'-'+n}
+  }
+  used.add(source+'::'+name);return name;
 }
 function templateOrder(f,members){const ms=new Set(members.map(x=>sapOf(x.a)));return [...f.routes].map(r=>{let o=0;r.origSaps.forEach(s=>{if(ms.has(s))o++});return {r,o}}).sort((a,b)=>b.o-a.o).map(x=>x.r)}
 function makeCluster(o){
-  const c={id:'c'+(++CLU_SEQ),kind:o.kind,source:o.source,toDay:o.toDay,target:o.target||null,family:o.family||null,members:o.members,note:o.note||''};
+  const c={id:'c'+(++CLU_SEQ),kind:o.kind,source:o.source,toDay:o.toDay,target:o.target||null,family:o.family||null,members:o.members,note:o.note||'',memory:!!o.memory,block:!!o.block};
   const tpl=c.family?templateOrder(c.family,c.members):[];
   c.templateIds=tpl.map(r=>r.id);
-  if(c.kind==='new'){c.rep=tpl[0]||null;c.name=newTourName(c.rep,c.toDay,c.source,o.used,c.members);c.normalStart=startLabel(c.name)||c.rep?.normalStart||startLabel(c.members[0]?.from?.tour)||''}
+  if(c.kind==='new'){c.rep=tpl[0]||null;c.name=newTourName(c.rep,c.toDay,c.source,o.used,c.members,o.forcedName);c.normalStart=startLabel(c.name)||c.rep?.normalStart||startLabel(c.members[0]?.from?.tour)||''}
   return c;
 }
 function chunkGeo(list,size){
@@ -2004,15 +2323,26 @@ function chunkGeo(list,size){
   const all=[...g,...ng],n=Math.ceil(all.length/size),per=Math.ceil(all.length/n),out=[];
   for(let i=0;i<all.length;i+=per)out.push(all.slice(i,i+per));return out;
 }
-function buildClusters(fromDays,toDay){
+function buildClusters(fromDays,toDay,accept=null){
   const daySet=new Set(fromDays),active=activeSources(),model=familyModel(daySet);
-  const pool=routes.filter(r=>daySet.has(r.day)&&!isLocked(r)&&active.includes(r.source)).flatMap(r=>r.items.filter(a=>!isExcluded(a)).map(a=>({aid:a.aid,a,from:r})));
+  const pool=routes.filter(r=>daySet.has(r.day)&&!isLocked(r)&&active.includes(r.source)).flatMap(r=>r.items.filter(a=>!isExcluded(a)).map(a=>({aid:a.aid,a,from:r}))).filter(x=>!accept||accept(x));
   const reserve=new Map(),used=new Set(routes.filter(r=>r.day===toDay).map(r=>r.source+'::'+r.tour)),out=[];
-  const roomOf=r=>Math.min(routeSoftLimit(r),maxCustomers)-r.items.length-(reserve.get(r.id)||0);
+  const roomOf=r=>Math.min(routeSoftLimit(r),capOf(r))-r.items.length-(reserve.get(r.id)||0);
+  const hardRoom=r=>capOf(r)-r.items.length-(reserve.get(r.id)||0);
+  // 0) Planungsgedächtnis: wohin ging diese Tour bei früheren Feiertagen? (nur wenn die Zieltour nicht gesperrt ist)
+  const memGroups=new Map();
+  pool.forEach(x=>{if(targetDayAlreadyHas(x.a,toDay))return;const h=historyTargetTour(x.a,toDay);if(!h||LOCKED.has(String(h.tour)))return;pushMap(memGroups,x.a.Quelle+'::'+h.tour,x)});
+  memGroups.forEach((ms,key)=>{
+    const [src,tour]=key.split('::'),r=getRoute(routeId(toDay,src,tour));
+    if(r&&!isLocked(r)){const room=Math.max(0,hardRoom(r));const take=ms.slice(0,room);if(!take.length)return;reserve.set(r.id,(reserve.get(r.id)||0)+take.length);take.forEach(x=>x.mem=true);
+      out.push(makeCluster({kind:'insert',source:src,target:r,family:null,members:take,toDay,note:'wie bei früheren Feiertagen',memory:true}))}
+    else{const take=ms.slice(0,Math.min(srcCap(src),ms.length));take.forEach(x=>x.mem=true);used.add(src+'::'+tour);
+      out.push(makeCluster({kind:'new',source:src,family:null,members:take,toDay,used:new Set(),forcedName:tour,note:'Tour wie bei früheren Feiertagen',memory:true}))}
+  });
   const matesBy=new Map();pool.forEach(x=>pushMap(matesBy,x.from.id,x));
   // 1) Anker je Kunde: eigene Wochen-Tour (direkt) > Mitfahrer der Ausfalltour (DNA) > Geo
   pool.forEach(x=>{
-    if(targetDayAlreadyHas(x.a,toDay)){x.skip=true;return}
+    if(x.mem||targetDayAlreadyHas(x.a,toDay)){x.skip=true;return}
     const s=sapOf(x.a),mates=(matesBy.get(x.from.id)||[]).filter(y=>y.aid!==x.aid);let best=null;
     model.fams.forEach(f=>{
       if(f.source!==x.a.Quelle)return;
@@ -2024,6 +2354,31 @@ function buildClusters(fromDays,toDay){
     });
     x.fam=best;x.anchor=best?(best.direct?'direct':'peer'):'geo';
   });
+  // 1b) Tourblock (wie in den historischen Plänen): die offenen Kunden einer Ausfalltour bleiben zusammen.
+  //     Große Blöcke → eigene Tour, kleine Blöcke → passendste bestehende Zieltag-Tour (gleiche Endnummer bevorzugt).
+  if(BLOCK_MODE){
+    const byFrom=new Map(),blockTaken=new Set();pool.filter(x=>!x.skip).forEach(x=>pushMap(byFrom,x.from.id,x));
+    byFrom.forEach(ms=>{
+      const from=ms[0].from,src=from.source,suf=String(from.tour).slice(1),typ=srcTypical(src),big=typ*2>maxCustomers;
+      const newAt=Math.max(4,typ-1);
+      const cands=routes.filter(r=>r.day===toDay&&r.source===src&&!isLocked(r)&&r.items.length>0&&(hardRoom(r)>=ms.length||(big&&String(r.tour).slice(1)===suf&&hardRoom(r)>0))&&!(BLOCK_SOLO&&blockTaken.has(r.id)&&String(r.tour).slice(1)!==suf));
+      const scored=cands.map(r=>{
+        const same=String(r.tour).slice(1)===suf;
+        const fam=ms.filter(x=>x.fam&&(model.routeFam.get(r.id)===x.fam.f.id||r.familyId===x.fam.f.id)).length;
+        let km=0,n=0,bad=0;ms.forEach(x=>{if(!hasGeo(x.a))return;const f=fitFor(x.a,r,true);if(Number.isFinite(f.nearest)){km+=f.nearest;n++}if(f.key==='bad')bad++});
+        const avg=n?km/n:25;
+        return {r,same,fam,avg,bad,sc:(same?15:0)+fam*6-avg*.6-bad*8};
+      }).filter(c=>c.same||(c.bad<=ms.length/3&&c.avg<=35*ROAD_FACTOR)).sort((p,q)=>q.sc-p.sc);
+      const sameC=scored.find(c=>c.same);
+      let t=null;
+      if(sameC&&(big||ms.length<newAt))t=sameC.r;
+      else if(ms.length<newAt&&scored.length)t=scored[0].r;
+      ms.forEach(x=>x.skip=true);
+      let rest=ms;
+      if(t){const take=ms.slice(0,Math.max(0,hardRoom(t)));rest=ms.slice(take.length);blockTaken.add(t.id);reserve.set(t.id,(reserve.get(t.id)||0)+take.length);out.push(makeCluster({kind:'insert',source:src,target:t,family:null,members:take,toDay,note:`Tourblock ${DAY_SHORT[from.day]} ${from.tour}`+(rest.length?' (Rest als eigene Tour)':' geschlossen'),block:true}))}
+      if(rest.length)chunkGeo(rest,srcCap(src)).forEach(ch=>out.push(makeCluster({kind:'new',source:src,family:null,members:ch,toDay,used,note:`Tourblock ${DAY_SHORT[from.day]} ${from.tour}`,block:true})));
+    });
+  }
   const live=pool.filter(x=>!x.skip);
   // 2) Familien-Gruppen → bestehende Zieltag-Tour derselben Familie, Rest → neue Tour nach Familien-Vorlage
   const famGroups=new Map();live.filter(x=>x.fam).forEach(x=>pushMap(famGroups,x.fam.f.id,x));
@@ -2037,7 +2392,7 @@ function buildClusters(fromDays,toDay){
       const take=rest.slice(0,room);rest=rest.slice(room);reserve.set(t.id,(reserve.get(t.id)||0)+take.length);
       out.push(makeCluster({kind:'insert',source:f.source,target:t,family:f,members:take,toDay}));
     });
-    if(rest.length)chunkGeo(rest,Math.min(maxCustomers,f.typical+AUTO_OVER)).forEach(ch=>out.push(makeCluster({kind:'new',source:f.source,family:f,members:ch,toDay,used})));
+    if(rest.length)chunkGeo(rest,Math.min(srcCap(f.source),f.typical+AUTO_OVER)).forEach(ch=>out.push(makeCluster({kind:'new',source:f.source,family:f,members:ch,toDay,used})));
   });
   // 3) ohne Familie: passende Zieltag-Tour per Geo, sonst neue Tour je Ursprungstour
   const noFam=live.filter(x=>!x.fam),newPool=[];
@@ -2060,7 +2415,7 @@ function buildClusters(fromDays,toDay){
       out.splice(out.indexOf(c),1);return;
     }
     const cc=centroidOf(c.members.map(x=>x.a));let best=null;
-    out.forEach(o=>{if(o===c||o.kind!=='new'||o.source!==c.source)return;const lim=Math.min(maxCustomers,(o.family?.typical||referenceTourSize(toDay,o.source).typical)+AUTO_OVER);if(o.members.length+c.members.length>lim)return;const oc=centroidOf(o.members.map(x=>x.a)),d=cc&&oc?dist(cc,oc):NaN;if(!Number.isFinite(d)||d>35)return;if(!best||d<best.d)best={o,d}});
+    out.forEach(o=>{if(o===c||o.kind!=='new'||o.source!==c.source)return;const lim=Math.min(srcCap(o.source),(o.family?.typical||referenceTourSize(toDay,o.source).typical)+AUTO_OVER);if(o.members.length+c.members.length>lim)return;const oc=centroidOf(o.members.map(x=>x.a)),d=cc&&oc?dist(cc,oc):NaN;if(!Number.isFinite(d)||d>35)return;if(!best||d<best.d)best={o,d}});
     if(best){best.o.members.push(...c.members);best.o.note='enthält zusammengeführte Kleingruppe';out.splice(out.indexOf(c),1)}
   });
   out.forEach(evaluateCluster);
@@ -2079,30 +2434,38 @@ function evaluateCluster(c){
   if(c.kind==='insert'){c.members.forEach(x=>x.fit=fitFor(x.a,c.target,true));geoKey=worstKey(c.members.map(x=>x.fit.key))}
   else{c.members.forEach(x=>x.fit=null);c.compact=compactness(c.members.map(x=>x.a));geoKey=c.compact.key}
   let q;
-  if(c.family){const share=(c.direct+c.peer*.6)/Math.max(1,n);q=share>=.6?'good':share>=.3?'ok':'warn'}else q=geoKey==='unknown'?'warn':geoKey;
+  if(c.memory){q=geoKey==='bad'?'warn':'good'}
+  else if(c.family){const share=(c.direct+c.peer*.6)/Math.max(1,n);q=share>=.6?'good':share>=.3?'ok':'warn'}else q=geoKey==='unknown'?'warn':geoKey;
   if(geoKey==='bad')q=q==='good'?'warn':'bad';else if(geoKey==='warn'&&q==='good')q='ok';
   if(c.timeViol)q=downgrade(q);
   c.quality=q;
 }
+function buildAllClusters(fromDays){
+  const tds=targetDays();if(tds.length<=1)return buildClusters(fromDays,tds[0]);
+  const side=sideMap();
+  let all=[];tds.forEach(d=>{all=all.concat(buildClusters(fromDays,d,x=>side.get(x.aid)?.day===d))});
+  all.sort((a,b)=>RANK[a.quality]-RANK[b.quality]||(a.kind==='insert'?0:1)-(b.kind==='insert'?0:1)||b.members.length-a.members.length);
+  return all;
+}
 function computeSuggestions(){
-  const fromDays=selectedOutageDays(),toDay=document.getElementById('toDay').value,box=document.getElementById('suggestions');
-  if(!fromDays.length||outageDays.has(toDay)){clusters=[];document.getElementById('suggTitle').textContent='Zieltag ungültig';document.getElementById('suggSub').textContent='Bitte Ausfalltage und einen anderen Zieltag wählen.';document.getElementById('suggBody').innerHTML='';box.classList.add('show');return}
-  clusters=buildClusters(fromDays,toDay);renderSuggestions();box.classList.add('show');
+  const fromDays=selectedOutageDays(),tds=targetDays(),box=document.getElementById('suggestions');
+  if(!fromDays.length||!tds.length){clusters=[];document.getElementById('suggTitle').textContent='Zieltag ungültig';document.getElementById('suggSub').textContent='Bitte Ausfalltage und einen anderen Zieltag wählen.';document.getElementById('suggBody').innerHTML='';box.classList.add('show');return}
+  clusters=buildAllClusters(fromDays);renderSuggestions();box.classList.add('show');
 }
 function clusterHtml(c){
   const origins=[...new Set(c.members.map(x=>DAY_SHORT[x.a.originalDay]+' '+x.from.tour))].join(', ');
   let title,meta=[];
   if(c.kind==='insert'){title=`→ ${DAY_LABELS[c.toDay]} · Tour ${esc(c.target.tour)} <span class="sub">(${c.target.items.length} → ${c.target.items.length+c.members.length} Kunden)</span>`;const clk=routeClockInfo(c.target);if(clk)meta.push(clk)}
   else{title=`→ neue Tour ${esc(c.name)} · ${DAY_LABELS[c.toDay]} <span class="sub">(${c.members.length} Kunden)</span>`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(clk);if(c.compact)meta.push('Gebiet '+c.compact.label+(Number.isFinite(c.compact.avg)?' · Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
-  const why=c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?` · Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''} · ${c.direct} fahren dort bereits, ${c.peer} über Mitfahrer`:'keine Tourfamilie · Geo-Zuordnung';
+  const why=c.memory?'<b>Planungsgedächtnis</b> – so bei früheren Feiertagen geplant':c.block?`<b>Tourblock</b> – Ausfalltour bleibt zusammen${c.kind==='insert'&&String(c.target.tour).slice(1)===String(c.members[0]?.from?.tour||'').slice(1)?' · gleiche Endnummer':''}`:c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?` · Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''} · ${c.direct} fahren dort bereits, ${c.peer} über Mitfahrer`:'keine Tourfamilie · Geo-Zuordnung';
   meta.push(esc(srcLabel(c.source))+' · aus '+esc(origins));if(Number.isFinite(c.km))meta.push('ca. '+Math.round(c.km)+' km Rundlauf'+(HAS_MATRIX?' (Straße)':' (geschätzt)'));
   const mem=c.members.map(x=>{const a=x.a,f=x.fit;return `<div class="clumem"><span class="anc ${x.anchor}">${ANCHOR_LABEL[x.anchor]}</span><span class="nm"><b>${esc(a.SAP)}</b> · ${esc(a.Name)} · ${esc(a.Ort)}</span><span>${f?`<span class="fit ${f.key}">${esc(f.label)}${Number.isFinite(f.nearest)?' · '+fmt(f.nearest)+' km':''}</span>`:''}${a.Zeitkritisch?` <span class="flag time" title="${esc(timeInfo(a))}">Zeit</span>`:''}</span><button class="remove" type="button" title="Aus Vorschlag entfernen" data-drop-member="${c.id}|${esc(x.aid)}">×</button></div>`}).join('');
   return `<div class="clu q-${c.quality}"><div class="cluhead"><div><div class="clutitle">${title}</div><div class="clumeta">${why}</div><div class="clumeta">${meta.join(' · ')}${c.timeViol?` · <span class="capwarn">${c.timeViol} Zeitkonflikt(e)</span>`:''}${c.note?' · '+esc(c.note):''}</div></div><div style="display:grid;gap:4px;justify-items:end"><span class="fit ${c.quality}">${QUALITY_LABEL[c.quality]}</span><button class="btn small primary" type="button" data-apply-cluster="${c.id}">Übernehmen</button></div></div>${mem}</div>`;
 }
 function renderSuggestions(){
-  const fromDays=selectedOutageDays(),toDay=document.getElementById('toDay').value,n=clusters.reduce((s,c)=>s+c.members.length,0);
-  document.getElementById('suggTitle').textContent=`${outageDaysLabel(fromDays)} → ${DAY_LABELS[toDay]}`;
-  document.getElementById('suggSub').textContent=`${clusters.length} Gruppen · ${n} Kunden · ${clusters.filter(c=>c.family).length} über Tourfamilien · ${clusters.filter(c=>c.kind==='new').length} neue Touren · ${autoCoveredAids.size} am Zieltag bereits vorhanden · ${excludedSaps.size} SAP ausgeschlossen`;
+  const fromDays=selectedOutageDays(),n=clusters.reduce((s,c)=>s+c.members.length,0);
+  document.getElementById('suggTitle').textContent=`${outageDaysLabel(fromDays)} → ${targetLabel()}`;
+  document.getElementById('suggSub').textContent=`${clusters.length} Gruppen · ${n} Kunden · ${clusters.filter(c=>c.memory).length} aus dem Planungsgedächtnis · ${clusters.filter(c=>c.block).length} Tourblöcke · ${clusters.filter(c=>c.family).length} über Tourfamilien · ${clusters.filter(c=>c.kind==='new').length} neue Touren · ${autoCoveredAids.size} am Zieltag bereits vorhanden · ${excludedSaps.size} SAP ausgeschlossen`;
   const body=document.getElementById('suggBody');body.innerHTML=clusters.length?clusters.map(clusterHtml).join(''):'<div class="empty">Keine offenen Kunden auf den Ausfalltagen.</div>';
   body.querySelectorAll('[data-apply-cluster]').forEach(b=>b.addEventListener('click',()=>applyCluster(b.dataset.applyCluster)));
   body.querySelectorAll('[data-drop-member]').forEach(b=>b.addEventListener('click',()=>{const v=b.dataset.dropMember,p=v.indexOf('|'),cid=v.slice(0,p),aid=v.slice(p+1);const c=clusters.find(x=>x.id===cid);if(!c)return;c.members=c.members.filter(x=>x.aid!==aid);if(!c.members.length)clusters=clusters.filter(x=>x!==c);else evaluateCluster(c);renderSuggestions()}));
@@ -2122,7 +2485,7 @@ function applyCluster(id,silent=false){
   c.members.forEach(x=>{
     const a=getAssignment(x.aid),cur=currentRouteForAid(x.aid);
     if(!a||!cur||!outageDays.has(cur.day))return;
-    if(isExcluded(a)||duplicateOnDay(a,target.day)||target.items.length>=maxCustomers){blocked++;return}
+    if(isExcluded(a)||duplicateOnDay(a,target.day)||target.items.length>=capOf(target)){blocked++;return}
     const f=removeFromCurrent(x.aid);if(!f)return;
     target.items.push(f.a);f.a.currentDay=target.day;f.a.currentTour=target.tour;f.a.planNote=c.family?'Familie '+c.family.label:'Geo';moved++;
     if(f.from)evaluateRoute(f.from);
@@ -2167,7 +2530,7 @@ function optimizeDay(day,silent=false){
       const without=A.items.filter(x=>x!==a),cA=routeTotal(without,A,W),gainA=cost.get(A)-cA;let best=null;
       for(const B of cand){
         if(B===A||B.source!==A.source)continue;
-        if(!B.items.length||B.items.length>=Math.min(maxCustomers,routeSoftLimit(B)))continue;
+        if(!B.items.length||B.items.length>=Math.min(capOf(B),routeSoftLimit(B)))continue;
         const c=centOf(B);if(c&&hasGeo(a)&&dist(a,c)>70)continue;
         const cB=cost.get(B),dnaB=dnaPairs(B.items.concat([a]));
         for(let k=0;k<=B.items.length;k++){const seq=B.items.slice(0,k).concat([a],B.items.slice(k));const nc=routeTotal(seq,B,W,dnaB),delta=(nc-cB)-gainA;if(delta<-1&&(!best||delta<best.delta))best={B,seq,nc,delta}}
@@ -2200,6 +2563,16 @@ function optimizeDay(day,silent=false){
   return LAST_OPT;
 }
 
+function optimizeTargets(){
+  const tds=targetDays();if(!tds.length)return;UNDO=snapshotPlan();
+  const res=tds.map(d=>optimizeDay(d,true)).filter(Boolean);
+  if(!res.length){showInfo('Nichts zu optimieren','Keine geänderten oder neuen Touren an den Zieltagen.','warn');return}
+  const sum=k=>res.reduce((s,r)=>s+(Array.isArray(r[k])?r[k].length:r[k]),0);
+  LAST_OPT={day:tds.join('+'),moves:sum('moves'),swaps:sum('swaps'),removed:res.flatMap(r=>r.removed),kmBefore:sum('kmBefore'),kmAfter:sum('kmAfter'),ms:sum('ms'),at:new Date()};
+  document.getElementById('undoBtn').style.display='';renderAll();if(document.getElementById('suggestions').classList.contains('show'))computeSuggestions();
+  showInfo('Touren optimiert',`${targetLabel()}: ${LAST_OPT.moves} verschoben · ${LAST_OPT.swaps} getauscht · ${LAST_OPT.removed.length} Tour(en) eingespart · ${fmt(LAST_OPT.kmBefore)} → ${fmt(LAST_OPT.kmAfter)} km`,'good');
+}
+
 /* ---------- Oberfläche ---------- */
 function activeSources(){return SOURCES.filter(s=>document.getElementById('src_'+s)?.checked)}
 function matches(a,r){if(!searchText)return true;return [a.SAP,a.CSB,a.Name,a.Ort,a.Plz,a.Strasse,r?.tour,r?.source,DAY_LABELS[r?.day]].some(v=>String(v??'').toLowerCase().includes(searchText))}
@@ -2213,9 +2586,9 @@ function cardHtml(a,r,pos){
 function routeHtml(r){
   if(!activeSources().includes(r.source)||!routeVisibleByMode(r))return '';
   const cards=r.items.map((a,i)=>cardHtml(a,r,i+1)).join('');if(searchText&&!cards&&!r.manuallyCreated)return '';
-  const d=r.items.length-r.originalCount,cap=r.items.length>maxCustomers,tc=r.items.filter(a=>a._timeViolation).length,clock=routeClockInfo(r);
+  const d=r.items.length-r.originalCount,cap=r.items.length>capOf(r),tc=r.items.filter(a=>a._timeViolation).length,clock=routeClockInfo(r);
   const km=r.items.length&&Number.isFinite(r.km)?` · ${Math.round(r.km)} km · ${fmtDur(r.dur)}`+(Number.isFinite(r.end)?' · zurück '+formatMin(r.end):''):'';
-  const meta=`${r.items.length}/${maxCustomers} Kunden`+km+(clock?' · '+clock:'')+(r.repLabel?' · Vorlage '+esc(r.repLabel):'')+(tc?` · ⚠ ${tc} Zeitkonflikt(e)`:'');
+  const meta=`${r.items.length}/${capOf(r)} Kunden`+km+(clock?' · '+clock:'')+(r.repLabel?' · Vorlage '+esc(r.repLabel):'')+(tc?` · ⚠ ${tc} Zeitkonflikt(e)`:'');
   return `<section class="route ${routeChanged(r)?'changed':''} ${r.manuallyCreated?'newroute':''} ${cap?'overcap':''} ${tc?'timeconflict':''}" data-route="${esc(r.id)}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${esc(r.tour)} ${r.manuallyCreated?'<span class="newbadge">NEU</span>':''}<span class="source">${esc(srcLabel(r.source))}</span>${isLocked(r)?'<span class="lockbadge" title="Gesperrte Tour: nichts hinzufügen/herausnehmen">GESPERRT</span>':''}${r.familyLabel?`<span class="fambadge" title="Tourfamilie">${esc(r.familyLabel)}</span>`:''}</div><div class="rmeta ${cap?'capwarn':''}">${meta}</div></div><div class="route-right">${d?`<span class="delta">${d>0?'+':''}${d}</span>`:''}<button class="seqbtn" type="button" data-google-maps="${esc(r.id)}">Maps</button><button class="seqbtn" type="button" title="Reihenfolge ab Valluhn berechnen" data-seq-route="${esc(r.id)}">Sort.</button>${r.manuallyCreated?`<button class="route-delete" type="button" title="Neue Tour löschen" data-delete-route="${esc(r.id)}">×</button>`:''}</div></div><div class="dropzone" data-route="${esc(r.id)}">${cards||'<div class="empty">Kunden hierher ziehen</div>'}</div></section>`;
 }
 function renderWeek(){
@@ -2233,7 +2606,7 @@ function renderMetrics(){
   const set=(id,v)=>document.getElementById(id).textContent=v;
   set('mDeliveries',assignments.length);set('mRoutes',routes.filter(r=>activeSources().includes(r.source)).length);set('mMoved',moved);set('mGood',good);
   set('mOut',unplanned.filter(a=>!autoCoveredAids.has(a.aid)).length);set('mCancelled',autoCoveredAids.size);set('mDup',findDuplicateDeliveries().length);
-  set('mCap',routes.filter(r=>r.items.length>maxCustomers).length);set('mKm',Math.round(routes.filter(r=>r.day===document.getElementById('toDay').value).reduce((s,r)=>s+(r.items.length&&Number.isFinite(r.km)?r.km:0),0)));set('mTime',routes.reduce((n,r)=>n+r.items.filter(a=>a._timeViolation).length,0));
+  set('mCap',routes.filter(r=>r.items.length>capOf(r)).length);set('mKm',Math.round(routes.filter(r=>targetDays().includes(r.day)).reduce((s,r)=>s+(r.items.length&&Number.isFinite(r.km)?r.km:0),0)));set('mTime',routes.reduce((n,r)=>n+r.items.filter(a=>a._timeViolation).length,0));
   updateOutageStatus();
 }
 function renderChanges(){
@@ -2341,8 +2714,8 @@ function findDuplicateDeliveries(){return Object.entries(duplicateGroups()).filt
 function findAllowedOriginalDuplicates(){const m=duplicateGroups();return Object.entries(ORIGINAL_DUP_CAP).map(([k,cap])=>({cap,group:m[k]||[]})).filter(x=>x.group.length>1&&x.group.length<=x.cap)}
 function validateForExcel(){
   const changed=[];routes.forEach(r=>r.items.forEach(a=>{if(a.originalRouteId!==r.id)changed.push({a,r,f:fitFor(a,r)})}));
-  const dups=findDuplicateDeliveries(),badArea=changed.filter(x=>x.a.Quelle!==x.r.source),over=routes.filter(r=>(routeChanged(r)||r.manuallyCreated)&&r.items.length>maxCustomers);
-  const errors=[];if(dups.length)errors.push(`${dups.length} neue Doppelbelieferung(en).`);if(badArea.length)errors.push(`${badArea.length} Startbereichswechsel.`);if(over.length)errors.push(`${over.length} Tour(en) über ${maxCustomers} Kunden.`);
+  const dups=findDuplicateDeliveries(),badArea=changed.filter(x=>x.a.Quelle!==x.r.source),over=routes.filter(r=>(routeChanged(r)||r.manuallyCreated)&&r.items.length>capOf(r));
+  const errors=[];if(dups.length)errors.push(`${dups.length} neue Doppelbelieferung(en).`);if(badArea.length)errors.push(`${badArea.length} Startbereichswechsel.`);if(over.length)errors.push(`${over.length} Tour(en) über der Obergrenze.`);
   const daySet=new Set(selectedOutageDays());
   return {ok:!errors.length,errors,changed,dups,allowedDups:findAllowedOriginalDuplicates(),newRoutes:routes.filter(r=>r.manuallyCreated),leftOnOutage:routes.filter(r=>daySet.has(r.day)).reduce((n,r)=>n+r.items.length,0),timeViolations:routes.flatMap(r=>r.items.filter(a=>a._timeViolation).map(a=>({a,r}))),unmapped:routes.flatMap(r=>(routeChanged(r)||r.manuallyCreated)?r.items.filter(a=>!a.loadOrderRow).map(a=>({a,r})):[])};
 }
@@ -2354,7 +2727,7 @@ function buildReportHtmlBody(){
   return head+(warn.length?`<div class="reportwarn">${warn.map(esc).join('<br>')}</div>`:'')+
   `<div class="reportstatus"><div class="reportkpi"><b>${assignments.length}</b><span>Wochen-Lieferungen</span></div><div class="reportkpi"><b>${v.changed.length}</b><span>verschoben</span></div><div class="reportkpi"><b>${v.newRoutes.length}</b><span>neue Touren</span></div><div class="reportkpi"><b>${cancelled.length}</b><span>gestrichen</span></div><div class="reportkpi"><b>${other.length}</b><span>ausgeplant</span></div><div class="reportkpi"><b>${v.dups.length}</b><span>unerlaubte Doppelungen</span></div><div class="reportkpi"><b>${v.timeViolations.length}</b><span>Zeitkonflikte</span></div></div>`+
   `<div class="reportsection"><h3>Verschiebungen</h3>${reportTable(v.changed.map(x=>[x.a.SAP,x.a.Name,`${DAY_LABELS[x.a.originalDay]} / ${x.a.originalTour}`,`${DAY_LABELS[x.r.day]} / ${x.r.tour}`,srcLabel(x.r.source),x.a.planNote||'manuell',x.f.label,Number.isFinite(x.f.nearest)?fmt(x.f.nearest)+' km':'–',x.a.Zeitkritisch?timeInfo(x.a):'']),['SAP','Kunde','Original','Neu','Startbereich','Grundlage','Geo','Nächster Kunde','Lieferinfo'])}</div>`+
-  (LAST_OPT?`<div class="reportsection"><h3>Letzte Optimierung</h3>${reportTable([[DAY_LABELS[LAST_OPT.day],LAST_OPT.moves,LAST_OPT.swaps,LAST_OPT.removed.join(', ')||'–',fmt(LAST_OPT.kmBefore),fmt(LAST_OPT.kmAfter),fmt(LAST_OPT.kmBefore-LAST_OPT.kmAfter)]],['Tag','verschoben','getauscht','eingesparte Touren','km vorher','km nachher','Ersparnis km'])}</div>`:'')+
+  (LAST_OPT?`<div class="reportsection"><h3>Letzte Optimierung</h3>${reportTable([[String(LAST_OPT.day).split('+').map(d=>DAY_LABELS[d]||d).join(' + '),LAST_OPT.moves,LAST_OPT.swaps,LAST_OPT.removed.join(', ')||'–',fmt(LAST_OPT.kmBefore),fmt(LAST_OPT.kmAfter),fmt(LAST_OPT.kmBefore-LAST_OPT.kmAfter)]],['Tag','verschoben','getauscht','eingesparte Touren','km vorher','km nachher','Ersparnis km'])}</div>`:'')+
   `<div class="reportsection"><h3>Geänderte und neue Touren</h3>${reportTable(routes.filter(r=>r.items.length&&(r.manuallyCreated||routeChanged(r))).map(r=>[DAY_LABELS[r.day],r.tour,r.manuallyCreated?'neu':'geändert',srcLabel(r.source),r.items.length,r.familyLabel||'–',r.repLabel||'–',hasRouteStart(r)?formatMin(routeStartMinutes(r)):'',hasRouteStart(r)?formatMin(departureMinutes(r)):'',Number.isFinite(r.km)?Math.round(r.km):'',fmtDur(r.dur),Number.isFinite(r.end)?formatMin(r.end):'',[...new Set(r.items.map(a=>DAY_SHORT[a.originalDay]+' '+a.originalTour))].join(', '),r.items.filter(a=>a._timeViolation).length]),['Tag','Tour','Art','Startbereich','Kunden','Tourfamilie','Vorlage','Ladebeginn','Abfahrt','km','Dauer','zurück','Herkunft','Zeitkonflikte'])}</div>`+
   `<div class="reportsection"><h3>Gestrichene Ausfall-Lieferungen</h3>${reportTable(cancelled.map(a=>[a.SAP,a.Name,DAY_LABELS[a.originalDay],a.originalTour,srcLabel(a.Quelle),cancelReasons.get(a.aid)||'gestrichen']),['SAP','Kunde','Originaltag','Originaltour','Startbereich','Grund'])}</div>`+
   `<div class="reportsection"><h3>Ausgeplant</h3>${reportTable(other.map(a=>[a.SAP,a.Name,DAY_LABELS[a.originalDay],a.originalTour,srcLabel(a.Quelle)]),['SAP','Kunde','Originaltag','Originaltour','Startbereich'])}</div>`+
@@ -2368,14 +2741,14 @@ function download(blob,name){const a=document.createElement('a');a.href=URL.crea
 
 /* ---------- Backtest ---------- */
 function computeBacktest(){
-  const daySet=new Set(selectedOutageDays()),toDay=document.getElementById('toDay').value,rows=[];let noRef=0;
+  const daySet=new Set(selectedOutageDays()),tds=targetDays(),toDay=tds[0],rows=[];let noRef=0;
   assignments.filter(a=>daySet.has(a.originalDay)).forEach(a=>{
     if(!a.REF){noRef++;return}
-    const ref=a.REF,order=[toDay,...DAY_ORDER.filter(d=>d!==toDay&&!daySet.has(d))];let exp=null;
+    const ref=a.REF,order=[...tds,...DAY_ORDER.filter(d=>!tds.includes(d)&&!daySet.has(d))];let exp=null;
     for(const d of order){const rv=ref[d],ov=a[d];if(rv!=null&&rv!==''&&String(rv)!==String(ov??'')){
-      if(d===toDay&&ov!=null&&ov!==''){exp={type:'covered',retour:String(rv)};break}   // schon am Zieltag beliefert, Disponent hat nur die Tour gewechselt
+      if(tds.includes(d)&&ov!=null&&ov!==''){exp={type:'covered',retour:String(rv)};break}   // schon am Zieltag beliefert, Disponent hat nur die Tour gewechselt
       exp={type:'move',day:d,tour:String(rv)};break}}
-    if(!exp){const ov=a[toDay];if(ov!=null&&ov!==''&&String(ref[toDay]??'')===String(ov))exp={type:'covered'};else if(ref[a.originalDay]!=null&&ref[a.originalDay]!=='')exp={type:'kept'};else exp={type:'dropped'}}
+    if(!exp){const cov=tds.some(d=>a[d]!=null&&a[d]!==''&&String(ref[d]??'')===String(a[d]));if(cov)exp={type:'covered'};else if(ref[a.originalDay]!=null&&ref[a.originalDay]!=='')exp={type:'kept'};else exp={type:'dropped'}}
     const r=currentRouteForAid(a.aid);let act;
     if(cancelledAids.has(a.aid))act={type:'covered'};else if(r)act={type:daySet.has(r.day)?'kept':'move',day:r.day,tour:String(r.tour)};else act={type:'dropped'};
     rows.push({a,exp,act});
@@ -2391,14 +2764,14 @@ function computeBacktest(){
 }
 function renderBacktest(){
   const b=computeBacktest();
-  document.getElementById('backtestHint').textContent=`Referenz: ${REF_NAME} · Ausfall ${outageDaysLabel()} → ${DAY_LABELS[document.getElementById('toDay').value]} · verglichen wird der aktuelle Plan.`+(LAST_OPT?` · Optimierung: ${LAST_OPT.moves+LAST_OPT.swaps} Änderungen, ${fmt(LAST_OPT.kmBefore-LAST_OPT.kmAfter)} km gespart.`:'')+` · Zieltag gesamt ${Math.round(dayKm(document.getElementById('toDay').value))} km.`;
+  document.getElementById('backtestHint').textContent=`Referenz: ${REF_NAME} · Ausfall ${outageDaysLabel()} → ${targetLabel()} · verglichen wird der aktuelle Plan.`+(LAST_OPT?` · Optimierung: ${LAST_OPT.moves+LAST_OPT.swaps} Änderungen, ${fmt(LAST_OPT.kmBefore-LAST_OPT.kmAfter)} km gespart.`:'')+` · Zieltag(e) gesamt ${Math.round(targetDays().reduce((s,d)=>s+dayKm(d),0))} km.`;
   const actLabel=x=>x.act.type==='move'?DAY_SHORT[x.act.day]+' '+x.act.tour:(x.act.type==='covered'?'gestrichen':x.act.type==='kept'?'noch Ausfalltag':'ausgeplant');
   const refRows=[...b.byRef.entries()].sort((x,y)=>y[1].length-x[1].length).map(([k,list])=>{const dist={};list.forEach(x=>{const t=actLabel(x);dist[t]=(dist[t]||0)+1});const top=Math.max(...Object.values(dist));return [k,list.length,Object.entries(dist).sort((a,c)=>c[1]-a[1]).map(([t,n])=>`${t} ×${n}`).join(' · '),pct(top/list.length)]});
   const miss=b.rows.filter(x=>x.exp.type==='move'&&!b.same(x)).map(x=>[x.a.SAP,x.a.Name,x.a.Ort,`${DAY_SHORT[x.a.originalDay]} ${x.a.originalTour}`,`${DAY_SHORT[x.exp.day]} ${x.exp.tour}`,actLabel(x)]);
   document.getElementById('backtestBody').innerHTML=(b.noRef?`<div class="reportwarn">${b.noRef} Ausfall-Lieferungen ohne passende Zeile im Referenzplan (Abgleich über Blatt + SAP + CSB).</div>`:'')+
   `<div class="reportstatus"><div class="reportkpi"><b>${pct(b.prec)}</b><span>Paar-Präzision: vom Algorithmus zusammengelegt und auch beim Disponenten zusammen</span></div><div class="reportkpi"><b>${pct(b.rec)}</b><span>Paar-Abdeckung: beim Disponenten zusammen und auch beim Algorithmus</span></div><div class="reportkpi"><b>${b.exact}/${b.mv}</b><span>exakt gleiche Tour</span></div><div class="reportkpi"><b>${b.dayHit}/${b.mv}</b><span>richtiger Tag</span></div><div class="reportkpi"><b>${b.covHit}/${b.cov}</b><span>„Zieltag vorhanden“ richtig</span></div><div class="reportkpi"><b>${b.falseCover}</b><span>fälschlich gestrichen</span></div><div class="reportkpi"><b>${b.retour.length}</b><span>schon am Zieltag – Disponent hat die Zieltag-Tour gewechselt</span></div><div class="reportkpi"><b>${b.notPlaced}</b><span>noch nicht eingeplant</span></div></div>`+
   `<div class="reportsection"><h3>Referenz-Touren → wohin der Algorithmus die Kunden gelegt hat</h3>${reportTable(refRows,['Referenz-Tour','Kunden','Algorithmus','Größter Block'])}</div>`+
-  (b.retour.length?`<div class="reportsection"><h3>Zieltag-Tour vom Disponenten gewechselt (Kunde war schon am Zieltag)</h3>${reportTable(b.retour.map(x=>[x.a.SAP,x.a.Name,x.a.Ort,`${DAY_SHORT[x.a.originalDay]} ${x.a.originalTour}`,`bisher ${x.a[document.getElementById('toDay').value]??''}`,`KW40 ${x.exp.retour}`]),['SAP','Kunde','Ort','Ausfall-Lieferung','Zieltag bisher','Zieltag Referenz'])}</div>`:'')+
+  (b.retour.length?`<div class="reportsection"><h3>Zieltag-Tour vom Disponenten gewechselt (Kunde war schon am Zieltag)</h3>${reportTable(b.retour.map(x=>[x.a.SAP,x.a.Name,x.a.Ort,`${DAY_SHORT[x.a.originalDay]} ${x.a.originalTour}`,`bisher ${targetDays().map(d=>x.a[d]).filter(v=>v!=null&&v!=='').join('/')}`,`Referenz ${x.exp.retour}`]),['SAP','Kunde','Ort','Ausfall-Lieferung','Zieltag bisher','Zieltag Referenz'])}</div>`:'')+
   `<div class="reportsection"><h3>Abweichungen je Kunde</h3>${reportTable(miss,['SAP','Kunde','Ort','Original','Referenz','Algorithmus'])}</div>`;
 }
 function openBacktest(){renderBacktest();document.getElementById('backtestModal').classList.add('show')}
@@ -2407,9 +2780,9 @@ function runAutoplan(silent=false){
     const changed=routes.some(r=>r.manuallyCreated||routeChanged(r)&&!outageDays.has(r.day))||unplanned.some(a=>!autoCoveredAids.has(a.aid));
     if(changed&&!confirm('Autoplan setzt alle manuellen Änderungen zurück und übernimmt alle Vorschläge. Fortfahren?'))return false;
   }
-  AUTO_OVER=Math.max(0,Number(document.getElementById('autoOver')?.value)||0);parseLocked();
-  buildOriginalPlan();const toDay=document.getElementById('toDay').value;clusters=buildClusters(selectedOutageDays(),toDay);applyClusters(()=>true,true);
-  if(document.getElementById('btOptimize')?.checked)optimizeDay(toDay,true);
+  AUTO_OVER=Math.max(0,Number(document.getElementById('autoOver')?.value)||0);BLOCK_MODE=document.getElementById('blockMode')?.checked!==false;parseLocked();
+  buildOriginalPlan();clusters=buildAllClusters(selectedOutageDays());applyClusters(()=>true,true);
+  if(document.getElementById('btOptimize')?.checked)targetDays().forEach(d=>optimizeDay(d,true));
   if(!silent)renderAll();return true;
 }
 /* Parameter-Vergleich: rechnet Varianten gegen den Referenzplan und zeigt die beste */
@@ -2425,7 +2798,7 @@ async function runSweep(){
     await new Promise(r=>setTimeout(r,20));
     $('autoOver').value=g.over;$('dnaWeight').value=g.dna;$('btOptimize').checked=g.opt;
     runAutoplan(true);const b=computeBacktest();
-    res.push({...g,prec:b.prec,rec:b.rec,f:f1(b.prec,b.rec),exact:b.exact,day:b.dayHit,mv:b.mv,km:dayKm(document.getElementById('toDay').value),tours:routes.filter(r=>r.manuallyCreated&&r.items.length).length});
+    res.push({...g,prec:b.prec,rec:b.rec,f:f1(b.prec,b.rec),exact:b.exact,day:b.dayHit,mv:b.mv,km:targetDays().reduce((s,d)=>s+dayKm(d),0),tours:routes.filter(r=>r.manuallyCreated&&r.items.length).length});
   }
   res.sort((a,b)=>b.f-a.f||b.exact-a.exact);
   const minKm=Math.min(...res.map(r=>r.km));
@@ -2438,7 +2811,7 @@ function presetFromReference(){
   CUSTOMERS.forEach(c=>{if(!c.REF)return;DAY_ORDER.forEach(d=>{if(c[d]!=null&&c[d]!=='')o[d]++;if(c.REF[d]!=null&&c.REF[d]!=='')r[d]++})});
   const out=DAY_ORDER.filter(d=>o[d]>0&&r[d]<=o[d]*.1);if(!out.length)return;
   const target=DAY_ORDER.filter(d=>!out.includes(d)).sort((a,b)=>(r[b]-o[b])-(r[a]-o[a]))[0];
-  outageDays=new Set(out);renderOutageButtons();if(target)document.getElementById('toDay').value=target;syncTargetDayOptions();
+  outageDays=new Set(out);renderOutageButtons();document.getElementById('toDay').value='auto';syncTargetDayOptions();
 }
 
 /* ---------- Excel-Export ---------- */
@@ -2488,7 +2861,7 @@ function initControls(){
   $('newTourSource').innerHTML=SOURCES.map(s=>`<option value="${s}">${esc(srcLabel(s))}</option>`).join('');
   $('cancelTourBtn').addEventListener('click',closeNewTour);$('createTourBtn').addEventListener('click',createNewTour);
   ['newTourNo','newTourStart'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')createNewTour();if(e.key==='Escape')closeNewTour()}));
-  $('toDay').innerHTML=DAY_ORDER.map(d=>`<option value="${d}">auf ${DAY_LABELS[d]}</option>`).join('');$('toDay').value='Fr';
+  $('toDay').innerHTML='<option value="auto">Vortag + Folgetag</option>'+DAY_ORDER.map(d=>`<option value="${d}">nur ${DAY_LABELS[d]}</option>`).join('');$('toDay').value='auto';
   renderOutageButtons();syncTargetDayOptions();
   $('toDay').addEventListener('change',()=>{autoResolveCoveredDeliveries(true);if($('suggestions').classList.contains('show'))computeSuggestions()});
   $('suggestBtn').addEventListener('click',computeSuggestions);
@@ -2497,9 +2870,10 @@ function initControls(){
   $('applyAllBtn').addEventListener('click',()=>{if(confirm(`${clusters.length} Gruppen übernehmen – auch grenzwertige?`))applyClusters(()=>true)});
   $('closeSuggBtn').addEventListener('click',()=>$('suggestions').classList.remove('show'));
   $('applyRulesBtn').addEventListener('click',()=>{clampMax();parseExcluded();parseLocked();FAM_CACHE.clear();autoResolveCoveredDeliveries(true);if($('suggestions').classList.contains('show'))computeSuggestions()});
-  $('maxCustomers').addEventListener('change',()=>{clampMax();renderAll()});
+  $('maxCustomers').addEventListener('change',()=>{clampMax();SRC_TYP.clear();renderAll()});
+  $('blockMode').addEventListener('change',()=>{BLOCK_MODE=$('blockMode').checked;if($('suggestions').classList.contains('show'))computeSuggestions()});
   $('autoOver').addEventListener('change',()=>{AUTO_OVER=Math.max(0,Number($('autoOver').value)||0);if($('suggestions').classList.contains('show'))computeSuggestions()});
-  $('optimizeBtn').addEventListener('click',()=>{const d=$('toDay').value;$('optimizeBtn').disabled=true;$('optimizeBtn').textContent='Optimiere …';setTimeout(()=>{try{optimizeDay(d)}finally{$('optimizeBtn').disabled=false;$('optimizeBtn').textContent='Touren optimieren'}},20)});
+  $('optimizeBtn').addEventListener('click',()=>{$('optimizeBtn').disabled=true;$('optimizeBtn').textContent='Optimiere …';setTimeout(()=>{try{optimizeTargets()}finally{$('optimizeBtn').disabled=false;$('optimizeBtn').textContent='Touren optimieren'}},20)});
   $('undoBtn').addEventListener('click',()=>{if(!UNDO)return;restorePlan(UNDO);UNDO=null;LAST_OPT=null;$('undoBtn').style.display='none';renderAll();showInfo('Rückgängig','Stand vor der Optimierung wiederhergestellt.','ok')});
   $('netHint').textContent=HAS_MATRIX?`LKW-Straßenmatrix: ${NET.pairs} Verbindungen · sonst Luftlinie × ${ROAD_FACTOR.toFixed(2)} · Ø ${Math.round(AVG_KMH)} km/h`:`ohne Straßenmatrix: Luftlinie × ${ROAD_FACTOR.toFixed(2)} · Ø ${Math.round(AVG_KMH)} km/h`;
   $('sequenceAllBtn').addEventListener('click',()=>{routes.filter(r=>routeChanged(r)||r.manuallyCreated).forEach(optimizeRouteOrder);renderAll();showInfo('Reihenfolge berechnet','Alle geänderten/neuen Touren ab Valluhn neu sortiert.')});
@@ -2544,6 +2918,11 @@ def main():
         info_upload = st.file_uploader("Kisoft_Kunden.csv", type=["csv"])
     with c4:
         ref_upload = st.file_uploader("Referenzplan (optional)", type=["xlsx"])
+    hist_uploads = st.file_uploader("Feiertags-Historie (optional, mehrere Pläne – werden ins Planungsgedächtnis der Adressdatei übernommen)",
+                                    type=["xlsx"], accept_multiple_files=True,
+                                    help="Alle Formate (neue Quelldatei, alte 'Direkt 1 - 99', 'Belieferung …'-Listen). "
+                                         "Pläne aus derselben Zeit gemeinsam hochladen (z. B. Karfreitag + Ostermontag) – "
+                                         "sie dienen sich gegenseitig als Normalwoche. Jüngere Jahre zählen stärker.")
 
     default_key = os.environ.get("ORS_API_KEY", "")
     try:
@@ -2661,6 +3040,22 @@ def main():
         elif mstats["fehlend"] and not ors_key:
             st.caption(f"{mstats['fehlend']} Verbindungen nicht im Cache – ohne ORS-Key per Luftlinie geschätzt.")
 
+    history = dict(LAST_HISTORY) if adr_prev is not None else {}
+    if hist_uploads:
+        known = {fn for H in history.values() for fn in H.get("files", [])}
+        fresh = [(f.name, f.getvalue()) for f in hist_uploads if f.name not in known]
+        if len(fresh) < len(hist_uploads):
+            st.caption("Schon im Planungsgedächtnis (nicht doppelt gezählt): "
+                       + ", ".join(f.name for f in hist_uploads if f.name in known))
+        if fresh:
+            with st.spinner("Feiertags-Historie wird ausgewertet …"):
+                h_new, h_log = analyze_history(read_source(source_bytes), fresh)
+                history = merge_history(history, h_new)
+            st.dataframe(pd.DataFrame(h_log), use_container_width=True, hide_index=True)
+    if history:
+        st.caption("Planungsgedächtnis: " + " · ".join(f"{d}: {len(H.get('files', []))} Plan/Pläne, {len(H.get('tours', {}))} Touren"
+                                                      for d, H in history.items()))
+
     matched, ref_name = None, ""
     if ref_upload is not None:
         try:
@@ -2672,7 +3067,7 @@ def main():
     try:
         html = build_html(
             make_payload(geo), read_tour_starts(starts_upload.getvalue()), upload.name, source_bytes,
-            get_day_column_map(source_bytes), info_upload.name, starts_upload.name, ref_name, matrix, net,
+            get_day_column_map(source_bytes), info_upload.name, starts_upload.name, ref_name, matrix, net, history,
         )
     except Exception as exc:
         st.error(f"Fehler: {exc}")
@@ -2699,7 +3094,7 @@ def main():
     with d2:
         full_mat = _MEM_CACHE.get(f"matrix_cache_{profile}.json", {})
         keep = {_ckey(nodes, i, j) for i, j in pairs} if use_matrix else set()
-        wb = build_address_workbook(geo, original_addr, {k_: v_ for k_, v_ in full_mat.items() if k_ in keep}, adr_prev)
+        wb = build_address_workbook(geo, original_addr, {k_: v_ for k_, v_ in full_mat.items() if k_ in keep}, adr_prev, history)
         st.download_button(
             "Adressdatei aktualisiert (.xlsx)", data=wb, file_name="Kunden_Adressdatei.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True,

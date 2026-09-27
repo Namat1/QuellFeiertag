@@ -42,9 +42,12 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-4 (Straßenabgleich OSM, parallel)"
+APP_BUILD = "V28 · Build 27.09.-7 (Adressdatei statt lokalem Cache)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
-CACHE_DIR = Path(__file__).resolve().parent / "feiertags_cache"
+# Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
+CACHE_DIR = Path.home() / "feiertagsplaner_cache"
+LEGACY_CACHE_DIRS = [Path(__file__).resolve().parent / "feiertags_cache", Path.cwd() / "feiertags_cache"]
+ORS_QUOTA: dict = {}   # Dienst → (verbleibend, Reset) aus den ORS-Antwort-Headern
 ORS_HOST = "https://api.heigit.org"
 # Endpunkte laut HeiGIT-API-Doku (ORS Core 9.x); alte api.openrouteservice.org-Pfade als Ausweich
 ORS_ENDPOINTS = {
@@ -276,16 +279,58 @@ LIM_OSM = RateLimiter(57)       # Nominatim: max. 1 Anfrage/Sekunde
 LIM_OVP = RateLimiter(60)       # Overpass: fair use
 
 
-def load_cache(name: str) -> dict:
+def _read_json(path: Path) -> dict:
     try:
-        return json.loads((CACHE_DIR / name).read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
 
+USE_LOCAL_CACHE = False   # Standard: nichts auf der Festplatte – Speicher ist die Adressdatei (Upload/Download)
+_MEM_CACHE: dict = {}     # Arbeitsspeicher für den laufenden Durchlauf (vorbefüllt aus der Adressdatei)
+
+
+def load_cache(name: str) -> dict:
+    """Arbeitsspeicher (+ optional lokaler Cache inkl. alter Ordner). Erfolgreiche Treffer gehen nie verloren."""
+    data = dict(_MEM_CACHE.get(name, {}))
+    if not USE_LOCAL_CACHE:
+        return data
+    for k, v in _read_json(CACHE_DIR / name).items():
+        data.setdefault(k, v)
+    extra = [d / name for d in LEGACY_CACHE_DIRS if d != CACHE_DIR] + [CACHE_DIR / (name + ".bak")]
+    for path in extra:
+        if not path.exists():
+            continue
+        for k, v in _read_json(path).items():
+            cur = data.get(k)
+            if cur is None or (isinstance(cur, dict) and cur.get("fail") and isinstance(v, dict) and not v.get("fail")):
+                data[k] = v
+    return data
+
+
+def backup_cache(name: str) -> None:
+    if not USE_LOCAL_CACHE:
+        return
+    src = CACHE_DIR / name
+    if src.exists():
+        try:
+            (CACHE_DIR / (name + ".bak")).write_bytes(src.read_bytes())
+        except Exception:
+            pass
+
+
+def cache_info() -> str:
+    geo = _read_json(CACHE_DIR / "geo_cache.json") if USE_LOCAL_CACHE else _MEM_CACHE.get("geo_cache.json", {})
+    ok = sum(1 for v in geo.values() if isinstance(v, dict) and not v.get("fail"))
+    return f"{ok} Adressen gefunden · {len(geo) - ok} offen/fehlgeschlagen"
+
+
 def save_cache(name: str, obj: dict) -> None:
+    _MEM_CACHE[name] = dict(obj)
+    if not USE_LOCAL_CACHE:
+        return
     try:
-        CACHE_DIR.mkdir(exist_ok=True)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = CACHE_DIR / (name + ".tmp")
         tmp.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         tmp.replace(CACHE_DIR / name)
@@ -328,6 +373,9 @@ def ors_request(session, method: str, service: str, key: str, profile: str = "",
             last = RuntimeError(f"{url}: HTTP {r.status_code}")
             continue
         _ORS_WORKING[service] = tpl
+        rem = r.headers.get("x-ratelimit-remaining")
+        if rem is not None:
+            ORS_QUOTA[service] = (rem, r.headers.get("x-ratelimit-reset", ""))
         return r
     raise last or RuntimeError("OpenRouteService nicht erreichbar")
 
@@ -376,19 +424,23 @@ def _pick_feature(feats: list, center) -> tuple[dict | None, str]:
 def _ors_json(session, service: str, key: str, params: dict):
     r = ors_request(session, "GET", service, key, params=params, timeout=25)
     if r.status_code in (401, 403, 429):
-        raise QuotaError(f"OpenRouteService Geocoding: HTTP {r.status_code}")
+        hint = " (Tageskontingent aufgebraucht?)" if r.status_code in (403, 429) else " (API-Key ungültig?)"
+        raise QuotaError(f"OpenRouteService Geocoding: HTTP {r.status_code}{hint} {r.text[:80]}")
     r.raise_for_status()
     return r.json().get("features") or []
 
 
-def geocode_ors(session, key: str, street: str, plz: str, city: str, center=None):
-    """1) strukturiert, 2) Freitext mit Fokus auf PLZ-Zentrum. Rückgabe (Treffer, Grund)."""
+def geocode_ors(session, key: str, street: str, plz: str, city: str, center=None, extended: bool = False):
+    """Strukturierte Suche (1 Anfrage). extended=True: zusätzlich ohne Ort und als Freitext (bis 3 Anfragen).
+    Standard ist sparsam, weil das ORS-Tageskontingent begrenzt ist; Nominatim/Straßenabgleich übernehmen den Rest."""
     params = {"address": street, "postalcode": plz, "country": "DE", "size": 3}
     if city:
         params["locality"] = city
     res, why = _pick_feature(_ors_json(session, "geocode", key, params), center)
     if res:
         return {**res, "src": "ors"}, ""
+    if not extended:
+        return None, why
     if city:   # Ortsname aus SAP oft abgekürzt/zusammengesetzt → nur PLZ
         params.pop("locality")
         res, why_b = _pick_feature(_ors_json(session, "geocode", key, params), center)
@@ -407,10 +459,15 @@ def geocode_nominatim(session, street: str, plz: str, city: str, center=None):
         variants.insert(0, {"street": street, "postalcode": plz, "city": city, "countrycodes": "de"})
     variants.append({"q": f"{street}, {plz} {city}".strip(), "countrycodes": "de"})
     for params in variants:
-        LIM_OSM.wait()
-        r = session.get(NOMINATIM_URL, params={**params, "format": "jsonv2", "limit": 3}, timeout=25)
+        for attempt in range(3):
+            LIM_OSM.wait()
+            r = session.get(NOMINATIM_URL, params={**params, "format": "jsonv2", "limit": 3}, timeout=25)
+            if r.status_code != 429:
+                break
+            LIM_OSM.set(max(15.0, 60.0 / LIM_OSM.interval / 2))   # Tempo halbieren, kurz pausieren
+            time.sleep(30 * (attempt + 1))
         if r.status_code in (403, 429):
-            raise QuotaError(f"Nominatim: HTTP {r.status_code}")
+            raise QuotaError(f"Nominatim: HTTP {r.status_code} (Sperre wegen zu vieler Anfragen – später erneut)")
         r.raise_for_status()
         for h in r.json() or []:
             rank = int(h.get("place_rank") or 0)
@@ -619,13 +676,17 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                       progress: Callable[[int, int], None] | None = None,
                       osm_fallback: bool = True) -> tuple[pd.DataFrame, dict]:
     """provider: 'ors' | 'osm' | 'cache'. Bei 'ors' optional Nominatim als zweite Quelle."""
+    backup_cache("geo_cache.json")
     cache = load_cache("geo_cache.json")
+    save_cache("geo_cache.json", cache)   # zusammengeführten Stand (inkl. alter Ordner) sofort festschreiben
     stats = {"neu": 0, "fehl": 0, "offen": 0, "abbruch": "", "gruende": {}}
     todo = []
     seen = set()
-    for street, plz, city, plat, plon in df[["Strasse", "Plz", "Ort", "lat", "lon"]].itertuples(index=False, name=None):
+    fixed = df["gq"].isin(["datei", "manuell"]) if "gq" in df.columns else pd.Series(False, index=df.index)
+    for (street, plz, city, plat, plon), is_fixed in zip(
+            df[["Strasse", "Plz", "Ort", "lat", "lon"]].itertuples(index=False, name=None), fixed):
         k = addr_key(street, plz, city)
-        if k in seen or not _txt(street):
+        if is_fixed or k in seen or not _txt(street):
             continue
         seen.add(k)
         c = cache.get(k)
@@ -716,6 +777,7 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                 why = join(why, "Straßenabgleich übersprungen (Overpass nicht erreichbar)")
             if res is None and state["ors_dead"] and not state["can_osm"]:
                 retry_later = True
+                why = why or "nicht abgefragt: ORS-Kontingent erschöpft und OSM gesperrt – nächster Lauf versucht es erneut"
             store(k, res, why, retry_later)
 
         def worker():
@@ -751,7 +813,8 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
             elif state["can_osm"]:
                 jobs.put((item, why))
             else:
-                store(k, None, why, retry_later=state["ors_dead"])
+                store(k, None, why or "nicht abgefragt: ORS-Kontingent erschöpft und OSM gesperrt – nächster Lauf versucht es erneut",
+                      retry_later=True)
         jobs.put(None)
         while th.is_alive():
             if progress:
@@ -765,6 +828,8 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
     rejected = 0
     reasons: dict = {}
     for i, (street, plz, city) in enumerate(out[["Strasse", "Plz", "Ort"]].itertuples(index=False, name=None)):
+        if gq[i] in ("datei", "manuell"):
+            continue
         c = cache.get(addr_key(street, plz, city))
         if not c or c.get("fail"):
             if c and c.get("why"):
@@ -824,6 +889,162 @@ def apply_coordinate_overrides(df: pd.DataFrame, file_bytes: bytes) -> tuple[pd.
             n += 1
     out["lat"], out["lon"], out["gq"] = lat, lon, gq
     return out, n
+
+
+# ---------------------------------------------------------------------------
+# Adressdatei (xlsx): einziger dauerhafter Speicher für Adressen, Koordinaten und Straßenentfernungen
+# ---------------------------------------------------------------------------
+
+ADDR_SHEET, MATRIX_SHEET = "Adressen", "Strassenmatrix"
+ADDR_COLUMNS = ["SAP", "Quelle", "Name", "Strasse_SAP", "Strasse", "Plz", "Ort", "lat", "lon", "Status", "Hinweis"]
+STATUS_LABEL = {"datei": "fest (Datei)", "manuell": "fest (manuell)", "addr": "adressgenau",
+                "street": "Straßenmitte", "plz": "PLZ – bitte prüfen"}
+
+
+def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, dict]:
+    """Liest die Adressdatei (xlsx oder csv). Rückgabe: Adresstabelle, Matrix-Cache {coordkey: [km, min]}."""
+    matrix: dict = {}
+    if name.lower().endswith(".csv"):
+        adr = pd.read_csv(io.BytesIO(file_bytes), sep=None, engine="python", dtype=str, encoding="utf-8-sig")
+    else:
+        xl = pd.ExcelFile(io.BytesIO(file_bytes))
+        adr = pd.read_excel(xl, sheet_name=ADDR_SHEET if ADDR_SHEET in xl.sheet_names else 0, dtype=str)
+        if MATRIX_SHEET in xl.sheet_names:
+            m = pd.read_excel(xl, sheet_name=MATRIX_SHEET)
+            for r in m.itertuples(index=False):
+                try:
+                    matrix[f"{float(r[0]):.5f},{float(r[1]):.5f}|{float(r[2]):.5f},{float(r[3]):.5f}"] = [float(r[4]), float(r[5])]
+                except Exception:
+                    continue
+    adr.columns = [str(c).strip() for c in adr.columns]
+    ren = {c: "Strasse" for c in adr.columns if c.lower() in ("straße", "strasse")}
+    ren.update({c: "SAP" for c in adr.columns if c.lower() in ("sap", "kundennummer")})
+    ren.update({c: "Plz" for c in adr.columns if c.lower() == "plz"})
+    adr = adr.rename(columns=ren)
+    if "SAP" not in adr.columns:
+        raise ValueError("Adressdatei braucht eine Spalte SAP")
+    adr["SAP"] = pd.to_numeric(adr["SAP"], errors="coerce").astype("Int64")
+    return adr.dropna(subset=["SAP"]).drop_duplicates("SAP", keep="last"), matrix
+
+
+def _num(v):
+    try:
+        f = float(str(v).replace(",", "."))
+        return f if np.isfinite(f) else None
+    except Exception:
+        return None
+
+
+def apply_address_file(df: pd.DataFrame, adr: pd.DataFrame, addresses: bool = True,
+                       coords: bool = True) -> tuple[pd.DataFrame, int, int]:
+    """Vor dem Geocoding: korrigierte Straße/PLZ/Ort übernehmen; vorhandene Koordinaten fest setzen (gq='datei')."""
+    out = df.copy()
+    idx = {int(s): r for s, r in zip(adr["SAP"], adr.to_dict("records"))}
+    if coords:
+        if "gq" not in out.columns:
+            out["gq"] = None
+        for col in ("lat", "lon"):
+            if col not in out.columns:
+                out[col] = np.nan
+    n_addr = n_coord = 0
+    street, plz, city = out["Strasse"].tolist(), out["Plz"].tolist(), out["Ort"].tolist()
+    lat = out["lat"].tolist() if coords else []
+    lon = out["lon"].tolist() if coords else []
+    gq = out["gq"].tolist() if coords else []
+    for i, sap in enumerate(out["SAP"]):
+        r = idx.get(int(sap)) if pd.notna(sap) else None
+        if not r:
+            continue
+        changed = False
+        for lst, key in ((street, "Strasse"), (plz, "Plz"), (city, "Ort")) if addresses else ():
+            v = _txt(r.get(key))
+            if v and v != _txt(lst[i]):
+                lst[i] = v.zfill(5) if key == "Plz" and v.isdigit() else v
+                changed = True
+        n_addr += changed
+        if not coords or _txt(r.get("gq")).lower() == "plz":   # alte Koordinaten-CSV: PLZ-Zentren nicht festschreiben
+            continue
+        la, lo = _num(r.get("lat")), _num(r.get("lon"))
+        if la is not None and lo is not None and 47 <= la <= 56 and 5 <= lo <= 16:
+            lat[i], lon[i], gq[i] = la, lo, "datei"
+            n_coord += 1
+    out["Strasse"], out["Plz"], out["Ort"] = street, pd.Series(plz, dtype="string").values, city
+    if coords:
+        out["lat"], out["lon"], out["gq"] = lat, lon, gq
+    return out, n_addr, n_coord
+
+
+def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrix_cache: dict,
+                           prev: pd.DataFrame | None = None) -> bytes:
+    """Aktualisierte Adressdatei: alle Kunden mit bester Koordinate + Straßenmatrix (koordinatenbasiert)."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    orig = original.drop_duplicates("SAP").set_index("SAP")
+    prev_idx = prev.set_index("SAP") if prev is not None and len(prev) else None
+    rows = []
+    for r in geo.drop_duplicates("SAP").itertuples(index=False):
+        d = r._asdict()
+        sap = d["SAP"]
+        q = d.get("gq") or ""
+        hint = _txt(prev_idx.loc[sap, "Hinweis"]) if prev_idx is not None and sap in prev_idx.index and "Hinweis" in prev_idx.columns else ""
+        if d.get("geo_match"):
+            hint = hint or f"erkannt als {d['geo_match']}"
+        keep_coords = q in ("datei", "manuell", "addr", "street")
+        rows.append({
+            "SAP": int(sap), "Quelle": d.get("Quelle"), "Name": _txt(d.get("Name")),
+            "Strasse_SAP": _txt(orig.loc[sap, "Strasse"]) if sap in orig.index else "",
+            "Strasse": _txt(d.get("Strasse")), "Plz": _txt(d.get("Plz")), "Ort": _txt(d.get("Ort")),
+            "lat": round(float(d["lat"]), 6) if keep_coords and pd.notna(d.get("lat")) else None,
+            "lon": round(float(d["lon"]), 6) if keep_coords and pd.notna(d.get("lon")) else None,
+            "Status": STATUS_LABEL.get(q, "keine Adresse" if not _txt(d.get("Strasse")) else "offen"),
+            "Hinweis": hint,
+        })
+    adr = pd.DataFrame(rows, columns=ADDR_COLUMNS).sort_values(["Status", "Quelle", "SAP"],
+                                                                  key=lambda s: s.map(lambda v: 0 if "prüfen" in str(v) or v in ("offen", "keine Adresse") else 1) if s.name == "Status" else s)
+    mrows = []
+    for k, v in matrix_cache.items():
+        try:
+            a, b = k.split("|")
+            la1, lo1 = a.split(",")
+            la2, lo2 = b.split(",")
+            mrows.append([float(la1), float(lo1), float(la2), float(lo2), v[0], v[1]])
+        except Exception:
+            continue
+    mat = pd.DataFrame(mrows, columns=["von_lat", "von_lon", "nach_lat", "nach_lon", "km", "min"])
+    info = pd.DataFrame({"Info": [
+        "Adressdatei für den Feiertags-Wochenplaner – bei jedem Lauf hochladen, danach die aktualisierte Version wieder herunterladen.",
+        "Blatt Adressen: Straße/Plz/Ort überschreiben die SAP-Adresse. Sind lat/lon gefüllt, gilt die Koordinate fest (kein Geocoding).",
+        "Status 'PLZ – bitte prüfen' / 'offen': Straße korrigieren ODER lat/lon eintragen (Google Maps: Rechtsklick → Koordinaten).",
+        "Spalte Strasse_SAP ist nur zur Info (Original aus SAP).",
+        "Blatt Strassenmatrix: LKW-Entfernungen (km) und Fahrzeiten (Min.) – nicht bearbeiten.",
+        f"Erstellt: {datetime.now():%d.%m.%Y %H:%M} · {APP_BUILD}",
+    ]})
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        adr.to_excel(w, sheet_name=ADDR_SHEET, index=False)
+        mat.to_excel(w, sheet_name=MATRIX_SHEET, index=False)
+        info.to_excel(w, sheet_name="Info", index=False)
+        ws = w.sheets[ADDR_SHEET]
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        widths = {"A": 9, "B": 13, "C": 34, "D": 26, "E": 32, "F": 7, "G": 22, "H": 11, "I": 11, "J": 17, "K": 48}
+        for col, wd in widths.items():
+            ws.column_dimensions[col].width = wd
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        todo = PatternFill("solid", fgColor="FFF3C4")
+        bad = PatternFill("solid", fgColor="FBE3E3")
+        for row in ws.iter_rows(min_row=2):
+            st_ = str(row[9].value or "")
+            fill = bad if st_ in ("offen", "keine Adresse") else todo if "prüfen" in st_ else None
+            if fill:
+                for c in row:
+                    c.fill = fill
+            for c in (row[7], row[8]):
+                c.number_format = "0.000000"
+        w.sheets["Info"].column_dimensions["A"].width = 140
+        for c in w.sheets["Info"]["A"]:
+            c.alignment = Alignment(wrap_text=False)
+    return buf.getvalue()
 
 
 def build_nodes(df: pd.DataFrame) -> tuple[pd.DataFrame, list, dict]:
@@ -2168,9 +2389,13 @@ def main():
             ors_rate = st.number_input("ORS-Adresssuche: Anfragen pro Minute", 10, 1000, 95, step=5,
                                        help="HeiGIT Standard-Plan: 100/Min. Bei höherem Kontingent entsprechend erhöhen.")
         with g3:
-            coord_upload = st.file_uploader("Koordinaten-CSV (optional)", type=["csv"],
-                                            help="Spalten SAP;lat;lon – hat Vorrang vor dem Geocoding.")
-        st.caption(f"Cache: `{CACHE_DIR}` – bereits gefundene Adressen und Entfernungen werden nicht erneut abgefragt.")
+            addr_upload = st.file_uploader("Adressdatei (.xlsx)", type=["xlsx", "csv"],
+                                           help="Kunden_Adressdatei.xlsx: korrigierte Adressen + feste Koordinaten + Straßenmatrix. "
+                                                "Nach jedem Lauf die aktualisierte Version herunterladen und beim nächsten Mal wieder hochladen.")
+            use_local = st.checkbox("Zusätzlich lokalen Cache nutzen", value=False,
+                                    help=f"Aus: nichts wird auf dem Rechner gespeichert. Ein: Ordner {CACHE_DIR}")
+        st.caption("Ohne lokalen Cache ist die **Adressdatei** der Speicher: Kunden mit Koordinaten darin werden nicht mehr gesucht, "
+                   "Straßenentfernungen daraus nicht erneut abgefragt.")
         if st.button("Verbindungstest (ORS · Nominatim · Overpass)"):
             with st.spinner("Teste Dienste …"):
                 ORS_HOST = _host_from(ors_base)
@@ -2180,13 +2405,26 @@ def main():
         st.info("Bitte Quelldatei, Normal_Tourenstart.csv und Kisoft_Kunden.csv hochladen.")
         return
 
+    global USE_LOCAL_CACHE
+    USE_LOCAL_CACHE = bool(use_local)
+    _MEM_CACHE.clear()
+    adr_prev, n_fix = None, 0
     try:
         with st.spinner("Dateien werden zusammengeführt …"):
             source_bytes = upload.getvalue()
             df = read_source(source_bytes)
+            original_addr = df[["SAP", "Strasse", "Plz", "Ort"]].copy()
             df = enrich_customer_info(df, read_kisoft(info_upload.getvalue()))
             df = enrich_load_orders(df, source_bytes)
+            if addr_upload is not None:
+                adr_prev, mat_prev = read_address_file(addr_upload.getvalue(), addr_upload.name)
+                df, n_adr, _ = apply_address_file(df, adr_prev, addresses=True, coords=False)
+                _MEM_CACHE[f"matrix_cache_{profile}.json"] = mat_prev
             geo = enrich_geo(df)
+            if adr_prev is not None:
+                geo, _, n_fix = apply_address_file(geo, adr_prev, addresses=False, coords=True)
+                st.caption(f"Adressdatei: {n_adr} Adressen korrigiert · {n_fix} Kunden mit fester Koordinate · "
+                           f"{len(mat_prev)} Straßenentfernungen übernommen.")
     except Exception as exc:
         st.error(f"Fehler: {exc}")
         return
@@ -2208,14 +2446,10 @@ def main():
     if gstats["neu"] or gstats["fehl"]:
         st.caption(f"Geocoding: {gstats['neu']} neu gefunden, {gstats['fehl']} nicht gefunden"
                    + (f", {gstats['verworfen']} verworfen (> {GEO_MAX_DEVIATION_KM:.0f} km vom PLZ-Gebiet)" if gstats.get("verworfen") else ""))
+    if ORS_QUOTA.get("geocode"):
+        st.caption(f"ORS-Adresssuche: noch {ORS_QUOTA['geocode'][0]} Anfragen im Kontingent.")
     if gstats["abbruch"]:
         st.warning(f"Geocoding abgebrochen: {gstats['abbruch']} – {gstats['offen']} Adressen offen, nächster Lauf macht weiter.")
-    if coord_upload is not None:
-        try:
-            geo, n_ov = apply_coordinate_overrides(geo, coord_upload.getvalue())
-            st.caption(f"Koordinaten-CSV: {n_ov} Zeilen übernommen.")
-        except Exception as exc:
-            st.warning(f"Koordinaten-CSV ignoriert: {exc}")
 
     geo, nodes, node_src = build_nodes(geo)
     matrix, net = {}, None
@@ -2254,7 +2488,7 @@ def main():
     m = st.columns(6)
     m[0].metric("Kundenstammsätze", f"{len(geo):,}".replace(",", "."))
     m[1].metric("Wochen-Lieferungen", f"{deliveries:,}".replace(",", "."))
-    m[2].metric("Adressgenau", f"{int(gq.isin(['addr', 'manuell']).sum())}/{len(geo)}")
+    m[2].metric("Adressgenau / fest", f"{int(gq.isin(['addr', 'manuell', 'datei']).sum())}/{len(geo)}")
     m[3].metric("nur Straße / PLZ", f"{int((gq == 'street').sum())} / {int((gq == 'plz').sum())}")
     m[4].metric("Straßenmatrix", f"{net['pairs']}/{net['needed']}" if net else "–",
                 help=f"Umwegfaktor {net['factor']} · Ø {net['kmh']} km/h" if net else None)
@@ -2268,11 +2502,11 @@ def main():
             mime="text/html", use_container_width=True,
         )
     with d2:
-        coords = geo[[c for c in ["SAP", "Quelle", "Name", "Strasse", "Plz", "Ort", "geo_match", "lat", "lon", "gq"] if c in geo.columns]].drop_duplicates("SAP")
+        wb = build_address_workbook(geo, original_addr, _MEM_CACHE.get(f"matrix_cache_{profile}.json", {}), adr_prev)
         st.download_button(
-            "Koordinaten als CSV", data=coords.to_csv(sep=";", index=False).encode("utf-8-sig"),
-            file_name="Kunden_Koordinaten.csv", mime="text/csv", use_container_width=True,
-            help="Prüfen/korrigieren und als Koordinaten-CSV wieder hochladen. Zeilen mit gq=plz werden dabei ignoriert.",
+            "Adressdatei aktualisiert (.xlsx)", data=wb, file_name="Kunden_Adressdatei.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True,
+            help="Enthält alle gefundenen Koordinaten und Straßenentfernungen. Beim nächsten Lauf wieder hochladen.",
         )
     cols_bad = [c for c in ["SAP", "Name", "Strasse", "Plz", "Ort", "gq", "geo_grund"] if c in geo.columns]
     bad = geo[geo["gq"].isin(["plz"]) | geo["gq"].isna()][cols_bad].drop_duplicates("SAP")

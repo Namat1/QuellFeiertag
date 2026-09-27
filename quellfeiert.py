@@ -42,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-19 (mehrere Ausfalltage: Kunde nur einmal am Zieltag)"
+APP_BUILD = "V28 · Build 27.09.-20 (Rechtsklick: Verschieben zur Tour)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -1728,6 +1728,15 @@ h1{font-size:18px;margin:0;font-weight:900;letter-spacing:-.02em}
 .filterdetails,.moremenu{position:relative}
 .filterdetails>summary,.moremenu>summary{list-style:none;border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 10px;font-weight:800;cursor:pointer;white-space:nowrap}
 .filterdetails .chips{position:absolute;top:40px;left:0;z-index:120;width:310px;padding:9px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 35px rgba(0,0,0,.14);display:flex;gap:5px;flex-wrap:wrap}
+.ctxmenu{position:fixed;z-index:400;width:330px;max-height:70vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 35px rgba(0,0,0,.18);padding:6px;font-size:12px}
+.ctxmenu .ctxhead{padding:6px 8px 8px;border-bottom:1px solid var(--line2);margin-bottom:4px}
+.ctxmenu .ctxhead b{display:block}.ctxmenu .ctxhead span{color:var(--muted);font-size:10px}
+.ctxmenu .ctxin{display:flex;gap:5px;padding:4px 6px 6px}.ctxmenu .ctxin input{flex:1;height:30px;border:1px solid var(--line);border-radius:7px;padding:4px 8px;font-weight:700}
+.ctxmenu .ctxin button{border:0;background:var(--accent);color:#fff;border-radius:7px;padding:0 10px;font-weight:800;cursor:pointer}
+.ctxmenu .ctxsec{padding:6px 8px 3px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+.ctxmenu .ctxitem{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 8px;border-radius:7px;cursor:pointer}
+.ctxmenu .ctxitem:hover,.ctxmenu .ctxitem.sel{background:var(--accent-soft)}.ctxmenu .ctxitem.dis{opacity:.45;cursor:not-allowed}
+.ctxmenu .ctxitem small{color:var(--muted);font-size:10px}.ctxmenu .ctxhint{padding:2px 8px 6px;color:var(--muted);font-size:10px}
 .chip{display:flex;align-items:center;gap:5px;padding:4px 7px;background:var(--surface2);border:1px solid var(--line2);border-radius:999px;font-size:11px}
 .menupop{position:absolute;top:40px;right:0;z-index:120;width:200px;padding:7px;display:grid;gap:5px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 35px rgba(0,0,0,.14)}
 .menupop .btn{width:100%;text-align:left}
@@ -2652,11 +2661,60 @@ function moveAid(aid,toRouteId,beforeAid=null){
   if(ix>=0){to.manualOrder=true;evaluateRoute(to)}else if(routeChanged(to)||to.manuallyCreated)optimizeRouteOrder(to);
   renderAll();if(found.a.originalRouteId!==to.id)showMove(found.a,to);
 }
+/* ---------- Rechtsklick: Verschieben zur Tour … ---------- */
+const DIGIT_DAY=Object.fromEntries(Object.entries(DAY_DIGIT).map(([d,n])=>[n,d]));
+function closeCtx(){document.getElementById('ctxmenu')?.remove()}
+function findTourTarget(a,txt){
+  const t=String(txt||'').trim();if(!t)return null;
+  const rs=routes.filter(r=>String(r.tour)===t&&String(r.source)===String(a.Quelle));
+  if(rs.length){const td=targetDays();return rs.find(r=>td.includes(r.day))||rs.find(r=>!outageDays.has(r.day))||rs[0]}
+  return null;
+}
+function createTourFor(a,tour){
+  const day=DIGIT_DAY[String(tour)[0]];if(!day||!/^\d{3,6}$/.test(String(tour)))return {err:`Tour ${tour} gibt es nicht – aus der ersten Ziffer lässt sich kein Tag ableiten.`};
+  if(outageDays.has(day))return {err:`Tour ${tour} läge am ${DAY_LABELS[day]} – das ist ein Ausfalltag.`};
+  if(LOCKED.has(String(tour)))return {err:`Tour ${tour} ist gesperrt.`};
+  const r={id:routeId(day,a.Quelle,tour),day,source:a.Quelle,tour:String(tour),items:[],originalCount:0,manuallyCreated:true,normalStart:startLabel(tour)||'',templateIds:[]};
+  routes.push(r);routes.sort(daySort);return {r};
+}
+function moveToTourNo(aid,txt){
+  const a=getAssignment(aid);if(!a)return;let r=findTourTarget(a,txt);
+  if(!r){const c=createTourFor(a,String(txt).trim());if(c.err){showBlocked(c.err);return}r=c.r;
+    const why=moveBlockReason(a,r);if(why){routes=routes.filter(x=>x!==r);showBlocked(why);return}}
+  closeCtx();moveAid(aid,r.id);
+}
+function openCtx(e,aid){
+  e.preventDefault();closeCtx();const a=getAssignment(aid);if(!a)return;const cur=currentRouteForAid(aid);
+  const td=targetDays(),days=[...new Set([...(td.length?td:[]),...(cur&&!outageDays.has(cur.day)?[cur.day]:[])])];
+  const cand=routes.filter(r=>days.includes(r.day)&&String(r.source)===String(a.Quelle)&&r.items.length&&(!cur||r.id!==cur.id)).map(r=>({r,why:moveBlockReason(a,r),f:fitFor(a,r,true)}));
+  cand.sort((p,q)=>(!!p.why-!!q.why)||(RANK[p.f.key]-RANK[q.f.key])||((p.f.nearest??999)-(q.f.nearest??999)));
+  const item=(c)=>`<div class="ctxitem ${c.why?'dis':''}" data-ctx-route="${esc(c.r.id)}" title="${esc(c.why||c.f.label)}"><span><b>Tour ${esc(c.r.tour)}</b> · ${DAY_SHORT[c.r.day]} <small>${c.r.items.length}/${capOf(c.r)}</small></span><small>${c.why?'gesperrt/voll':esc(c.f.label)+(Number.isFinite(c.f.nearest)?' · '+fmt(c.f.nearest)+' km':'')}</small></div>`;
+  const orig=getRoute(a.originalRouteId),back=orig&&cur&&orig.id!==cur.id&&!outageDays.has(orig.day);
+  const m=document.createElement('div');m.id='ctxmenu';m.className='ctxmenu';
+  m.innerHTML=`<div class="ctxhead"><b>${esc(a.SAP)} · ${esc(a.Name)}</b><span>${esc(a.Ort||'')} · jetzt ${cur?DAY_SHORT[cur.day]+' '+esc(cur.tour):'ausgeplant'} · Herkunft ${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span></div>
+  <div class="ctxsec">Verschieben zur Tour …</div>
+  <div class="ctxin"><input id="ctxTour" list="ctxTours" placeholder="Tournummer, z. B. 4033" autocomplete="off"><button type="button" id="ctxGo">OK</button></div>
+  <datalist id="ctxTours">${routes.filter(r=>String(r.source)===String(a.Quelle)&&!outageDays.has(r.day)).map(r=>`<option value="${esc(r.tour)}">${DAY_LABELS[r.day]} · ${r.items.length} Kunden</option>`).join('')}</datalist>
+  <div class="ctxhint">Nicht vorhandene Nummer = neue Tour (Tag aus der ersten Ziffer: 1 = Mo … 6 = Sa).</div>
+  ${cand.length?`<div class="ctxsec">Passende Touren ${days.map(d=>DAY_SHORT[d]).join(' + ')}</div>${cand.slice(0,10).map(item).join('')}`:''}
+  ${back?`<div class="ctxsec">Weitere</div><div class="ctxitem" data-ctx-route="${esc(orig.id)}"><span>Zurück in Originaltour ${DAY_SHORT[orig.day]} ${esc(orig.tour)}</span></div>`:''}
+  ${cur?`<div class="ctxitem" data-ctx-route="UNPLANNED"><span>Ausplanen</span></div>`:''}`;
+  document.body.appendChild(m);
+  const W=m.offsetWidth,H=m.offsetHeight;m.style.left=Math.max(6,Math.min(e.clientX,innerWidth-W-6))+'px';m.style.top=Math.max(6,Math.min(e.clientY,innerHeight-H-6))+'px';
+  const inp=m.querySelector('#ctxTour');inp.focus();
+  inp.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();moveToTourNo(aid,inp.value)}else if(ev.key==='Escape')closeCtx()});
+  m.querySelector('#ctxGo').addEventListener('click',()=>moveToTourNo(aid,inp.value));
+  m.querySelectorAll('[data-ctx-route]').forEach(el=>el.addEventListener('click',()=>{if(el.classList.contains('dis')){showBlocked(el.title);return}const id=el.dataset.ctxRoute;closeCtx();moveAid(aid,id)}));
+}
+document.addEventListener('mousedown',e=>{const m=document.getElementById('ctxmenu');if(m&&!m.contains(e.target))closeCtx()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeCtx()});
+window.addEventListener('resize',closeCtx);
 function bindDnD(){
   document.querySelectorAll('.cust').forEach(el=>{
     el.addEventListener('dragstart',e=>{dragAid=el.dataset.aid;el.style.opacity='.45';e.dataTransfer.effectAllowed='move'});
     el.addEventListener('dragend',()=>{el.style.opacity='';document.querySelectorAll('.over').forEach(z=>z.classList.remove('over'))});
     el.addEventListener('dragover',e=>e.preventDefault());
+    el.addEventListener('contextmenu',e=>openCtx(e,el.dataset.aid));
     el.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();const z=el.closest('.dropzone');if(z&&el.dataset.aid!==dragAid)moveAid(dragAid,z.dataset.route,el.dataset.aid);else if(!z)moveAid(dragAid,'UNPLANNED')});
   });
   document.querySelectorAll('[data-remove]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();moveAid(b.dataset.remove,'UNPLANNED')}));

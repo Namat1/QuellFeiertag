@@ -42,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-18 (Tourblock nach Tour-DNA statt Endnummer)"
+APP_BUILD = "V28 · Build 27.09.-19 (mehrere Ausfalltage: Kunde nur einmal am Zieltag)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -2230,7 +2230,7 @@ function autoResolveCoveredDeliveries(notify=true){
 function updateOutageStatus(){
   const daySet=new Set(selectedOutageDays());
   const open=routes.filter(r=>daySet.has(r.day)).reduce((n,r)=>n+r.items.filter(a=>!isExcluded(a)).length,0);
-  document.getElementById('openOutageCount').textContent=open;document.getElementById('coveredOutageCount').textContent=[...autoCoveredAids].filter(x=>cancelReasons.get(x)==='Zieltag bereits vorhanden').length;
+  document.getElementById('openOutageCount').textContent=open;document.getElementById('coveredOutageCount').textContent=[...autoCoveredAids].filter(x=>{const c=cancelReasons.get(x)||'';return c==='Zieltag bereits vorhanden'||c.startsWith('zusammengelegt')}).length;
 }
 
 /* ---------- Regeln ---------- */
@@ -2326,6 +2326,8 @@ function chunkGeo(list,size){
 function buildClusters(fromDays,toDay,accept=null){
   const daySet=new Set(fromDays),active=activeSources(),model=familyModel(daySet);
   const pool=routes.filter(r=>daySet.has(r.day)&&!isLocked(r)&&active.includes(r.source)).flatMap(r=>r.items.filter(a=>!isExcluded(a)).map(a=>({aid:a.aid,a,from:r}))).filter(x=>!accept||accept(x));
+  // mehrere Ausfalltage (z. B. Fr + Sa): derselbe Kunde bekommt am Zieltag nur EINE Lieferung – die übrigen werden danach als „zusammengelegt“ gestrichen
+  {const seen=new Set();for(let i=0;i<pool.length;i++){const k=pool[i].a.Quelle+'|'+sapOf(pool[i].a);if(seen.has(k)&&allowedDuplicateCap(toDay,sapOf(pool[i].a))<=1){pool.splice(i,1);i--}else seen.add(k)}}
   const reserve=new Map(),used=new Set(routes.filter(r=>r.day===toDay).map(r=>r.source+'::'+r.tour)),out=[];
   const roomOf=r=>Math.min(routeSoftLimit(r),capOf(r))-r.items.length-(reserve.get(r.id)||0);
   const hardRoom=r=>capOf(r)-r.items.length-(reserve.get(r.id)||0);
@@ -2472,6 +2474,17 @@ function renderSuggestions(){
   body.querySelectorAll('[data-apply-cluster]').forEach(b=>b.addEventListener('click',()=>applyCluster(b.dataset.applyCluster)));
   body.querySelectorAll('[data-drop-member]').forEach(b=>b.addEventListener('click',()=>{const v=b.dataset.dropMember,p=v.indexOf('|'),cid=v.slice(0,p),aid=v.slice(p+1);const c=clusters.find(x=>x.id===cid);if(!c)return;c.members=c.members.filter(x=>x.aid!==aid);if(!c.members.length)clusters=clusters.filter(x=>x!==c);else evaluateCluster(c);renderSuggestions()}));
 }
+/* Kunde hat an mehreren Ausfalltagen Lieferungen und ist am Zieltag jetzt schon eingeplant → Rest streichen */
+function resolveMergedDuplicates(){
+  const tds=targetDays();if(!tds.length)return 0;const side=tds.length>1?sideMap():null;let n=0;
+  routes.filter(r=>outageDays.has(r.day)&&!isLocked(r)).forEach(r=>[...r.items].forEach(a=>{
+    if(isExcluded(a))return;const days=side?[side.get(a.aid)?.day].filter(Boolean):tds;
+    const d=days.find(d=>targetDayAlreadyHas(a,d));if(!d)return;
+    const f=removeFromCurrent(a.aid);if(!f)return;cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);
+    cancelReasons.set(a.aid,`zusammengelegt – am ${DAY_LABELS[d]} bereits eingeplant`);unplanned.push(f.a);n++;
+  }));
+  return n;
+}
 function applyCluster(id,silent=false){
   const c=clusters.find(x=>x.id===id);if(!c)return 0;
   let target;
@@ -2494,13 +2507,14 @@ function applyCluster(id,silent=false){
   });
   if(c.kind==='new'&&!target.items.length)routes=routes.filter(r=>r!==target);else optimizeRouteOrder(target);
   routes.sort(daySort);clusters=clusters.filter(x=>x!==c);
-  if(!silent){renderAll();renderSuggestions();if(blocked)showBlocked(`${blocked} Kunde(n) nicht übernommen (Doppelung, Maximum oder Ausschluss).`)}
+  if(!silent){resolveMergedDuplicates();renderAll();renderSuggestions();if(blocked)showBlocked(`${blocked} Kunde(n) nicht übernommen (Doppelung, Maximum oder Ausschluss).`)}
   return moved;
 }
 function applyClusters(pred,silent=false){
   const todo=clusters.filter(pred).sort((a,b)=>(a.kind==='insert'?0:1)-(b.kind==='insert'?0:1));
   if(!todo.length){if(!silent)showInfo('Keine passenden Vorschläge','Für diese Schnellübernahme gibt es aktuell keine Gruppen.','warn');return 0}
   let n=0;todo.forEach(c=>{n+=applyCluster(c.id,true)});
+  resolveMergedDuplicates();
   if(!silent){renderAll();renderSuggestions();showInfo('Übernommen',`${todo.length} Gruppe(n) · ${n} Kunden eingeplant.`,'good')}
   return n;
 }
@@ -2784,6 +2798,7 @@ function runAutoplan(silent=false){
   }
   AUTO_OVER=Math.max(0,Number(document.getElementById('autoOver')?.value)||0);BLOCK_MODE=document.getElementById('blockMode')?.checked!==false;parseLocked();
   buildOriginalPlan();clusters=buildAllClusters(selectedOutageDays());applyClusters(()=>true,true);
+  resolveMergedDuplicates();
   if(document.getElementById('btOptimize')?.checked)targetDays().forEach(d=>optimizeDay(d,true));
   if(!silent)renderAll();return true;
 }

@@ -40,6 +40,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
+APP_BUILD = "V28 · Build 27.09.-3 (Straßenabgleich OSM)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 CACHE_DIR = Path(__file__).resolve().parent / "feiertags_cache"
 ORS_HOST = "https://api.heigit.org"
@@ -2051,6 +2052,7 @@ def main():
 
     st.set_page_config(page_title="Feiertags-Wochenplaner V28", page_icon="📅", layout="wide")
     st.title("Feiertags-Wochenplaner V28 – HTML Generator")
+    st.caption(f"**{APP_BUILD}** · Datei: `{Path(__file__).resolve()}`")
     st.caption(
         "Excel + Normal_Tourenstart.csv + Kisoft_Kunden.csv → eigenständige Dispo-HTML. "
         "Optional: Referenzplan (z. B. Tourenplan_KW40.xlsx) für den Backtest."
@@ -2129,6 +2131,9 @@ def main():
         progress=lambda i, n: bar.progress(min(1.0, (i + 1) / max(1, n)), text=f"Adressen verorten … {i + 1}/{n}"),
     )
     bar.empty()
+    n_match = int((geo.get("geo_match", pd.Series(dtype=str)).fillna("") != "").sum())
+    if n_match:
+        st.caption(f"Straßenabgleich (SAP-Abkürzungen → OSM-Straßen): {n_match} Kunden aufgelöst.")
     if gstats["neu"] or gstats["fehl"]:
         st.caption(f"Geocoding: {gstats['neu']} neu gefunden, {gstats['fehl']} nicht gefunden"
                    + (f", {gstats['verworfen']} verworfen (> {GEO_MAX_DEVIATION_KM:.0f} km vom PLZ-Gebiet)" if gstats.get("verworfen") else ""))

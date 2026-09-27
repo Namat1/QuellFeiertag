@@ -42,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-8 (Adressdatei, Overpass-Adresssuche ohne Kontingent)"
+APP_BUILD = "V28 · Build 27.09.-9 (Overpass als Auswahl)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -744,7 +744,8 @@ def connection_test(key: str) -> list:
 def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_failed: bool = False,
                       progress: Callable[[int, int], None] | None = None,
                       osm_fallback: bool = True) -> tuple[pd.DataFrame, dict]:
-    """provider: 'ors' | 'osm' | 'cache'. Bei 'ors' optional Nominatim als zweite Quelle."""
+    """provider: 'ors' | 'ovp' (nur Overpass, ohne Kontingent) | 'osm' (Nominatim) | 'cache'.
+    Overpass läuft bei allen aktiven Quellen als letzte Stufe mit."""
     backup_cache("geo_cache.json")
     cache = load_cache("geo_cache.json")
     save_cache("geo_cache.json", cache)   # zusammengeführten Stand (inkl. alter Ordner) sofort festschreiben
@@ -766,7 +767,7 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
     stats["offen"] = len(todo)
     can_ors = provider == "ors" and bool(key)
     can_osm = provider == "osm" or (provider == "ors" and osm_fallback)
-    if todo and provider in ("ors", "osm"):
+    if todo and provider in ("ors", "osm", "ovp"):
         # Pipeline: Hauptthread fragt ORS ab, ein zweiter Thread erledigt parallel OSM (Nominatim + Straßenabgleich)
         # für die ORS-Fehlschläge. Beide Dienste haben eigene Tempolimits → Gesamtzeit ≈ max statt Summe.
         import requests
@@ -2452,7 +2453,10 @@ def main():
                                           "Matrix über /openrouteservice/v2/matrix/{Profil}. Ein eingefügter Pfad wird ignoriert.")
             provider_label = st.radio(
                 "Adressen verorten über",
-                ["OpenRouteService", "Nominatim (OSM, 1 Adresse/Sek.)", "nur Cache / PLZ"], horizontal=True,
+                ["OpenRouteService", "Overpass (OSM, ohne Kontingent)", "Nominatim (OSM, 1 Adresse/Sek.)", "nur Adressdatei / PLZ"],
+                horizontal=True,
+                help="Overpass: sucht Hausnummer bzw. Straße direkt in OpenStreetMap – kein Tageskontingent, kein API-Key. "
+                     "Ideal, wenn das ORS-Kontingent aufgebraucht ist oder die Adressen bereits sauber ausgeschrieben sind.",
             )
         with g2:
             use_matrix = st.checkbox("Straßenmatrix berechnen", value=True)
@@ -2510,7 +2514,8 @@ def main():
 
     ORS_HOST = _host_from(ors_base)
     LIM_ORS_GEO.set(ors_rate)
-    provider = {"OpenRouteService": "ors", "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
+    provider = {"OpenRouteService": "ors", "Overpass (OSM, ohne Kontingent)": "ovp",
+                "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
     if provider == "ors" and not ors_key:
         st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt.")
     bar = st.progress(0.0, text="Adressen verorten …")

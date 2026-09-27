@@ -42,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-17 (Kundengedächtnis, Reformationstag, Datumsgewichtung)"
+APP_BUILD = "V28 · Build 27.09.-18 (Tourblock nach Tour-DNA statt Endnummer)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -2355,23 +2355,25 @@ function buildClusters(fromDays,toDay,accept=null){
     x.fam=best;x.anchor=best?(best.direct?'direct':'peer'):'geo';
   });
   // 1b) Tourblock (wie in den historischen Plänen): die offenen Kunden einer Ausfalltour bleiben zusammen.
-  //     Große Blöcke → eigene Tour, kleine Blöcke → passendste bestehende Zieltag-Tour (gleiche Endnummer bevorzugt).
+  //     Große Blöcke → eigene Tour, kleine Blöcke → passendste bestehende Zieltag-Tour.
+  //     „Verwandt“ = echte Kundenüberschneidung der ganzen Touren (Tour-DNA), NICHT die Endnummer.
   if(BLOCK_MODE){
     const byFrom=new Map(),blockTaken=new Set();pool.filter(x=>!x.skip).forEach(x=>pushMap(byFrom,x.from.id,x));
+    const kinOf=(a,b)=>{const A=a.origSaps||new Set(),B=b.origSaps||new Set();if(!A.size||!B.size)return 0;let n=0;A.forEach(x=>{if(B.has(x))n++});return n/Math.min(A.size,B.size)};
     byFrom.forEach(ms=>{
-      const from=ms[0].from,src=from.source,suf=String(from.tour).slice(1),typ=srcTypical(src),big=typ*2>maxCustomers;
+      const from=ms[0].from,src=from.source,typ=srcTypical(src),big=typ*2>maxCustomers;
       const newAt=Math.max(4,typ-1);
-      const cands=routes.filter(r=>r.day===toDay&&r.source===src&&!isLocked(r)&&r.items.length>0&&(hardRoom(r)>=ms.length||(big&&String(r.tour).slice(1)===suf&&hardRoom(r)>0))&&!(BLOCK_SOLO&&blockTaken.has(r.id)&&String(r.tour).slice(1)!==suf));
-      const scored=cands.map(r=>{
-        const same=String(r.tour).slice(1)===suf;
+      const all=routes.filter(r=>r.day===toDay&&r.source===src&&!isLocked(r)&&r.items.length>0).map(r=>({r,kin:kinOf(from,r)}));
+      const cands=all.filter(({r,kin})=>(hardRoom(r)>=ms.length||(big&&kin>=.5&&hardRoom(r)>0))&&!(BLOCK_SOLO&&blockTaken.has(r.id)&&kin<.5));
+      const scored=cands.map(({r,kin})=>{
         const fam=ms.filter(x=>x.fam&&(model.routeFam.get(r.id)===x.fam.f.id||r.familyId===x.fam.f.id)).length;
         let km=0,n=0,bad=0;ms.forEach(x=>{if(!hasGeo(x.a))return;const f=fitFor(x.a,r,true);if(Number.isFinite(f.nearest)){km+=f.nearest;n++}if(f.key==='bad')bad++});
         const avg=n?km/n:25;
-        return {r,same,fam,avg,bad,sc:(same?15:0)+fam*6-avg*.6-bad*8};
-      }).filter(c=>c.same||(c.bad<=ms.length/3&&c.avg<=35*ROAD_FACTOR)).sort((p,q)=>q.sc-p.sc);
-      const sameC=scored.find(c=>c.same);
+        return {r,kin,fam,avg,bad,sc:kin*20+fam*6-avg*.6-bad*8};
+      }).filter(c=>c.kin>=.5||(c.bad<=ms.length/3&&c.avg<=35*ROAD_FACTOR)).sort((p,q)=>q.sc-p.sc);
+      const kinC=scored.filter(c=>c.kin>=.5).sort((p,q)=>q.kin-p.kin)[0];
       let t=null;
-      if(sameC&&(big||ms.length<newAt))t=sameC.r;
+      if(kinC&&(big||ms.length<newAt))t=kinC.r;
       else if(ms.length<newAt&&scored.length)t=scored[0].r;
       ms.forEach(x=>x.skip=true);
       let rest=ms;
@@ -2457,7 +2459,7 @@ function clusterHtml(c){
   let title,meta=[];
   if(c.kind==='insert'){title=`→ ${DAY_LABELS[c.toDay]} · Tour ${esc(c.target.tour)} <span class="sub">(${c.target.items.length} → ${c.target.items.length+c.members.length} Kunden)</span>`;const clk=routeClockInfo(c.target);if(clk)meta.push(clk)}
   else{title=`→ neue Tour ${esc(c.name)} · ${DAY_LABELS[c.toDay]} <span class="sub">(${c.members.length} Kunden)</span>`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(clk);if(c.compact)meta.push('Gebiet '+c.compact.label+(Number.isFinite(c.compact.avg)?' · Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
-  const why=c.memory?'<b>Planungsgedächtnis</b> – so bei früheren Feiertagen geplant':c.block?`<b>Tourblock</b> – Ausfalltour bleibt zusammen${c.kind==='insert'&&String(c.target.tour).slice(1)===String(c.members[0]?.from?.tour||'').slice(1)?' · gleiche Endnummer':''}`:c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?` · Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''} · ${c.direct} fahren dort bereits, ${c.peer} über Mitfahrer`:'keine Tourfamilie · Geo-Zuordnung';
+  const why=c.memory?'<b>Planungsgedächtnis</b> – so bei früheren Feiertagen geplant':c.block?`<b>Tourblock</b> – Ausfalltour bleibt zusammen`:c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?` · Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''} · ${c.direct} fahren dort bereits, ${c.peer} über Mitfahrer`:'keine Tourfamilie · Geo-Zuordnung';
   meta.push(esc(srcLabel(c.source))+' · aus '+esc(origins));if(Number.isFinite(c.km))meta.push('ca. '+Math.round(c.km)+' km Rundlauf'+(HAS_MATRIX?' (Straße)':' (geschätzt)'));
   const mem=c.members.map(x=>{const a=x.a,f=x.fit;return `<div class="clumem"><span class="anc ${x.anchor}">${ANCHOR_LABEL[x.anchor]}</span><span class="nm"><b>${esc(a.SAP)}</b> · ${esc(a.Name)} · ${esc(a.Ort)}</span><span>${f?`<span class="fit ${f.key}">${esc(f.label)}${Number.isFinite(f.nearest)?' · '+fmt(f.nearest)+' km':''}</span>`:''}${a.Zeitkritisch?` <span class="flag time" title="${esc(timeInfo(a))}">Zeit</span>`:''}</span><button class="remove" type="button" title="Aus Vorschlag entfernen" data-drop-member="${c.id}|${esc(x.aid)}">×</button></div>`}).join('');
   return `<div class="clu q-${c.quality}"><div class="cluhead"><div><div class="clutitle">${title}</div><div class="clumeta">${why}</div><div class="clumeta">${meta.join(' · ')}${c.timeViol?` · <span class="capwarn">${c.timeViol} Zeitkonflikt(e)</span>`:''}${c.note?' · '+esc(c.note):''}</div></div><div style="display:grid;gap:4px;justify-items:end"><span class="fit ${c.quality}">${QUALITY_LABEL[c.quality]}</span><button class="btn small primary" type="button" data-apply-cluster="${c.id}">Übernehmen</button></div></div>${mem}</div>`;

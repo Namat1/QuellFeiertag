@@ -2607,7 +2607,7 @@ def main():
         st.warning(f"Geocoding abgebrochen: {gstats['abbruch']} – {gstats['offen']} Adressen offen, nächster Lauf macht weiter.")
 
     geo, nodes, node_src = build_nodes(geo)
-    matrix, net = {}, None
+    matrix, net, pairs = {}, None, set()
     if use_matrix:
         pairs = needed_pairs(nodes, node_src, k_neighbors)
         bar = st.progress(0.0, text="LKW-Matrix …")
@@ -2617,7 +2617,8 @@ def main():
         )
         bar.empty()
         if mstats["abbruch"]:
-            st.warning(f"Matrix unvollständig: {mstats['abbruch']}")
+            st.warning(f"Straßenmatrix unvollständig: {mstats['abbruch']} – fehlende Strecken werden per Luftlinie geschätzt. "
+                       f"Beim nächsten Lauf mit der aktualisierten Adressdatei werden nur die fehlenden nachgeladen.")
         elif mstats["fehlend"] and not ors_key:
             st.caption(f"{mstats['fehlend']} Verbindungen nicht im Cache – ohne ORS-Key per Luftlinie geschätzt.")
 
@@ -2657,7 +2658,9 @@ def main():
             mime="text/html", use_container_width=True,
         )
     with d2:
-        wb = build_address_workbook(geo, original_addr, _MEM_CACHE.get(f"matrix_cache_{profile}.json", {}), adr_prev)
+        full_mat = _MEM_CACHE.get(f"matrix_cache_{profile}.json", {})
+        keep = {_ckey(nodes, i, j) for i, j in pairs} if use_matrix else set()
+        wb = build_address_workbook(geo, original_addr, {k_: v_ for k_, v_ in full_mat.items() if k_ in keep}, adr_prev)
         st.download_button(
             "Adressdatei aktualisiert (.xlsx)", data=wb, file_name="Kunden_Adressdatei.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True,

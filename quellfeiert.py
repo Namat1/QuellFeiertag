@@ -51,6 +51,8 @@ ORS_ENDPOINTS = {
 }
 _ORS_WORKING: dict = {}                                        # Dienst → funktionierende URL-Vorlage
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+STREET_RADIUS_M = 4500          # Straßennamen im Umkreis des PLZ-Zentrums für den Abkürzungs-Abgleich
 HTTP_UA = "NFC-Feiertagsplaner/28 (interne Tourenplanung)"
 MATRIX_MAX_ELEMENTS = 2500      # Quellen × Ziele je ORS-Anfrage (Free-Tier: 3500)
 GEO_MAX_DEVIATION_KM = 25.0     # Adresstreffer weiter als X km vom PLZ-Zentrum → verworfen
@@ -292,7 +294,7 @@ def ors_request(session, method: str, service: str, key: str, profile: str = "",
     raise last or RuntimeError("OpenRouteService nicht erreichbar")
 
 
-GEO_CACHE_VERSION = 2   # ältere Fehlschläge werden mit der verbesserten Suche automatisch erneut versucht
+GEO_CACHE_VERSION = 3   # ältere Fehlschläge werden mit der verbesserten Suche automatisch erneut versucht
 _LAYER_Q = {"address": "addr", "venue": "addr", "street": "street"}
 
 
@@ -343,11 +345,18 @@ def _ors_json(session, service: str, key: str, params: dict):
 
 def geocode_ors(session, key: str, street: str, plz: str, city: str, center=None):
     """1) strukturiert, 2) Freitext mit Fokus auf PLZ-Zentrum. Rückgabe (Treffer, Grund)."""
-    feats = _ors_json(session, "geocode", key,
-                      {"address": street, "postalcode": plz, "locality": city, "country": "DE", "size": 3})
-    res, why = _pick_feature(feats, center)
+    params = {"address": street, "postalcode": plz, "country": "DE", "size": 3}
+    if city:
+        params["locality"] = city
+    res, why = _pick_feature(_ors_json(session, "geocode", key, params), center)
     if res:
         return {**res, "src": "ors"}, ""
+    if city:   # Ortsname aus SAP oft abgekürzt/zusammengesetzt → nur PLZ
+        params.pop("locality")
+        time.sleep(0.65)
+        res, why_b = _pick_feature(_ors_json(session, "geocode", key, params), center)
+        if res:
+            return {**res, "src": "ors"}, ""
     params = {"text": f"{street}, {plz} {city}", "boundary.country": "DEU", "size": 3}
     if center:
         params.update({"focus.point.lat": center[0], "focus.point.lon": center[1]})
@@ -357,10 +366,11 @@ def geocode_ors(session, key: str, street: str, plz: str, city: str, center=None
 
 
 def geocode_nominatim(session, street: str, plz: str, city: str, center=None):
-    for params in (
-        {"street": street, "postalcode": plz, "city": city, "country": "de"},
-        {"q": f"{street}, {plz} {city}", "countrycodes": "de"},
-    ):
+    variants = [{"street": street, "postalcode": plz, "country": "de"}]
+    if city:
+        variants.insert(0, {"street": street, "postalcode": plz, "city": city, "country": "de"})
+    variants.append({"q": f"{street}, {plz} {city}".strip(), "countrycodes": "de"})
+    for params in variants:
         r = session.get(NOMINATIM_URL, params={**params, "format": "jsonv2", "limit": 3}, timeout=25)
         if r.status_code in (403, 429):
             raise QuotaError(f"Nominatim: HTTP {r.status_code}")
@@ -376,6 +386,127 @@ def geocode_nominatim(session, street: str, plz: str, city: str, center=None):
             return {"lat": lat, "lon": lon, "q": q, "src": "osm"}, ""
         time.sleep(1.1)
     return None, "Nominatim ohne Treffer"
+
+
+# --- Abgleich abgekürzter SAP-Straßennamen mit echten OSM-Straßen -------------------------------------
+
+_UML = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss", "é": "e"})
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", " ", _txt(s).lower().translate(_UML)).strip()
+
+
+def split_street(raw: str) -> tuple[str, str]:
+    """'BÜRGERM.HÖPPNER-STR.1A' → ('BÜRGERM.HÖPPNER-STR.', '1A'); 'POSTST.33/GR.BLEI.30' → ('POSTST.', '33')."""
+    t = _txt(raw)
+    m = re.search(r"(\d+)\s*([a-zA-Z](?![a-zA-Z]))?", t)
+    if not m:
+        return t, ""
+    return t[:m.start()].strip(" ,"), (m.group(1) + (m.group(2) or "")).upper()
+
+
+def _street_tokens(name: str) -> list:
+    t = _txt(name).lower().translate(_UML)
+    return [x for x in re.split(r"[^a-z0-9]+", t) if x]
+
+
+def street_match_score(raw_name: str, cand: str) -> float:
+    """Abkürzungs-tolerant: jedes SAP-Token ist Präfix/Teil der echten Schreibweise, in gleicher Reihenfolge.
+    Tippfehler werden über einen unscharfen Vergleich abgefangen."""
+    from difflib import SequenceMatcher
+    toks = _street_tokens(raw_name)
+    if not toks:
+        return 0.0
+    cn = _norm(cand)
+    words = cn.split()
+    compact = "".join(words)
+    if not compact:
+        return 0.0
+    starts, i = set(), 0
+    for w in words:
+        starts.add(i)
+        i += len(w)
+    raw_compact = "".join(toks)
+    if raw_compact == compact:
+        return 2.0
+    def _is_subseq(t, seg):
+        it = iter(seg)
+        return all(ch in it for ch in t)
+
+    def _find(t, pos, need_start):
+        j = compact.find(t, pos)
+        while need_start and j >= 0 and j not in starts:
+            j = compact.find(t, j + 1)
+        if j >= 0:
+            return j, len(t), 1.0
+        if len(t) < 4:
+            return -1, 0, 0.0
+        for ws in sorted(x for x in starts if x >= pos):
+            seg = compact[ws:ws + len(t) + 6]
+            nxt = min([x for x in starts if x > ws] or [len(compact)])
+            word = compact[ws:nxt]
+            if t[:4] == word[:4] and _is_subseq(t, word):          # HUMMELB → hummelsbuettler
+                return ws, nxt - ws, 0.9
+            if len(t) >= 6 and SequenceMatcher(None, t, word[:len(t) + 1]).ratio() >= 0.85:   # BREITSCHEIT
+                return ws, nxt - ws, 0.85
+        return -1, 0, 0.0
+
+    pos, first, matched, ok, qual = 0, None, 0, True, 1.0
+    for t in toks:
+        j, ln, q = _find(t, pos, first is None)
+        if j < 0:
+            ok = False
+            break
+        if first is None:
+            first = j
+        matched += ln
+        qual = min(qual, q)
+        pos = j + ln
+    if ok and len(raw_compact) >= 4:
+        return (min(1.0, matched / len(compact)) + (0.3 if first == 0 else 0.0) + 0.2) * qual
+    if raw_compact[:1] != compact[:1] or len(raw_compact) < 5:
+        return 0.0
+    ratio = SequenceMatcher(None, raw_compact, compact[:len(raw_compact) + 3]).ratio()
+    return ratio * 0.8 if ratio >= 0.8 else 0.0
+
+
+def street_candidates(session, lat: float, lon: float, cache: dict) -> list:
+    key = f"{lat:.3f},{lon:.3f},{STREET_RADIUS_M}"
+    if key in cache:
+        return cache[key]
+    q = (f'[out:json][timeout:60];way(around:{STREET_RADIUS_M},{lat:.5f},{lon:.5f})["highway"]["name"];'
+         f'out tags center;')
+    r = session.post(OVERPASS_URL, data={"data": q}, timeout=90)
+    if r.status_code in (429, 504):
+        raise QuotaError(f"Overpass: HTTP {r.status_code}")
+    r.raise_for_status()
+    seen, out = set(), []
+    for el in r.json().get("elements", []):
+        name = (el.get("tags") or {}).get("name")
+        c = el.get("center") or {}
+        if name and name not in seen and "lat" in c:
+            seen.add(name)
+            out.append([name, c["lat"], c["lon"]])
+    cache[key] = out
+    return out
+
+
+def resolve_street(session, raw_street: str, center, street_cache: dict):
+    """Liefert (echter Straßenname, Hausnummer, Straßenmitte) oder None."""
+    if not center:
+        return None
+    name, hn = split_street(raw_street)
+    if not _street_tokens(name):
+        return None
+    best, bs = None, 0.0
+    for cand, clat, clon in street_candidates(session, center[0], center[1], street_cache):
+        sc = street_match_score(name, cand)
+        if sc > bs:
+            best, bs = (cand, clat, clon), sc
+    if not best or bs < 0.55:
+        return None
+    return best[0], hn, (best[1], best[2])
 
 
 def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_failed: bool = False,
@@ -404,6 +535,7 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
         sess = requests.Session()
         sess.headers["User-Agent"] = HTTP_UA
         ors_dead = not can_ors
+        street_cache = load_cache("street_cache.json")
         for i, (k, street, plz, city, center) in enumerate(todo):
             if progress:
                 progress(i, len(todo))
@@ -427,6 +559,35 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                 except Exception as exc:
                     why = why or f"Fehler: {str(exc)[:60]}"
                 time.sleep(1.1)
+            if res is None and can_osm and center is not None and street_cache is not None:
+                try:
+                    hit = resolve_street(sess, street, center, street_cache)
+                    time.sleep(1.0)
+                except QuotaError:
+                    hit, street_cache = None, None
+                except Exception:
+                    hit = None
+                if hit:
+                    real, hn, mid = hit
+                    full = f"{real} {hn}".strip()
+                    res2 = None
+                    try:
+                        if not ors_dead:
+                            res2, _ = geocode_ors(sess, key, full, plz, "", center)
+                            time.sleep(0.65)
+                        if res2 is None:
+                            res2, _ = geocode_nominatim(sess, full, plz, "", center)
+                            time.sleep(1.1)
+                    except QuotaError:
+                        res2 = None
+                    except Exception:
+                        res2 = None
+                    if res2 is None:
+                        res2 = {"lat": float(mid[0]), "lon": float(mid[1]), "q": "street", "src": "osm-strasse"}
+                    res = {**res2, "match": full}
+                    why = ""
+                elif not why or why.startswith("nur") or why == "kein Treffer":
+                    why = (why + " · " if why else "") + "Straße im PLZ-Gebiet nicht erkannt"
             if res is None and ors_dead and not can_osm:
                 break
             cache[k] = {**res, "v": GEO_CACHE_VERSION} if res else {"fail": True, "why": why, "v": GEO_CACHE_VERSION}
@@ -438,7 +599,11 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
             stats["offen"] -= 1
             if i % 25 == 24:
                 save_cache("geo_cache.json", cache)
+                if street_cache is not None:
+                    save_cache("street_cache.json", street_cache)
         save_cache("geo_cache.json", cache)
+        if street_cache is not None:
+            save_cache("street_cache.json", street_cache)
 
     out = df.copy()
     lat, lon, gq = out["lat"].tolist(), out["lon"].tolist(), out["gq"].tolist()
@@ -456,6 +621,10 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
             continue
         lat[i], lon[i], gq[i] = c["lat"], c["lon"], c.get("q", "addr")
     out["lat"], out["lon"], out["gq"] = lat, lon, gq
+    out["geo_match"] = [
+        (cache.get(addr_key(st_, pz, ct)) or {}).get("match", "")
+        for st_, pz, ct in out[["Strasse", "Plz", "Ort"]].itertuples(index=False, name=None)
+    ]
     out["geo_grund"] = [
         (cache.get(addr_key(st_, pz, ct)) or {}).get("why", "") if g_ == "plz" else ""
         for st_, pz, ct, g_ in out[["Strasse", "Plz", "Ort", "gq"]].itertuples(index=False, name=None)
@@ -1828,7 +1997,8 @@ def main():
                                     help="Straßenwerte für Depot↔Kunde und die k nächsten Kunden je Startbereich. "
                                          "Übrige Paare: Luftlinie × kalibrierter Umwegfaktor.")
             osm_fallback = st.checkbox("Nominatim (OSM) als zweite Quelle", value=True,
-                                       help="Adressen, die ORS nicht findet, zusätzlich bei OpenStreetMap suchen (1 Adresse/Sek.).")
+                                       help="Adressen, die ORS nicht findet, zusätzlich bei OpenStreetMap suchen (1 Adresse/Sek.) und abgekürzte "
+                 "SAP-Straßennamen gegen die echten Straßen im PLZ-Gebiet abgleichen (Overpass).")
             retry_failed = st.checkbox("Nicht gefundene Adressen erneut versuchen", value=False)
         with g3:
             coord_upload = st.file_uploader("Koordinaten-CSV (optional)", type=["csv"],
@@ -1925,7 +2095,7 @@ def main():
             mime="text/html", use_container_width=True,
         )
     with d2:
-        coords = geo[["SAP", "Quelle", "Name", "Strasse", "Plz", "Ort", "lat", "lon", "gq"]].drop_duplicates("SAP")
+        coords = geo[[c for c in ["SAP", "Quelle", "Name", "Strasse", "Plz", "Ort", "geo_match", "lat", "lon", "gq"] if c in geo.columns]].drop_duplicates("SAP")
         st.download_button(
             "Koordinaten als CSV", data=coords.to_csv(sep=";", index=False).encode("utf-8-sig"),
             file_name="Kunden_Koordinaten.csv", mime="text/csv", use_container_width=True,

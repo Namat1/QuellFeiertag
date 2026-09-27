@@ -490,7 +490,7 @@ def street_candidates(session, lat: float, lon: float, cache: dict) -> list:
     for attempt in range(2):
         for url in OVERPASS_URLS:
             try:
-                r = session.post(url, data={"data": q}, timeout=120)
+                r = session.post(url, data={"data": q}, timeout=120 if url == OVERPASS_URLS[0] else 25)
             except Exception as exc:
                 errors.append(f"{url.split('/')[2]}: {type(exc).__name__}")
                 continue
@@ -578,7 +578,7 @@ def connection_test(key: str) -> list:
     for url in OVERPASS_URLS:
         def ovp(url=url):
             q = f'[out:json][timeout:30];way(around:800,{DEPOT_LATLON[0]},{DEPOT_LATLON[1]})["highway"]["name"];out tags center;'
-            r = sess.post(url, data={"data": q}, timeout=60)
+            r = sess.post(url, data={"data": q}, timeout=60 if url == OVERPASS_URLS[0] else 20)
             js = r.json() if r.ok and r.headers.get("content-type", "").startswith("application/json") else {}
             names = sorted({(e.get("tags") or {}).get("name") for e in js.get("elements", [])} - {None})
             return f"HTTP {r.status_code}", (f"{len(names)} Straßen: {', '.join(names[:5])}" if js else r.text[:160])

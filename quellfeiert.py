@@ -42,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-10 (Photon + Overpass ohne Kontingent)"
+APP_BUILD = "V28 · Build 27.09.-13 (gesperrte Touren, Parameter-Vergleich)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -1544,6 +1544,7 @@ main{padding:9px 12px 22px}
 .capwarn{color:var(--bad);font-weight:850}
 .source{font-size:7px;font-weight:850;color:#62656d;background:#e9e9ec;border-radius:999px;padding:1px 4px;white-space:nowrap}
 .newbadge{font-size:8px;font-weight:900;background:var(--accent);color:#fff;border-radius:999px;padding:1px 5px}
+.lockbadge{font-size:7px;font-weight:900;background:#3a3d46;color:#fff;border-radius:999px;padding:1px 5px}
 .fambadge{font-size:7px;font-weight:850;background:var(--blue-bg);color:var(--blue);border-radius:999px;padding:1px 4px}
 .route-right{display:flex;align-items:center;gap:2px;flex-wrap:wrap;justify-content:flex-end;max-width:116px}
 .delta{font-size:8px;font-weight:850;padding:2px 4px;border-radius:999px;background:var(--accent-soft);color:var(--accent)}
@@ -1654,7 +1655,7 @@ main{padding:9px 12px 22px}
       <button class="btn" id="applyRulesBtn" type="button">Regeln übernehmen</button>
       <button class="btn" id="sequenceAllBtn" type="button">Geänderte Touren sortieren</button>
     </div>
-    <div class="compactnotice"><label><input type="checkbox" id="optRegular"> Optimierung darf auch Stammkunden der Zieltag-Touren verschieben</label> · <label>Tour-DNA-Bonus <input type="number" id="dnaWeight" min="0" max="30" step="1" value="4" style="width:48px"> Min. je Partner</label> · <label>Fixkosten je Tour <input type="number" id="tourFixed" min="0" max="240" step="10" value="60" style="width:56px"> Min.</label></div>
+    <div class="compactnotice"><label><input type="checkbox" id="optRegular"> Optimierung darf auch Stammkunden der Zieltag-Touren verschieben</label> · <label>Tour-DNA-Bonus <input type="number" id="dnaWeight" min="0" max="30" step="1" value="4" style="width:48px"> Min. je Partner</label> · <label>Fixkosten je Tour <input type="number" id="tourFixed" min="0" max="240" step="10" value="60" style="width:56px"> Min.</label> · <label>Gesperrte Touren <input type="text" id="lockedTours" value="1058, 2058, 3058, 4058, 5058, 6030" style="width:230px" title="Nichts hinzufügen, nichts herausnehmen – am Ausfalltag entfällt die Tour komplett"></label> · <label>Übergröße neuer Touren + <input type="number" id="autoOver" min="0" max="10" step="1" value="2" style="width:44px"> Kunden ggü. Tourfamilie</label></div>
     <div class="compactnotice"><b>Zeit:</b> CSV-Start = Ladebeginn, +60 Min. Laden → Abfahrt. Valluhn = Stopp 0. <b>Reihenfolge:</b> Reihenfolge der Vorlage-Tour bleibt Anker, neue Kunden werden an der günstigsten Stelle eingefügt; Zeitfenster können die Reihenfolge ändern. Manuell an eine Position gezogene Kunden bleiben dort, bis „Sort.“ gedrückt wird.</div>
   </details>
 
@@ -1692,7 +1693,7 @@ main{padding:9px 12px 22px}
 <div id="drawer" class="drawer"><h3 id="drawerTitle"></h3><p id="drawerText"></p></div>
 <div id="tourModal" class="modalback" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true"><h2>Neue Tour anlegen</h2><div class="hint" id="newTourHint"></div><div class="formrow"><div class="field"><label for="newTourNo">Tournummer / Name</label><input id="newTourNo" autocomplete="off" placeholder="z. B. 5044"></div><div class="field"><label for="newTourSource">Startbereich</label><select id="newTourSource"></select></div></div><div class="field" style="margin-top:8px"><label for="newTourStart">Ladebeginn (optional)</label><input id="newTourStart" autocomplete="off" placeholder="z. B. 03:00 → Abfahrt 04:00"></div><div id="newTourError" class="modalerror"></div><div class="modalactions"><button class="btn" id="cancelTourBtn" type="button">Abbrechen</button><button class="btn primary" id="createTourBtn" type="button">Tour anlegen</button></div></div></div>
 <div id="reportModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Abschlussreport</h2><div class="hint">Zusammenfassung der aktuellen Feiertagsplanung.</div><div id="reportBody"></div><div class="modalactions"><button class="btn" id="closeReportBtn" type="button">Schließen</button><button class="btn" id="reportDownloadBtn" type="button">Report HTML</button><button class="btn primary" id="reportExcelBtn" type="button">Excel Originalstruktur</button></div></div></div>
-<div id="backtestModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Backtest gegen Referenzplan</h2><div class="hint" id="backtestHint"></div><label class="optlog"><input type="checkbox" id="btOptimize" checked> Autoplan inkl. Touren-Optimierung</label><div id="backtestBody"></div><div class="modalactions"><button class="btn" id="closeBacktestBtn" type="button">Schließen</button><button class="btn" id="backtestCurrentBtn" type="button">Aktuellen Plan vergleichen</button><button class="btn primary" id="backtestAutoBtn" type="button">Autoplan rechnen &amp; vergleichen</button></div></div></div>
+<div id="backtestModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Backtest gegen Referenzplan</h2><div class="hint" id="backtestHint"></div><label class="optlog"><input type="checkbox" id="btOptimize" checked> Autoplan inkl. Touren-Optimierung</label> · <button class="btn small" id="sweepBtn" type="button">Parameter-Vergleich (12 Varianten)</button><div id="sweepBody"></div><div id="backtestBody"></div><div class="modalactions"><button class="btn" id="closeBacktestBtn" type="button">Schließen</button><button class="btn" id="backtestCurrentBtn" type="button">Aktuellen Plan vergleichen</button><button class="btn primary" id="backtestAutoBtn" type="button">Autoplan rechnen &amp; vergleichen</button></div></div></div>
 <div id="mapsModal" class="modalback" aria-hidden="true"><div class="modal mapsmodal" role="dialog" aria-modal="true"><h2 id="mapsTitle">Google Maps</h2><div class="hint" id="mapsHint"></div><div id="mapsBody" class="mapslist"></div><div class="modalactions"><button class="btn" id="closeMapsBtn" type="button">Schließen</button></div></div></div>
 <script>eval(atob('__JSZIP__'))</script>
 <script>
@@ -1711,7 +1712,8 @@ const DAY_SHORT={Mo:'Mo',Die:'Di',Mitt:'Mi',Don:'Do',Fr:'Fr',Sam:'Sa'};
 const DAY_DIGIT={Mo:'1',Die:'2',Mitt:'3',Don:'4',Fr:'5',Sam:'6'};
 const SOURCES=['DIREKT','MK','HUPA_NMS','HUPA_MALCHOW'];
 const DEPOT={name:'Lüttow-Valluhn',address:'Am Heisterbusch 24, 19246 Lüttow-Valluhn',lat:53.512501,lon:10.83948};
-const SERVICE_MIN=12,LOAD_MIN=60,AUTO_OVER=2,MAPS_PER_SECTION=9;
+const SERVICE_MIN=12,LOAD_MIN=60,MAPS_PER_SECTION=9;
+let AUTO_OVER=2;   // neue/erweiterte Touren dürfen um so viele Kunden größer werden als die Tourfamilie
 const ROAD_FACTOR=Number(NET.factor)||1.28,AVG_KMH=Number(NET.kmh)||62,HAS_MATRIX=(NET.pairs||0)>0;
 DEPOT.node=0;
 const QUALITY_LABEL={good:'passt sehr gut',ok:'passt gut',warn:'grenzwertig',bad:'eher nicht',unknown:'nicht bewertbar'};
@@ -1752,6 +1754,9 @@ let clusters=[],cancelledAids=new Set(),cancelReasons=new Map(),autoCoveredAids=
 let SAP_ROUTES=new Map();
 const FAM_CACHE=new Map();
 
+let LOCKED=new Set();
+function parseLocked(){LOCKED=new Set(((document.getElementById('lockedTours')?.value)||'').split(/[^0-9A-Za-z-]+/).map(x=>x.trim()).filter(Boolean));return LOCKED}
+function isLocked(r){return !!r&&LOCKED.has(String(r.tour))}
 function parseExcluded(){const vals=(document.getElementById('excludeSaps').value||'').match(/\d{4,12}/g)||[];excludedSaps=new Set(vals.map(normSap).filter(Boolean));document.getElementById('excludeMeta').textContent=excludedSaps.size+' SAP ausgeschlossen';return excludedSaps}
 function isExcluded(a){return excludedSaps.has(sapOf(a))}
 function clampMax(){let n=Number(document.getElementById('maxCustomers').value||12);if(!Number.isFinite(n))n=12;n=Math.max(1,Math.min(30,Math.round(n)));maxCustomers=n;document.getElementById('maxCustomers').value=String(n);return n}
@@ -1843,7 +1848,7 @@ function affinity(a,b){const k=a.aid<b.aid?a.aid+'#'+b.aid:b.aid+'#'+a.aid;let v
 function affinityRaw(a,b){if(sapOf(a)===sapOf(b))return 0;const A=SAP_ROUTES.get(a.Quelle+'|'+sapOf(a)),B=SAP_ROUTES.get(b.Quelle+'|'+sapOf(b));if(!A||!B)return 0;let s=0;A.forEach(x=>{if(B.has(x))s++});return s/Math.min(A.size,B.size)}
 function familyModel(exclDays){
   const key=[...exclDays].sort().join(',');if(FAM_CACHE.has(key))return FAM_CACHE.get(key);
-  const rs=routes.filter(r=>!r.manuallyCreated&&r.originalCount>0&&!exclDays.has(r.day));
+  const rs=routes.filter(r=>!r.manuallyCreated&&r.originalCount>0&&!exclDays.has(r.day)&&!isLocked(r));
   const parent=new Map(rs.map(r=>[r.id,r.id]));
   const find=x=>{while(parent.get(x)!==x){parent.set(x,parent.get(parent.get(x)));x=parent.get(x)}return x};
   for(let i=0;i<rs.length;i++)for(let j=i+1;j<rs.length;j++){
@@ -1906,6 +1911,8 @@ function autoResolveCoveredDeliveries(notify=true){
   restoreAutoCovered();
   const fromDays=selectedOutageDays(),toDay=document.getElementById('toDay').value,daySet=new Set(fromDays);
   if(!fromDays.length||!toDay||daySet.has(toDay)){renderAll();return}
+  const locked=routes.filter(r=>daySet.has(r.day)&&isLocked(r)).flatMap(r=>r.items);
+  locked.forEach(a=>{const f=removeFromCurrent(a.aid);if(!f)return;cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);cancelReasons.set(a.aid,`gesperrte Tour ${a.originalTour} – entfällt am Ausfalltag`);unplanned.push(f.a)});
   const hits=routes.filter(r=>daySet.has(r.day)).flatMap(r=>r.items).filter(a=>!isExcluded(a)&&targetDayAlreadyHas(a,toDay));
   hits.forEach(a=>{const f=removeFromCurrent(a.aid);if(!f)return;cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);cancelReasons.set(a.aid,'Zieltag bereits vorhanden');unplanned.push(f.a)});
   renderAll();
@@ -1914,7 +1921,7 @@ function autoResolveCoveredDeliveries(notify=true){
 function updateOutageStatus(){
   const daySet=new Set(selectedOutageDays());
   const open=routes.filter(r=>daySet.has(r.day)).reduce((n,r)=>n+r.items.filter(a=>!isExcluded(a)).length,0);
-  document.getElementById('openOutageCount').textContent=open;document.getElementById('coveredOutageCount').textContent=autoCoveredAids.size;
+  document.getElementById('openOutageCount').textContent=open;document.getElementById('coveredOutageCount').textContent=[...autoCoveredAids].filter(x=>cancelReasons.get(x)==='Zieltag bereits vorhanden').length;
 }
 
 /* ---------- Regeln ---------- */
@@ -1931,6 +1938,8 @@ function removeFromCurrent(aid){
 }
 function moveBlockReason(a,to){
   if(!a||!to)return '';const cur=currentRouteForAid(a.aid);if(cur&&cur.id===to.id)return '';
+  if(isLocked(to))return `Tour ${to.tour} ist gesperrt – es darf nichts hinzukommen.`;
+  if(cur&&isLocked(cur))return `Tour ${cur.tour} ist gesperrt – Kunden bleiben unverändert.`;
   if(isExcluded(a))return `SAP ${a.SAP} steht auf der Ausschlussliste und wird nicht umgeplant.`;
   if(String(a.Quelle)!==String(to.source))return `Startbereich darf nicht wechseln: ${srcLabel(a.Quelle)} → ${srcLabel(to.source)}.`;
   if(duplicateOnDay(a,to.day))return `Neue Doppelbelieferung ausgeschlossen: SAP ${a.SAP} wäre am ${DAY_LABELS[to.day]} häufiger beliefert als im Original.`;
@@ -1997,7 +2006,7 @@ function chunkGeo(list,size){
 }
 function buildClusters(fromDays,toDay){
   const daySet=new Set(fromDays),active=activeSources(),model=familyModel(daySet);
-  const pool=routes.filter(r=>daySet.has(r.day)&&active.includes(r.source)).flatMap(r=>r.items.filter(a=>!isExcluded(a)).map(a=>({aid:a.aid,a,from:r})));
+  const pool=routes.filter(r=>daySet.has(r.day)&&!isLocked(r)&&active.includes(r.source)).flatMap(r=>r.items.filter(a=>!isExcluded(a)).map(a=>({aid:a.aid,a,from:r})));
   const reserve=new Map(),used=new Set(routes.filter(r=>r.day===toDay).map(r=>r.source+'::'+r.tour)),out=[];
   const roomOf=r=>Math.min(routeSoftLimit(r),maxCustomers)-r.items.length-(reserve.get(r.id)||0);
   const matesBy=new Map();pool.forEach(x=>pushMap(matesBy,x.from.id,x));
@@ -2020,7 +2029,7 @@ function buildClusters(fromDays,toDay){
   const famGroups=new Map();live.filter(x=>x.fam).forEach(x=>pushMap(famGroups,x.fam.f.id,x));
   famGroups.forEach((members,fid)=>{
     const f=model.fams.get(fid);let rest=[...members];
-    const targets=routes.filter(r=>r.day===toDay&&r.source===f.source&&(model.routeFam.get(r.id)===fid||r.familyId===fid));
+    const targets=routes.filter(r=>r.day===toDay&&!isLocked(r)&&r.source===f.source&&(model.routeFam.get(r.id)===fid||r.familyId===fid));
     targets.sort((a,b)=>roomOf(b)-roomOf(a)).forEach(t=>{
       const room=Math.max(0,roomOf(t));if(!room||!rest.length)return;
       const c=centroidOf(t.items)||f.centroid;
@@ -2033,7 +2042,7 @@ function buildClusters(fromDays,toDay){
   // 3) ohne Familie: passende Zieltag-Tour per Geo, sonst neue Tour je Ursprungstour
   const noFam=live.filter(x=>!x.fam),newPool=[];
   noFam.forEach(x=>{
-    const cand=routes.filter(r=>r.day===toDay&&r.source===x.a.Quelle&&r.items.length>0&&roomOf(r)>0).map(r=>({r,f:fitFor(x.a,r,true)})).filter(c=>c.f.key==='good'||c.f.key==='ok').sort((p,q)=>RANK[p.f.key]-RANK[q.f.key]||((p.f.nearest||0)-(q.f.nearest||0)));
+    const cand=routes.filter(r=>r.day===toDay&&!isLocked(r)&&r.source===x.a.Quelle&&r.items.length>0&&roomOf(r)>0).map(r=>({r,f:fitFor(x.a,r,true)})).filter(c=>c.f.key==='good'||c.f.key==='ok').sort((p,q)=>RANK[p.f.key]-RANK[q.f.key]||((p.f.nearest||0)-(q.f.nearest||0)));
     if(cand.length){x.geoTarget=cand[0].r;reserve.set(x.geoTarget.id,(reserve.get(x.geoTarget.id)||0)+1)}else newPool.push(x);
   });
   const byT=new Map();noFam.filter(x=>x.geoTarget).forEach(x=>pushMap(byT,x.geoTarget.id,x));
@@ -2043,7 +2052,7 @@ function buildClusters(fromDays,toDay){
   // 4) Kleingruppen (≤2) an passende Tour hängen oder mit naher neuer Tour zusammenführen
   out.filter(c=>c.kind==='new'&&c.members.length<=2).forEach(c=>{
     if(!out.includes(c))return;
-    const cand=routes.filter(r=>r.day===toDay&&r.source===c.source&&r.items.length>0&&roomOf(r)>=c.members.length).map(r=>{const fits=c.members.map(x=>fitFor(x.a,r,true));if(fits.some(f=>f.key!=='good'&&f.key!=='ok'))return null;return {r,sc:fits.reduce((s,f)=>s+(f.nearest||0),0)}}).filter(Boolean).sort((p,q)=>p.sc-q.sc);
+    const cand=routes.filter(r=>r.day===toDay&&!isLocked(r)&&r.source===c.source&&r.items.length>0&&roomOf(r)>=c.members.length).map(r=>{const fits=c.members.map(x=>fitFor(x.a,r,true));if(fits.some(f=>f.key!=='good'&&f.key!=='ok'))return null;return {r,sc:fits.reduce((s,f)=>s+(f.nearest||0),0)}}).filter(Boolean).sort((p,q)=>p.sc-q.sc);
     if(cand.length){
       const t=cand[0].r;reserve.set(t.id,(reserve.get(t.id)||0)+c.members.length);
       const ex=out.find(o=>o.kind==='insert'&&o.target===t);
@@ -2140,7 +2149,7 @@ function dnaPairs(items){let n=0;for(let i=0;i<items.length;i++)for(let j=i+1;j<
 function routeTotal(items,r,W,dna){if(!items.length)return 0;return seqCost(evalSequence(items,r))-W.dna*(dna??dnaPairs(items))+W.fixed}
 function dayKm(day){return routes.filter(r=>r.day===day&&r.items.length).reduce((s,r)=>s+evalSequence(r.items,r).km,0)}
 function optimizeDay(day,silent=false){
-  const W=optWeights(),cand=routes.filter(r=>r.day===day);
+  const W=optWeights(),cand=routes.filter(r=>r.day===day&&!isLocked(r));
   if(!cand.some(r=>r.manuallyCreated||routeChanged(r))){if(!silent)showInfo('Nichts zu optimieren',`Am ${DAY_LABELS[day]} gibt es keine geänderten oder neuen Touren.`,'warn');return null}
   if(!silent)UNDO=snapshotPlan();
   const kmBefore=dayKm(day),t0=performance.now();
@@ -2207,7 +2216,7 @@ function routeHtml(r){
   const d=r.items.length-r.originalCount,cap=r.items.length>maxCustomers,tc=r.items.filter(a=>a._timeViolation).length,clock=routeClockInfo(r);
   const km=r.items.length&&Number.isFinite(r.km)?` · ${Math.round(r.km)} km · ${fmtDur(r.dur)}`+(Number.isFinite(r.end)?' · zurück '+formatMin(r.end):''):'';
   const meta=`${r.items.length}/${maxCustomers} Kunden`+km+(clock?' · '+clock:'')+(r.repLabel?' · Vorlage '+esc(r.repLabel):'')+(tc?` · ⚠ ${tc} Zeitkonflikt(e)`:'');
-  return `<section class="route ${routeChanged(r)?'changed':''} ${r.manuallyCreated?'newroute':''} ${cap?'overcap':''} ${tc?'timeconflict':''}" data-route="${esc(r.id)}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${esc(r.tour)} ${r.manuallyCreated?'<span class="newbadge">NEU</span>':''}<span class="source">${esc(srcLabel(r.source))}</span>${r.familyLabel?`<span class="fambadge" title="Tourfamilie">${esc(r.familyLabel)}</span>`:''}</div><div class="rmeta ${cap?'capwarn':''}">${meta}</div></div><div class="route-right">${d?`<span class="delta">${d>0?'+':''}${d}</span>`:''}<button class="seqbtn" type="button" data-google-maps="${esc(r.id)}">Maps</button><button class="seqbtn" type="button" title="Reihenfolge ab Valluhn berechnen" data-seq-route="${esc(r.id)}">Sort.</button>${r.manuallyCreated?`<button class="route-delete" type="button" title="Neue Tour löschen" data-delete-route="${esc(r.id)}">×</button>`:''}</div></div><div class="dropzone" data-route="${esc(r.id)}">${cards||'<div class="empty">Kunden hierher ziehen</div>'}</div></section>`;
+  return `<section class="route ${routeChanged(r)?'changed':''} ${r.manuallyCreated?'newroute':''} ${cap?'overcap':''} ${tc?'timeconflict':''}" data-route="${esc(r.id)}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${esc(r.tour)} ${r.manuallyCreated?'<span class="newbadge">NEU</span>':''}<span class="source">${esc(srcLabel(r.source))}</span>${isLocked(r)?'<span class="lockbadge" title="Gesperrte Tour: nichts hinzufügen/herausnehmen">GESPERRT</span>':''}${r.familyLabel?`<span class="fambadge" title="Tourfamilie">${esc(r.familyLabel)}</span>`:''}</div><div class="rmeta ${cap?'capwarn':''}">${meta}</div></div><div class="route-right">${d?`<span class="delta">${d>0?'+':''}${d}</span>`:''}<button class="seqbtn" type="button" data-google-maps="${esc(r.id)}">Maps</button><button class="seqbtn" type="button" title="Reihenfolge ab Valluhn berechnen" data-seq-route="${esc(r.id)}">Sort.</button>${r.manuallyCreated?`<button class="route-delete" type="button" title="Neue Tour löschen" data-delete-route="${esc(r.id)}">×</button>`:''}</div></div><div class="dropzone" data-route="${esc(r.id)}">${cards||'<div class="empty">Kunden hierher ziehen</div>'}</div></section>`;
 }
 function renderWeek(){
   document.getElementById('week').innerHTML=DAY_ORDER.map(day=>{
@@ -2241,6 +2250,7 @@ function renderAll(){saveDayScroll();renderWeek();renderUnplanned();renderMetric
 function moveAid(aid,toRouteId,beforeAid=null){
   if(!aid)return;const a=getAssignment(aid),cur=currentRouteForAid(aid);
   if(isExcluded(a)&&(toRouteId==='UNPLANNED'||!cur||cur.id!==toRouteId)){showBlocked(`SAP ${a.SAP} steht auf der Ausschlussliste und bleibt unverändert.`);return}
+  if(toRouteId==='UNPLANNED'&&cur&&isLocked(cur)){showBlocked(`Tour ${cur.tour} ist gesperrt – Kunden bleiben unverändert.`);return}
   if(toRouteId!=='UNPLANNED'){const reason=moveBlockReason(a,getRoute(toRouteId));if(reason){showBlocked(reason);return}}
   const found=removeFromCurrent(aid);if(!found)return;
   if(toRouteId==='UNPLANNED'){cancelledAids.delete(aid);unplanned.push(found.a);if(found.from)evaluateRoute(found.from);renderAll();showInfo('Kunde ausgeplant',`${found.a.SAP} · ${found.a.Name} liegt jetzt in AUSGEPLANT.`,'warn');return}
@@ -2362,7 +2372,9 @@ function computeBacktest(){
   assignments.filter(a=>daySet.has(a.originalDay)).forEach(a=>{
     if(!a.REF){noRef++;return}
     const ref=a.REF,order=[toDay,...DAY_ORDER.filter(d=>d!==toDay&&!daySet.has(d))];let exp=null;
-    for(const d of order){const rv=ref[d],ov=a[d];if(rv!=null&&rv!==''&&String(rv)!==String(ov??'')){exp={type:'move',day:d,tour:String(rv)};break}}
+    for(const d of order){const rv=ref[d],ov=a[d];if(rv!=null&&rv!==''&&String(rv)!==String(ov??'')){
+      if(d===toDay&&ov!=null&&ov!==''){exp={type:'covered',retour:String(rv)};break}   // schon am Zieltag beliefert, Disponent hat nur die Tour gewechselt
+      exp={type:'move',day:d,tour:String(rv)};break}}
     if(!exp){const ov=a[toDay];if(ov!=null&&ov!==''&&String(ref[toDay]??'')===String(ov))exp={type:'covered'};else if(ref[a.originalDay]!=null&&ref[a.originalDay]!=='')exp={type:'kept'};else exp={type:'dropped'}}
     const r=currentRouteForAid(a.aid);let act;
     if(cancelledAids.has(a.aid))act={type:'covered'};else if(r)act={type:daySet.has(r.day)?'kept':'move',day:r.day,tour:String(r.tour)};else act={type:'dropped'};
@@ -2374,7 +2386,8 @@ function computeBacktest(){
   let tp=0,fp=0,fn=0;
   for(let i=0;i<mv.length;i++)for(let j=i+1;j<mv.length;j++){const p=mv[i],q=mv[j];if(p.a.Quelle!==q.a.Quelle)continue;const rt=p.exp.day===q.exp.day&&p.exp.tour===q.exp.tour,at=p.act.type==='move'&&q.act.type==='move'&&p.act.day===q.act.day&&p.act.tour===q.act.tour;if(rt&&at)tp++;else if(at)fp++;else if(rt)fn++}
   const byRef=new Map();mv.forEach(x=>pushMap(byRef,`${DAY_SHORT[x.exp.day]} ${x.exp.tour} · ${srcLabel(x.a.Quelle)}`,x));
-  return {rows,noRef,cov:cov.length,covHit:cov.filter(x=>x.act.type==='covered').length,falseCover:rows.filter(x=>x.act.type==='covered'&&x.exp.type!=='covered').length,mv:mv.length,exact,dayHit,tp,fp,fn,prec:tp+fp?tp/(tp+fp):NaN,rec:tp+fn?tp/(tp+fn):NaN,byRef,notPlaced:mv.filter(x=>x.act.type!=='move').length,same};
+  const retour=rows.filter(x=>x.exp.retour);
+  return {rows,noRef,retour,cov:cov.length,covHit:cov.filter(x=>x.act.type==='covered').length,falseCover:rows.filter(x=>x.act.type==='covered'&&x.exp.type!=='covered').length,mv:mv.length,exact,dayHit,tp,fp,fn,prec:tp+fp?tp/(tp+fp):NaN,rec:tp+fn?tp/(tp+fn):NaN,byRef,notPlaced:mv.filter(x=>x.act.type!=='move').length,same};
 }
 function renderBacktest(){
   const b=computeBacktest();
@@ -2383,17 +2396,42 @@ function renderBacktest(){
   const refRows=[...b.byRef.entries()].sort((x,y)=>y[1].length-x[1].length).map(([k,list])=>{const dist={};list.forEach(x=>{const t=actLabel(x);dist[t]=(dist[t]||0)+1});const top=Math.max(...Object.values(dist));return [k,list.length,Object.entries(dist).sort((a,c)=>c[1]-a[1]).map(([t,n])=>`${t} ×${n}`).join(' · '),pct(top/list.length)]});
   const miss=b.rows.filter(x=>x.exp.type==='move'&&!b.same(x)).map(x=>[x.a.SAP,x.a.Name,x.a.Ort,`${DAY_SHORT[x.a.originalDay]} ${x.a.originalTour}`,`${DAY_SHORT[x.exp.day]} ${x.exp.tour}`,actLabel(x)]);
   document.getElementById('backtestBody').innerHTML=(b.noRef?`<div class="reportwarn">${b.noRef} Ausfall-Lieferungen ohne passende Zeile im Referenzplan (Abgleich über Blatt + SAP + CSB).</div>`:'')+
-  `<div class="reportstatus"><div class="reportkpi"><b>${pct(b.prec)}</b><span>Paar-Präzision: vom Algorithmus zusammengelegt und auch beim Disponenten zusammen</span></div><div class="reportkpi"><b>${pct(b.rec)}</b><span>Paar-Abdeckung: beim Disponenten zusammen und auch beim Algorithmus</span></div><div class="reportkpi"><b>${b.exact}/${b.mv}</b><span>exakt gleiche Tour</span></div><div class="reportkpi"><b>${b.dayHit}/${b.mv}</b><span>richtiger Tag</span></div><div class="reportkpi"><b>${b.covHit}/${b.cov}</b><span>„Zieltag vorhanden“ richtig</span></div><div class="reportkpi"><b>${b.falseCover}</b><span>fälschlich gestrichen</span></div><div class="reportkpi"><b>${b.notPlaced}</b><span>noch nicht eingeplant</span></div></div>`+
+  `<div class="reportstatus"><div class="reportkpi"><b>${pct(b.prec)}</b><span>Paar-Präzision: vom Algorithmus zusammengelegt und auch beim Disponenten zusammen</span></div><div class="reportkpi"><b>${pct(b.rec)}</b><span>Paar-Abdeckung: beim Disponenten zusammen und auch beim Algorithmus</span></div><div class="reportkpi"><b>${b.exact}/${b.mv}</b><span>exakt gleiche Tour</span></div><div class="reportkpi"><b>${b.dayHit}/${b.mv}</b><span>richtiger Tag</span></div><div class="reportkpi"><b>${b.covHit}/${b.cov}</b><span>„Zieltag vorhanden“ richtig</span></div><div class="reportkpi"><b>${b.falseCover}</b><span>fälschlich gestrichen</span></div><div class="reportkpi"><b>${b.retour.length}</b><span>schon am Zieltag – Disponent hat die Zieltag-Tour gewechselt</span></div><div class="reportkpi"><b>${b.notPlaced}</b><span>noch nicht eingeplant</span></div></div>`+
   `<div class="reportsection"><h3>Referenz-Touren → wohin der Algorithmus die Kunden gelegt hat</h3>${reportTable(refRows,['Referenz-Tour','Kunden','Algorithmus','Größter Block'])}</div>`+
+  (b.retour.length?`<div class="reportsection"><h3>Zieltag-Tour vom Disponenten gewechselt (Kunde war schon am Zieltag)</h3>${reportTable(b.retour.map(x=>[x.a.SAP,x.a.Name,x.a.Ort,`${DAY_SHORT[x.a.originalDay]} ${x.a.originalTour}`,`bisher ${x.a[document.getElementById('toDay').value]??''}`,`KW40 ${x.exp.retour}`]),['SAP','Kunde','Ort','Ausfall-Lieferung','Zieltag bisher','Zieltag Referenz'])}</div>`:'')+
   `<div class="reportsection"><h3>Abweichungen je Kunde</h3>${reportTable(miss,['SAP','Kunde','Ort','Original','Referenz','Algorithmus'])}</div>`;
 }
 function openBacktest(){renderBacktest();document.getElementById('backtestModal').classList.add('show')}
-function runAutoplan(){
-  const changed=routes.some(r=>r.manuallyCreated||routeChanged(r)&&!outageDays.has(r.day))||unplanned.some(a=>!autoCoveredAids.has(a.aid));
-  if(changed&&!confirm('Autoplan setzt alle manuellen Änderungen zurück und übernimmt alle Vorschläge. Fortfahren?'))return false;
+function runAutoplan(silent=false){
+  if(!silent){
+    const changed=routes.some(r=>r.manuallyCreated||routeChanged(r)&&!outageDays.has(r.day))||unplanned.some(a=>!autoCoveredAids.has(a.aid));
+    if(changed&&!confirm('Autoplan setzt alle manuellen Änderungen zurück und übernimmt alle Vorschläge. Fortfahren?'))return false;
+  }
+  AUTO_OVER=Math.max(0,Number(document.getElementById('autoOver')?.value)||0);parseLocked();
   buildOriginalPlan();const toDay=document.getElementById('toDay').value;clusters=buildClusters(selectedOutageDays(),toDay);applyClusters(()=>true,true);
   if(document.getElementById('btOptimize')?.checked)optimizeDay(toDay,true);
-  renderAll();return true;
+  if(!silent)renderAll();return true;
+}
+/* Parameter-Vergleich: rechnet Varianten gegen den Referenzplan und zeigt die beste */
+function f1(p,r){return Number.isFinite(p)&&Number.isFinite(r)&&p+r>0?2*p*r/(p+r):0}
+async function runSweep(){
+  const $=id=>document.getElementById(id),box=$('sweepBody');
+  if(!confirm('Parameter-Vergleich setzt manuelle Änderungen zurück und rechnet 12 Autoplan-Varianten. Fortfahren?'))return;
+  const keep={over:$('autoOver').value,dna:$('dnaWeight').value,opt:$('btOptimize').checked};
+  const grid=[];[2,4,6].forEach(o=>grid.push({over:o,opt:false,dna:Number(keep.dna)}));[2,4,6].forEach(o=>[4,10,20].forEach(d=>grid.push({over:o,opt:true,dna:d})));
+  const res=[];
+  for(let i=0;i<grid.length;i++){
+    const g=grid[i];box.innerHTML=`<div class="reportwarn">Rechne Variante ${i+1}/${grid.length} … (Übergröße +${g.over}, ${g.opt?'mit Optimierung, DNA '+g.dna:'ohne Optimierung'})</div>`;
+    await new Promise(r=>setTimeout(r,20));
+    $('autoOver').value=g.over;$('dnaWeight').value=g.dna;$('btOptimize').checked=g.opt;
+    runAutoplan(true);const b=computeBacktest();
+    res.push({...g,prec:b.prec,rec:b.rec,f:f1(b.prec,b.rec),exact:b.exact,day:b.dayHit,mv:b.mv,km:dayKm(document.getElementById('toDay').value),tours:routes.filter(r=>r.manuallyCreated&&r.items.length).length});
+  }
+  res.sort((a,b)=>b.f-a.f||b.exact-a.exact);
+  const minKm=Math.min(...res.map(r=>r.km));
+  box.innerHTML=`<div class="reportsection"><h3>Parameter-Vergleich – sortiert nach Nähe zum Referenzplan (F1 aus Paar-Präzision und -Abdeckung)</h3><div class="hint">Der Referenzplan ist ein Anhaltspunkt, kein Muss: grün = am nächsten an der Referenz, blau = wenigste Zieltag-km. Nichts wird automatisch übernommen.</div><div class="reportscroll"><table class="reporttable"><thead><tr><th>#</th><th>Übergröße</th><th>Optimierung</th><th>DNA-Bonus</th><th>Paar-Präzision</th><th>Paar-Abdeckung</th><th>F1</th><th>exakt gleiche Tour</th><th>richtiger Tag</th><th>neue Touren</th><th>Zieltag-km</th><th></th></tr></thead><tbody>${res.map((r,i)=>`<tr${i===0?' style="background:#e8f5ed"':r.km===minKm?' style="background:#eaf0f5"':''}><td>${i+1}</td><td>+${r.over}</td><td>${r.opt?'ja':'nein'}</td><td>${r.opt?r.dna+' Min.':'–'}</td><td>${pct(r.prec)}</td><td>${pct(r.rec)}</td><td><b>${pct(r.f)}</b></td><td>${r.exact}/${r.mv}</td><td>${r.day}/${r.mv}</td><td>${r.tours}</td><td>${Math.round(r.km)}</td><td><button class="btn small" type="button" data-sweep="${i}">übernehmen</button></td></tr>`).join('')}</tbody></table></div></div>`;
+  box.querySelectorAll('[data-sweep]').forEach(btn=>btn.addEventListener('click',()=>{const r=res[Number(btn.dataset.sweep)];$('autoOver').value=r.over;$('dnaWeight').value=r.dna;$('btOptimize').checked=r.opt;runAutoplan(true);renderAll();renderBacktest();showInfo('Variante übernommen',`Übergröße +${r.over}, ${r.opt?'mit Optimierung, DNA-Bonus '+r.dna+' Min.':'ohne Optimierung'} – Plan neu gerechnet.`,'good')}));
+  $('autoOver').value=keep.over;$('dnaWeight').value=keep.dna;$('btOptimize').checked=keep.opt;runAutoplan(true);renderAll();renderBacktest();
 }
 function presetFromReference(){
   if(!HAS_REF)return;const o={},r={};DAY_ORDER.forEach(d=>{o[d]=0;r[d]=0});
@@ -2458,14 +2496,15 @@ function initControls(){
   $('applyGoodBtn').addEventListener('click',()=>applyClusters(c=>c.quality==='good'||c.quality==='ok'));
   $('applyAllBtn').addEventListener('click',()=>{if(confirm(`${clusters.length} Gruppen übernehmen – auch grenzwertige?`))applyClusters(()=>true)});
   $('closeSuggBtn').addEventListener('click',()=>$('suggestions').classList.remove('show'));
-  $('applyRulesBtn').addEventListener('click',()=>{clampMax();parseExcluded();autoResolveCoveredDeliveries(true);if($('suggestions').classList.contains('show'))computeSuggestions()});
+  $('applyRulesBtn').addEventListener('click',()=>{clampMax();parseExcluded();parseLocked();FAM_CACHE.clear();autoResolveCoveredDeliveries(true);if($('suggestions').classList.contains('show'))computeSuggestions()});
   $('maxCustomers').addEventListener('change',()=>{clampMax();renderAll()});
+  $('autoOver').addEventListener('change',()=>{AUTO_OVER=Math.max(0,Number($('autoOver').value)||0);if($('suggestions').classList.contains('show'))computeSuggestions()});
   $('optimizeBtn').addEventListener('click',()=>{const d=$('toDay').value;$('optimizeBtn').disabled=true;$('optimizeBtn').textContent='Optimiere …';setTimeout(()=>{try{optimizeDay(d)}finally{$('optimizeBtn').disabled=false;$('optimizeBtn').textContent='Touren optimieren'}},20)});
   $('undoBtn').addEventListener('click',()=>{if(!UNDO)return;restorePlan(UNDO);UNDO=null;LAST_OPT=null;$('undoBtn').style.display='none';renderAll();showInfo('Rückgängig','Stand vor der Optimierung wiederhergestellt.','ok')});
   $('netHint').textContent=HAS_MATRIX?`LKW-Straßenmatrix: ${NET.pairs} Verbindungen · sonst Luftlinie × ${ROAD_FACTOR.toFixed(2)} · Ø ${Math.round(AVG_KMH)} km/h`:`ohne Straßenmatrix: Luftlinie × ${ROAD_FACTOR.toFixed(2)} · Ø ${Math.round(AVG_KMH)} km/h`;
   $('sequenceAllBtn').addEventListener('click',()=>{routes.filter(r=>routeChanged(r)||r.manuallyCreated).forEach(optimizeRouteOrder);renderAll();showInfo('Reihenfolge berechnet','Alle geänderten/neuen Touren ab Valluhn neu sortiert.')});
-  if(HAS_REF){$('backtestBtn').style.display='';$('backtestBtn').addEventListener('click',openBacktest);$('closeBacktestBtn').addEventListener('click',()=>$('backtestModal').classList.remove('show'));$('backtestCurrentBtn').addEventListener('click',renderBacktest);$('backtestAutoBtn').addEventListener('click',()=>{if(runAutoplan())renderBacktest()})}
-  parseExcluded();clampMax();presetFromReference();
+  if(HAS_REF){$('backtestBtn').style.display='';$('backtestBtn').addEventListener('click',openBacktest);$('closeBacktestBtn').addEventListener('click',()=>$('backtestModal').classList.remove('show'));$('backtestCurrentBtn').addEventListener('click',renderBacktest);$('backtestAutoBtn').addEventListener('click',()=>{if(runAutoplan())renderBacktest()});$('sweepBtn').addEventListener('click',runSweep)}
+  parseExcluded();parseLocked();clampMax();presetFromReference();
 }
 initControls();buildOriginalPlan();
 </script>

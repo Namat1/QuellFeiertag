@@ -26,7 +26,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import queue
 import re
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -40,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-3 (Straßenabgleich OSM)"
+APP_BUILD = "V28 · Build 27.09.-4 (Straßenabgleich OSM, parallel)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 CACHE_DIR = Path(__file__).resolve().parent / "feiertags_cache"
 ORS_HOST = "https://api.heigit.org"
@@ -249,6 +251,31 @@ class OverpassError(RuntimeError):
     pass
 
 
+class RateLimiter:
+    """Mindestabstand zwischen Anfragen je Dienst – thread-sicher, Antwortzeit wird angerechnet."""
+
+    def __init__(self, per_min: float):
+        self._lock = threading.Lock()
+        self._next = 0.0
+        self.set(per_min)
+
+    def set(self, per_min: float) -> None:
+        self.interval = 60.0 / max(1.0, float(per_min))
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            if self._next > now:
+                time.sleep(self._next - now)
+                now = time.monotonic()
+            self._next = now + self.interval
+
+
+LIM_ORS_GEO = RateLimiter(95)   # HeiGIT Standard: 100 Geocoding-Anfragen/Minute
+LIM_OSM = RateLimiter(57)       # Nominatim: max. 1 Anfrage/Sekunde
+LIM_OVP = RateLimiter(60)       # Overpass: fair use
+
+
 def load_cache(name: str) -> dict:
     try:
         return json.loads((CACHE_DIR / name).read_text(encoding="utf-8"))
@@ -290,6 +317,8 @@ def ors_request(session, method: str, service: str, key: str, profile: str = "",
     last = None
     for i, tpl in enumerate(templates):
         url = tpl.format(host=ORS_HOST.rstrip("/"), profile=profile)
+        if service.startswith("geocode"):
+            LIM_ORS_GEO.wait()
         try:
             r = session.request(method, url, headers=headers, **kw)
         except Exception as exc:
@@ -362,14 +391,12 @@ def geocode_ors(session, key: str, street: str, plz: str, city: str, center=None
         return {**res, "src": "ors"}, ""
     if city:   # Ortsname aus SAP oft abgekürzt/zusammengesetzt → nur PLZ
         params.pop("locality")
-        time.sleep(0.65)
         res, why_b = _pick_feature(_ors_json(session, "geocode", key, params), center)
         if res:
             return {**res, "src": "ors"}, ""
     params = {"text": f"{street}, {plz} {city}", "boundary.country": "DEU", "size": 3}
     if center:
         params.update({"focus.point.lat": center[0], "focus.point.lon": center[1]})
-    time.sleep(0.65)
     res, why2 = _pick_feature(_ors_json(session, "geocode_text", key, params), center)
     return ({**res, "src": "ors-text"}, "") if res else (None, why2 or why)
 
@@ -380,6 +407,7 @@ def geocode_nominatim(session, street: str, plz: str, city: str, center=None):
         variants.insert(0, {"street": street, "postalcode": plz, "city": city, "countrycodes": "de"})
     variants.append({"q": f"{street}, {plz} {city}".strip(), "countrycodes": "de"})
     for params in variants:
+        LIM_OSM.wait()
         r = session.get(NOMINATIM_URL, params={**params, "format": "jsonv2", "limit": 3}, timeout=25)
         if r.status_code in (403, 429):
             raise QuotaError(f"Nominatim: HTTP {r.status_code}")
@@ -393,7 +421,6 @@ def geocode_nominatim(session, street: str, plz: str, city: str, center=None):
             if center and float(haversine(center[0], center[1], lat, lon)) > GEO_MAX_DEVIATION_KM:
                 continue
             return {"lat": lat, "lon": lon, "q": q, "src": "osm"}, ""
-        time.sleep(1.1)
     return None, "OSM: kein Treffer"
 
 
@@ -490,6 +517,7 @@ def street_candidates(session, lat: float, lon: float, cache: dict) -> list:
     errors = []
     for attempt in range(2):
         for url in OVERPASS_URLS:
+            LIM_OVP.wait()
             try:
                 r = session.post(url, data={"data": q}, timeout=120 if url == OVERPASS_URLS[0] else 25)
             except Exception as exc:
@@ -609,89 +637,126 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
     can_ors = provider == "ors" and bool(key)
     can_osm = provider == "osm" or (provider == "ors" and osm_fallback)
     if todo and (can_ors or can_osm):
+        # Pipeline: Hauptthread fragt ORS ab, ein zweiter Thread erledigt parallel OSM (Nominatim + Straßenabgleich)
+        # für die ORS-Fehlschläge. Beide Dienste haben eigene Tempolimits → Gesamtzeit ≈ max statt Summe.
         import requests
-        sess = requests.Session()
-        sess.headers["User-Agent"] = HTTP_UA
-        ors_dead = not can_ors
+
+        def new_session():
+            ss = requests.Session()
+            ss.headers["User-Agent"] = HTTP_UA
+            return ss
+
+        lock = threading.Lock()
+        state = {"ors_dead": not can_ors, "can_osm": can_osm, "street_fail": 0, "done": 0}
         street_cache = load_cache("street_cache.json")
-        street_fail = 0
-        for i, (k, street, plz, city, center) in enumerate(todo):
-            if progress:
-                progress(i, len(todo))
-            res, why = None, ""
-            if not ors_dead:
+        jobs: queue.Queue = queue.Queue()
+
+        def join(*parts):
+            return " · ".join(x for x in parts if x)
+
+        def store(k, res, why, retry_later=False):
+            with lock:
+                cache[k] = ({**res, "v": GEO_CACHE_VERSION} if res
+                            else {"fail": True, "why": why, "v": GEO_CACHE_VERSION - (1 if retry_later else 0)})
+                if res:
+                    stats["neu"] += 1
+                else:
+                    stats["fehl"] += 1
+                    stats["gruende"][why] = stats["gruende"].get(why, 0) + 1
+                stats["offen"] -= 1
+                state["done"] += 1
+                if state["done"] % 25 == 0:
+                    save_cache("geo_cache.json", cache)
+                    save_cache("street_cache.json", street_cache)
+
+        def osm_stage(ss, item, why):
+            k, street, plz, city, center = item
+            res, retry_later = None, False
+            if state["can_osm"]:
                 try:
-                    res, why = geocode_ors(sess, key, street, plz, city, center)
-                    why = f"ORS: {why}" if why else ""
-                except QuotaError as exc:
-                    stats["abbruch"] = str(exc) + (" – weiter mit Nominatim" if can_osm else "")
-                    ors_dead = True
-                except Exception as exc:
-                    why = f"Fehler: {str(exc)[:60]}"
-                time.sleep(0.65)
-            if res is None and can_osm:
-                try:
-                    res, why_osm = geocode_nominatim(sess, street, plz, city, center)
-                    why = " · ".join(x for x in (why, why_osm) if x)
+                    res, w = geocode_nominatim(ss, street, plz, city, center)
+                    why = join(why, w)
                 except QuotaError as exc:
                     stats["abbruch"] = str(exc)
-                    why = " · ".join(x for x in (why, str(exc)) if x)
-                    can_osm = False
+                    state["can_osm"] = False
+                    why = join(why, str(exc))
                 except Exception as exc:
-                    why = why or f"Fehler: {str(exc)[:60]}"
-                time.sleep(1.1)
-            retry_later = False
-            if res is None and can_osm and center is not None and street_fail < 6:
+                    why = join(why, f"OSM-Fehler: {str(exc)[:50]}")
+            if res is None and state["can_osm"] and center is not None and state["street_fail"] < 6:
                 hit, str_why = None, ""
                 try:
-                    hit = resolve_street(sess, street, center, street_cache)
-                    street_fail = 0
+                    hit = resolve_street(ss, street, center, street_cache)
+                    state["street_fail"] = 0
                     if not hit:
                         str_why = "Straße im PLZ-Gebiet nicht erkannt"
-                    time.sleep(1.0)
                 except OverpassError as exc:
-                    street_fail += 1
-                    retry_later = True
-                    str_why = str(exc)
+                    state["street_fail"] += 1
+                    retry_later, str_why = True, str(exc)
                 except Exception as exc:
-                    street_fail += 1
-                    retry_later = True
-                    str_why = f"Straßenliste: {type(exc).__name__}"
+                    state["street_fail"] += 1
+                    retry_later, str_why = True, f"Straßenliste: {type(exc).__name__}"
                 if hit:
                     real, hn, mid = hit
                     full = f"{real} {hn}".strip()
                     res2 = None
                     try:
-                        if not ors_dead:
-                            res2, _ = geocode_ors(sess, key, full, plz, "", center)
-                            time.sleep(0.65)
-                        if res2 is None:
-                            res2, _ = geocode_nominatim(sess, full, plz, "", center)
-                            time.sleep(1.1)
+                        if not state["ors_dead"]:
+                            res2, _ = geocode_ors(ss, key, full, plz, "", center)
+                        if res2 is None and state["can_osm"]:
+                            res2, _ = geocode_nominatim(ss, full, plz, "", center)
                     except Exception:
                         res2 = None
                     if res2 is None:
                         res2 = {"lat": float(mid[0]), "lon": float(mid[1]), "q": "street", "src": "osm-strasse"}
-                    res = {**res2, "match": full}
-                    why = ""
+                    res, why = {**res2, "match": full}, ""
                 else:
-                    why = " · ".join(x for x in (why, str_why) if x)
-            elif res is None and street_fail >= 6:
+                    why = join(why, str_why)
+            elif res is None and state["street_fail"] >= 6:
                 retry_later = True
-                why = " · ".join(x for x in (why, "Straßenabgleich übersprungen (Overpass nicht erreichbar)") if x)
-            if res is None and ors_dead and not can_osm:
-                break
-            cache[k] = ({**res, "v": GEO_CACHE_VERSION} if res
-                        else {"fail": True, "why": why, "v": GEO_CACHE_VERSION - (1 if retry_later else 0)})
+                why = join(why, "Straßenabgleich übersprungen (Overpass nicht erreichbar)")
+            if res is None and state["ors_dead"] and not state["can_osm"]:
+                retry_later = True
+            store(k, res, why, retry_later)
+
+        def worker():
+            ss = new_session()
+            while True:
+                job = jobs.get()
+                if job is None:
+                    break
+                try:
+                    osm_stage(ss, *job)
+                except Exception as exc:
+                    store(job[0][0], None, f"Fehler: {str(exc)[:60]}", True)
+
+        th = threading.Thread(target=worker, daemon=True)
+        th.start()
+        sess = new_session()
+        for item in todo:
+            if progress:
+                progress(max(0, state["done"] - 1), len(todo))
+            k, street, plz, city, center = item
+            res, why = None, ""
+            if not state["ors_dead"]:
+                try:
+                    res, w = geocode_ors(sess, key, street, plz, city, center)
+                    why = f"ORS: {w}" if w else ""
+                except QuotaError as exc:
+                    stats["abbruch"] = str(exc) + (" – weiter mit Nominatim" if state["can_osm"] else "")
+                    state["ors_dead"] = True
+                except Exception as exc:
+                    why = f"ORS-Fehler: {str(exc)[:50]}"
             if res:
-                stats["neu"] += 1
+                store(k, res, "")
+            elif state["can_osm"]:
+                jobs.put((item, why))
             else:
-                stats["fehl"] += 1
-                stats["gruende"][why] = stats["gruende"].get(why, 0) + 1
-            stats["offen"] -= 1
-            if i % 25 == 24:
-                save_cache("geo_cache.json", cache)
-                save_cache("street_cache.json", street_cache)
+                store(k, None, why, retry_later=state["ors_dead"])
+        jobs.put(None)
+        while th.is_alive():
+            if progress:
+                progress(max(0, state["done"] - 1), len(todo))
+            th.join(0.5)
         save_cache("geo_cache.json", cache)
         save_cache("street_cache.json", street_cache)
 
@@ -743,7 +808,10 @@ def apply_coordinate_overrides(df: pd.DataFrame, file_bytes: bytes) -> tuple[pd.
             continue
         try:
             sap = int(float(str(r[sc]).strip()))
-            coords[sap] = (float(str(r[la]).replace(",", ".")), float(str(r[lo]).replace(",", ".")))
+            la_v, lo_v = float(str(r[la]).replace(",", ".")), float(str(r[lo]).replace(",", "."))
+            if not (np.isfinite(la_v) and np.isfinite(lo_v)) or not (47 <= la_v <= 56 and 5 <= lo_v <= 16):
+                continue   # leer/unplausibel (außerhalb Deutschlands) → ignorieren
+            coords[sap] = (la_v, lo_v)
         except Exception:
             continue
     out = df.copy()
@@ -2097,6 +2165,8 @@ def main():
                                        help="Adressen, die ORS nicht findet, zusätzlich bei OpenStreetMap suchen (1 Adresse/Sek.) und abgekürzte "
                  "SAP-Straßennamen gegen die echten Straßen im PLZ-Gebiet abgleichen (Overpass).")
             retry_failed = st.checkbox("Nicht gefundene Adressen erneut versuchen", value=False)
+            ors_rate = st.number_input("ORS-Adresssuche: Anfragen pro Minute", 10, 1000, 95, step=5,
+                                       help="HeiGIT Standard-Plan: 100/Min. Bei höherem Kontingent entsprechend erhöhen.")
         with g3:
             coord_upload = st.file_uploader("Koordinaten-CSV (optional)", type=["csv"],
                                             help="Spalten SAP;lat;lon – hat Vorrang vor dem Geocoding.")
@@ -2122,6 +2192,7 @@ def main():
         return
 
     ORS_HOST = _host_from(ors_base)
+    LIM_ORS_GEO.set(ors_rate)
     provider = {"OpenRouteService": "ors", "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
     if provider == "ors" and not ors_key:
         st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt.")

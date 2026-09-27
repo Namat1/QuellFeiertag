@@ -51,7 +51,11 @@ ORS_ENDPOINTS = {
 }
 _ORS_WORKING: dict = {}                                        # Dienst → funktionierende URL-Vorlage
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
 STREET_RADIUS_M = 4500          # Straßennamen im Umkreis des PLZ-Zentrums für den Abkürzungs-Abgleich
 HTTP_UA = "NFC-Feiertagsplaner/28 (interne Tourenplanung)"
 MATRIX_MAX_ELEMENTS = 2500      # Quellen × Ziele je ORS-Anfrage (Free-Tier: 3500)
@@ -240,6 +244,10 @@ class QuotaError(RuntimeError):
     pass
 
 
+class OverpassError(RuntimeError):
+    pass
+
+
 def load_cache(name: str) -> dict:
     try:
         return json.loads((CACHE_DIR / name).read_text(encoding="utf-8"))
@@ -294,7 +302,7 @@ def ors_request(session, method: str, service: str, key: str, profile: str = "",
     raise last or RuntimeError("OpenRouteService nicht erreichbar")
 
 
-GEO_CACHE_VERSION = 3   # ältere Fehlschläge werden mit der verbesserten Suche automatisch erneut versucht
+GEO_CACHE_VERSION = 4   # ältere Fehlschläge werden mit der verbesserten Suche automatisch erneut versucht
 _LAYER_Q = {"address": "addr", "venue": "addr", "street": "street"}
 
 
@@ -366,9 +374,9 @@ def geocode_ors(session, key: str, street: str, plz: str, city: str, center=None
 
 
 def geocode_nominatim(session, street: str, plz: str, city: str, center=None):
-    variants = [{"street": street, "postalcode": plz, "country": "de"}]
+    variants = [{"street": street, "postalcode": plz, "countrycodes": "de"}]
     if city:
-        variants.insert(0, {"street": street, "postalcode": plz, "city": city, "country": "de"})
+        variants.insert(0, {"street": street, "postalcode": plz, "city": city, "countrycodes": "de"})
     variants.append({"q": f"{street}, {plz} {city}".strip(), "countrycodes": "de"})
     for params in variants:
         r = session.get(NOMINATIM_URL, params={**params, "format": "jsonv2", "limit": 3}, timeout=25)
@@ -385,7 +393,7 @@ def geocode_nominatim(session, street: str, plz: str, city: str, center=None):
                 continue
             return {"lat": lat, "lon": lon, "q": q, "src": "osm"}, ""
         time.sleep(1.1)
-    return None, "Nominatim ohne Treffer"
+    return None, "OSM: kein Treffer"
 
 
 # --- Abgleich abgekürzter SAP-Straßennamen mit echten OSM-Straßen -------------------------------------
@@ -472,24 +480,45 @@ def street_match_score(raw_name: str, cand: str) -> float:
 
 
 def street_candidates(session, lat: float, lon: float, cache: dict) -> list:
+    """Straßennamen (mit Straßenmitte) im Umkreis; probiert mehrere Overpass-Server, wartet bei Überlast."""
     key = f"{lat:.3f},{lon:.3f},{STREET_RADIUS_M}"
     if key in cache:
         return cache[key]
-    q = (f'[out:json][timeout:60];way(around:{STREET_RADIUS_M},{lat:.5f},{lon:.5f})["highway"]["name"];'
+    q = (f'[out:json][timeout:90];way(around:{STREET_RADIUS_M},{lat:.5f},{lon:.5f})["highway"]["name"];'
          f'out tags center;')
-    r = session.post(OVERPASS_URL, data={"data": q}, timeout=90)
-    if r.status_code in (429, 504):
-        raise QuotaError(f"Overpass: HTTP {r.status_code}")
-    r.raise_for_status()
-    seen, out = set(), []
-    for el in r.json().get("elements", []):
-        name = (el.get("tags") or {}).get("name")
-        c = el.get("center") or {}
-        if name and name not in seen and "lat" in c:
-            seen.add(name)
-            out.append([name, c["lat"], c["lon"]])
-    cache[key] = out
-    return out
+    errors = []
+    for attempt in range(2):
+        for url in OVERPASS_URLS:
+            try:
+                r = session.post(url, data={"data": q}, timeout=120)
+            except Exception as exc:
+                errors.append(f"{url.split('/')[2]}: {type(exc).__name__}")
+                continue
+            if r.status_code != 200:
+                errors.append(f"{url.split('/')[2]}: HTTP {r.status_code}")
+                if r.status_code in (429, 503, 504):
+                    time.sleep(5)
+                continue
+            try:
+                js = r.json()
+            except Exception:
+                errors.append(f"{url.split('/')[2]}: keine JSON-Antwort")
+                continue
+            els = js.get("elements", [])
+            if not els and "error" in str(js.get("remark", "")).lower():
+                errors.append(f"{url.split('/')[2]}: {str(js.get('remark'))[:60]}")
+                continue
+            seen, out = set(), []
+            for el in els:
+                name = (el.get("tags") or {}).get("name")
+                c = el.get("center") or {}
+                if name and name not in seen and "lat" in c:
+                    seen.add(name)
+                    out.append([name, c["lat"], c["lon"]])
+            cache[key] = out
+            return out
+        time.sleep(15)
+    raise OverpassError("Straßenliste nicht ladbar (" + "; ".join(errors[-3:]) + ")")
 
 
 def resolve_street(session, raw_street: str, center, street_cache: dict):
@@ -507,6 +536,54 @@ def resolve_street(session, raw_street: str, center, street_cache: dict):
     if not best or bs < 0.55:
         return None
     return best[0], hn, (best[1], best[2])
+
+
+def connection_test(key: str) -> list:
+    """Prüft jeden Dienst mit der Depot-Adresse und liefert (Dienst, Status, Detail)."""
+    import requests
+    sess = requests.Session()
+    sess.headers["User-Agent"] = HTTP_UA
+    rows = []
+
+    def run(name, fn):
+        t0 = time.time()
+        try:
+            status, detail = fn()
+        except Exception as exc:
+            status, detail = "Fehler", f"{type(exc).__name__}: {str(exc)[:160]}"
+        rows.append({"Dienst": name, "Status": status, "Detail": detail, "Sek.": round(time.time() - t0, 1)})
+
+    def ors_geo():
+        if not key:
+            return "übersprungen", "kein API-Key"
+        r = ors_request(sess, "GET", "geocode", key, params={"address": "Am Heisterbusch 24", "postalcode": "19246", "country": "DE", "size": 1}, timeout=25)
+        f = (r.json().get("features") or [{}])[0] if r.ok else {}
+        return f"HTTP {r.status_code}", f"{r.url.split('?')[0]} · layer={(f.get('properties') or {}).get('layer')} · {r.text[:120] if not r.ok else ''}"
+
+    def ors_mat():
+        if not key:
+            return "übersprungen", "kein API-Key"
+        body = {"locations": [[DEPOT_LATLON[1], DEPOT_LATLON[0]], [10.0, 53.55]], "metrics": ["distance", "duration"], "units": "km"}
+        r = ors_request(sess, "POST", "matrix", key, profile="driving-hgv", json=body, timeout=60)
+        return f"HTTP {r.status_code}", (str(r.json().get("distances"))[:80] if r.ok else r.text[:160])
+
+    def osm():
+        r = sess.get(NOMINATIM_URL, params={"street": "Am Heisterbusch 24", "postalcode": "19246", "countrycodes": "de", "format": "jsonv2", "limit": 1}, timeout=25)
+        js = r.json() if r.ok else []
+        return f"HTTP {r.status_code}", (f"{len(js)} Treffer · rank {js[0].get('place_rank')} · {js[0].get('display_name', '')[:80]}" if js else r.text[:160])
+
+    run("ORS Adresssuche", ors_geo)
+    run("ORS Matrix (LKW)", ors_mat)
+    run("Nominatim (OSM)", osm)
+    for url in OVERPASS_URLS:
+        def ovp(url=url):
+            q = f'[out:json][timeout:30];way(around:800,{DEPOT_LATLON[0]},{DEPOT_LATLON[1]})["highway"]["name"];out tags center;'
+            r = sess.post(url, data={"data": q}, timeout=60)
+            js = r.json() if r.ok and r.headers.get("content-type", "").startswith("application/json") else {}
+            names = sorted({(e.get("tags") or {}).get("name") for e in js.get("elements", [])} - {None})
+            return f"HTTP {r.status_code}", (f"{len(names)} Straßen: {', '.join(names[:5])}" if js else r.text[:160])
+        run(f"Overpass {url.split('/')[2]}", ovp)
+    return rows
 
 
 def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_failed: bool = False,
@@ -536,6 +613,7 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
         sess.headers["User-Agent"] = HTTP_UA
         ors_dead = not can_ors
         street_cache = load_cache("street_cache.json")
+        street_fail = 0
         for i, (k, street, plz, city, center) in enumerate(todo):
             if progress:
                 progress(i, len(todo))
@@ -543,6 +621,7 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
             if not ors_dead:
                 try:
                     res, why = geocode_ors(sess, key, street, plz, city, center)
+                    why = f"ORS: {why}" if why else ""
                 except QuotaError as exc:
                     stats["abbruch"] = str(exc) + (" – weiter mit Nominatim" if can_osm else "")
                     ors_dead = True
@@ -552,21 +631,31 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
             if res is None and can_osm:
                 try:
                     res, why_osm = geocode_nominatim(sess, street, plz, city, center)
-                    why = why or why_osm
+                    why = " · ".join(x for x in (why, why_osm) if x)
                 except QuotaError as exc:
                     stats["abbruch"] = str(exc)
+                    why = " · ".join(x for x in (why, str(exc)) if x)
                     can_osm = False
                 except Exception as exc:
                     why = why or f"Fehler: {str(exc)[:60]}"
                 time.sleep(1.1)
-            if res is None and can_osm and center is not None and street_cache is not None:
+            retry_later = False
+            if res is None and can_osm and center is not None and street_fail < 6:
+                hit, str_why = None, ""
                 try:
                     hit = resolve_street(sess, street, center, street_cache)
+                    street_fail = 0
+                    if not hit:
+                        str_why = "Straße im PLZ-Gebiet nicht erkannt"
                     time.sleep(1.0)
-                except QuotaError:
-                    hit, street_cache = None, None
-                except Exception:
-                    hit = None
+                except OverpassError as exc:
+                    street_fail += 1
+                    retry_later = True
+                    str_why = str(exc)
+                except Exception as exc:
+                    street_fail += 1
+                    retry_later = True
+                    str_why = f"Straßenliste: {type(exc).__name__}"
                 if hit:
                     real, hn, mid = hit
                     full = f"{real} {hn}".strip()
@@ -578,19 +667,21 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                         if res2 is None:
                             res2, _ = geocode_nominatim(sess, full, plz, "", center)
                             time.sleep(1.1)
-                    except QuotaError:
-                        res2 = None
                     except Exception:
                         res2 = None
                     if res2 is None:
                         res2 = {"lat": float(mid[0]), "lon": float(mid[1]), "q": "street", "src": "osm-strasse"}
                     res = {**res2, "match": full}
                     why = ""
-                elif not why or why.startswith("nur") or why == "kein Treffer":
-                    why = (why + " · " if why else "") + "Straße im PLZ-Gebiet nicht erkannt"
+                else:
+                    why = " · ".join(x for x in (why, str_why) if x)
+            elif res is None and street_fail >= 6:
+                retry_later = True
+                why = " · ".join(x for x in (why, "Straßenabgleich übersprungen (Overpass nicht erreichbar)") if x)
             if res is None and ors_dead and not can_osm:
                 break
-            cache[k] = {**res, "v": GEO_CACHE_VERSION} if res else {"fail": True, "why": why, "v": GEO_CACHE_VERSION}
+            cache[k] = ({**res, "v": GEO_CACHE_VERSION} if res
+                        else {"fail": True, "why": why, "v": GEO_CACHE_VERSION - (1 if retry_later else 0)})
             if res:
                 stats["neu"] += 1
             else:
@@ -599,11 +690,9 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
             stats["offen"] -= 1
             if i % 25 == 24:
                 save_cache("geo_cache.json", cache)
-                if street_cache is not None:
-                    save_cache("street_cache.json", street_cache)
+                save_cache("street_cache.json", street_cache)
         save_cache("geo_cache.json", cache)
-        if street_cache is not None:
-            save_cache("street_cache.json", street_cache)
+        save_cache("street_cache.json", street_cache)
 
     out = df.copy()
     lat, lon, gq = out["lat"].tolist(), out["lon"].tolist(), out["gq"].tolist()
@@ -1948,6 +2037,12 @@ initControls();buildOriginalPlan();
 # Streamlit
 # ---------------------------------------------------------------------------
 
+def _host_from(url: str) -> str:
+    from urllib.parse import urlparse
+    u = urlparse((url or ORS_HOST).strip())
+    return f"{u.scheme or 'https'}://{u.netloc or u.path.split('/')[0]}"
+
+
 def main():
     global ORS_HOST
     import os
@@ -2004,6 +2099,10 @@ def main():
             coord_upload = st.file_uploader("Koordinaten-CSV (optional)", type=["csv"],
                                             help="Spalten SAP;lat;lon – hat Vorrang vor dem Geocoding.")
         st.caption(f"Cache: `{CACHE_DIR}` – bereits gefundene Adressen und Entfernungen werden nicht erneut abgefragt.")
+        if st.button("Verbindungstest (ORS · Nominatim · Overpass)"):
+            with st.spinner("Teste Dienste …"):
+                ORS_HOST = _host_from(ors_base)
+                st.dataframe(pd.DataFrame(connection_test(ors_key)), use_container_width=True, hide_index=True)
 
     if upload is None or starts_upload is None or info_upload is None:
         st.info("Bitte Quelldatei, Normal_Tourenstart.csv und Kisoft_Kunden.csv hochladen.")
@@ -2020,9 +2119,7 @@ def main():
         st.error(f"Fehler: {exc}")
         return
 
-    from urllib.parse import urlparse
-    u = urlparse((ors_base or ORS_HOST).strip())
-    ORS_HOST = f"{u.scheme or 'https'}://{u.netloc or u.path.split('/')[0]}"
+    ORS_HOST = _host_from(ors_base)
     provider = {"OpenRouteService": "ors", "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
     if provider == "ors" and not ors_key:
         st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt.")

@@ -42,7 +42,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK", "HUPA_NMS", "HUPA_MALCHOW"]
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V28 · Build 27.09.-7 (Adressdatei statt lokalem Cache)"
+APP_BUILD = "V28 · Build 27.09.-8 (Adressdatei, Overpass-Adresssuche ohne Kontingent)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -607,6 +607,75 @@ def street_candidates(session, lat: float, lon: float, cache: dict) -> list:
     raise OverpassError("Straßenliste nicht ladbar (" + "; ".join(errors[-3:]) + ")")
 
 
+def _ovp_query(session, q: str) -> list:
+    """Overpass-Abfrage über alle Server; liefert elements oder wirft OverpassError."""
+    errors = []
+    for url in OVERPASS_URLS:
+        LIM_OVP.wait()
+        try:
+            r = session.post(url, data={"data": q}, timeout=90 if url == OVERPASS_URLS[0] else 25)
+        except Exception as exc:
+            errors.append(f"{url.split('/')[2]}: {type(exc).__name__}")
+            continue
+        if r.status_code != 200:
+            errors.append(f"{url.split('/')[2]}: HTTP {r.status_code}")
+            if r.status_code in (429, 503, 504):
+                time.sleep(5)
+            continue
+        try:
+            js = r.json()
+        except Exception:
+            errors.append(f"{url.split('/')[2]}: keine JSON-Antwort")
+            continue
+        if not js.get("elements") and "error" in str(js.get("remark", "")).lower():
+            errors.append(f"{url.split('/')[2]}: {str(js.get('remark'))[:60]}")
+            continue
+        return js.get("elements", [])
+    raise OverpassError("Overpass nicht erreichbar (" + "; ".join(errors[-3:]) + ")")
+
+
+def _el_latlon(el):
+    if "lat" in el:
+        return float(el["lat"]), float(el["lon"])
+    c = el.get("center") or {}
+    return (float(c["lat"]), float(c["lon"])) if "lat" in c else None
+
+
+def hn_of(street: str) -> str:
+    return split_street(street)[1]
+
+
+def geocode_overpass(session, street: str, center, radius_m: int = 12000):
+    """Adresse direkt in OpenStreetMap: Gebäude/Knoten mit addr:street + addr:housenumber im Umkreis des PLZ-Zentrums.
+    Ohne Tageskontingent. Fallback: Mitte der Straße. Rückgabe (Treffer, Grund)."""
+    if not center:
+        return None, "Overpass: kein PLZ-Zentrum"
+    name, hn = split_street(street)
+    name = re.sub(r"\s+", " ", name).strip(" ,.")
+    if not name:
+        return None, "Overpass: keine Straße"
+    esc_name = name.replace("\\", "").replace('"', '\\"')
+    lat, lon = center
+    if hn:
+        m = re.match(r"(\d+)\s*([a-zA-Z]?)", hn)
+        num, let = m.group(1), m.group(2)
+        hn_re = f"^{num} *{let}$" if let else f"^{num}([^0-9].*)?$"
+        q = (f'[out:json][timeout:40];nwr(around:{radius_m},{lat:.5f},{lon:.5f})'
+             f'["addr:street"="{esc_name}"]["addr:housenumber"~"{hn_re}",i];out center 5;')
+        els = _ovp_query(session, q)
+        pts = [p for p in (_el_latlon(e) for e in els) if p]
+        if pts:
+            p = min(pts, key=lambda x: float(haversine(lat, lon, x[0], x[1])))
+            return {"lat": p[0], "lon": p[1], "q": "addr", "src": "osm-overpass"}, ""
+    q = (f'[out:json][timeout:40];way(around:{radius_m},{lat:.5f},{lon:.5f})'
+         f'["highway"]["name"="{esc_name}"];out center 10;')
+    pts = [p for p in (_el_latlon(e) for e in _ovp_query(session, q)) if p]
+    if pts:
+        p = min(pts, key=lambda x: float(haversine(lat, lon, x[0], x[1])))
+        return {"lat": p[0], "lon": p[1], "q": "street", "src": "osm-overpass-strasse"}, ""
+    return None, "Overpass: Straße nicht in OSM gefunden"
+
+
 def resolve_street(session, raw_street: str, center, street_cache: dict):
     """Liefert (echter Straßenname, Hausnummer, Straßenmitte) oder None."""
     if not center:
@@ -697,7 +766,7 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
     stats["offen"] = len(todo)
     can_ors = provider == "ors" and bool(key)
     can_osm = provider == "osm" or (provider == "ors" and osm_fallback)
-    if todo and (can_ors or can_osm):
+    if todo and provider in ("ors", "osm"):
         # Pipeline: Hauptthread fragt ORS ab, ein zweiter Thread erledigt parallel OSM (Nominatim + Straßenabgleich)
         # für die ORS-Fehlschläge. Beide Dienste haben eigene Tempolimits → Gesamtzeit ≈ max statt Summe.
         import requests
@@ -743,7 +812,21 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                     why = join(why, str(exc))
                 except Exception as exc:
                     why = join(why, f"OSM-Fehler: {str(exc)[:50]}")
-            if res is None and state["can_osm"] and center is not None and state["street_fail"] < 6:
+            if res is None and center is not None and state["street_fail"] < 6:
+                try:
+                    r_ovp, w_ovp = geocode_overpass(ss, street, center)
+                    state["street_fail"] = 0
+                    if r_ovp:
+                        res, why = r_ovp, ""
+                    else:
+                        why = join(why, w_ovp)
+                except OverpassError as exc:
+                    state["street_fail"] += 1
+                    retry_later = True
+                    why = join(why, str(exc))
+                except Exception as exc:
+                    why = join(why, f"Overpass-Fehler: {type(exc).__name__}")
+            if res is None and center is not None and state["street_fail"] < 6:
                 hit, str_why = None, ""
                 try:
                     hit = resolve_street(ss, street, center, street_cache)
@@ -777,7 +860,6 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                 why = join(why, "Straßenabgleich übersprungen (Overpass nicht erreichbar)")
             if res is None and state["ors_dead"] and not state["can_osm"]:
                 retry_later = True
-                why = why or "nicht abgefragt: ORS-Kontingent erschöpft und OSM gesperrt – nächster Lauf versucht es erneut"
             store(k, res, why, retry_later)
 
         def worker():
@@ -810,11 +892,8 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                     why = f"ORS-Fehler: {str(exc)[:50]}"
             if res:
                 store(k, res, "")
-            elif state["can_osm"]:
-                jobs.put((item, why))
             else:
-                store(k, None, why or "nicht abgefragt: ORS-Kontingent erschöpft und OSM gesperrt – nächster Lauf versucht es erneut",
-                      retry_later=True)
+                jobs.put((item, why))   # Nominatim (falls verfügbar) + Overpass – Overpass hat kein Tageskontingent
         jobs.put(None)
         while th.is_alive():
             if progress:

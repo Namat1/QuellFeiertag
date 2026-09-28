@@ -1,5 +1,16 @@
 """Feiertags-Wochenplaner V29 – Streamlit-Generator für eine eigenständige Dispo-HTML.
 
+Neu in V29.1:
+- Reruns (Widget-Klick, Ausschlussliste, Download) fragen nichts mehr neu ab: Rechenstufen werden je Eingabe-Fingerabdruck
+  in der Sitzung gehalten; Geocoding-/Matrix-Cache je Sitzung statt global (keine Vermischung auf Streamlit Cloud);
+  Downloads ohne Rerun (Streamlit ≥ 1.43); Button „Offene Adressen & Strecken jetzt nachladen“ nach Abbrüchen
+- Zeitfenster „harte Sperre“ gilt auch in der Nachoptimierung (Relocate/Swap) und im Tourblock (nicht passende Kunden
+  → eigene Tour); im Malus-Modus fließt die Zeitfenster-Abweichung in die Optimierungskosten ein
+- Adressdatei: Straßenmatrix bleibt auch ohne „Straßenmatrix berechnen“ erhalten; LKW/PKW getrennt (Spalte profil),
+  alte Dateien ohne Profil gelten als LKW
+- Overpass sucht die Hausnummer mit dem echten OSM-Straßennamen aus dem Straßenabgleich (HAUPTstraße → Hauptstraße),
+  auch für Straßenmitte-Treffer von ORS/Nominatim/Photon – ohne Kontingent, spart ORS-Anfragen
+
 Neu in V29:
 - HUPA (NMS/ZAR, Malchow) komplett entfernt – geplant werden nur DIREKT und MK; Hupa-Blätter bleiben im Export unberührt
 - Tourgröße: keine Sonderregel „doppelte Normalgröße“ mehr – Obergrenze = Eingabe bzw. Originalgröße der Tour
@@ -32,6 +43,7 @@ Neu in V27:
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import queue
@@ -50,7 +62,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK"]   # HUPA wird nicht geplant
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V29 · Build 27.09.-24 (ohne HUPA · Ausschlussliste · Zeitfenster-Malus · Sa→Folgewoche)"
+APP_BUILD = "V29.1 · Build 28.09.26 (Sitzungs-Cache · Zeitfenster hart in Optimierung · Matrix je Profil · Overpass mit OSM-Namen)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -72,7 +84,7 @@ OVERPASS_URLS = [
     "https://overpass.private.coffee/api/interpreter",
 ]
 STREET_RADIUS_M = 4500          # Straßennamen im Umkreis des PLZ-Zentrums für den Abkürzungs-Abgleich
-HTTP_UA = "NFC-Feiertagsplaner/28 (interne Tourenplanung)"
+HTTP_UA = "NFC-Feiertagsplaner/29.1 (interne Tourenplanung)"
 MATRIX_MAX_ELEMENTS = 2500      # Quellen × Ziele je ORS-Anfrage (Free-Tier: 3500)
 GEO_MAX_DEVIATION_KM = 25.0     # Adresstreffer weiter als X km vom PLZ-Zentrum → verworfen
 DEFAULT_ROAD_FACTOR = 1.28
@@ -297,12 +309,14 @@ def _read_json(path: Path) -> dict:
 
 
 USE_LOCAL_CACHE = False   # Standard: nichts auf der Festplatte – Speicher ist die Adressdatei (Upload/Download)
-_MEM_CACHE: dict = {}     # Arbeitsspeicher für den laufenden Durchlauf (vorbefüllt aus der Adressdatei)
+# Nur Fallback ohne Streamlit. In der App bekommt jede Sitzung ihren eigenen Speicher (st.session_state),
+# damit Reruns nichts neu abfragen und parallele Sitzungen sich nicht gegenseitig die Caches überschreiben.
+_MEM_CACHE: dict = {}
 
 
-def load_cache(name: str) -> dict:
+def load_cache(name: str, mem: dict | None = None) -> dict:
     """Arbeitsspeicher (+ optional lokaler Cache inkl. alter Ordner). Erfolgreiche Treffer gehen nie verloren."""
-    data = dict(_MEM_CACHE.get(name, {}))
+    data = dict((_MEM_CACHE if mem is None else mem).get(name, {}))
     if not USE_LOCAL_CACHE:
         return data
     for k, v in _read_json(CACHE_DIR / name).items():
@@ -329,14 +343,8 @@ def backup_cache(name: str) -> None:
             pass
 
 
-def cache_info() -> str:
-    geo = _read_json(CACHE_DIR / "geo_cache.json") if USE_LOCAL_CACHE else _MEM_CACHE.get("geo_cache.json", {})
-    ok = sum(1 for v in geo.values() if isinstance(v, dict) and not v.get("fail"))
-    return f"{ok} Adressen gefunden · {len(geo) - ok} offen/fehlgeschlagen"
-
-
-def save_cache(name: str, obj: dict) -> None:
-    _MEM_CACHE[name] = dict(obj)
+def save_cache(name: str, obj: dict, mem: dict | None = None) -> None:
+    (_MEM_CACHE if mem is None else mem)[name] = dict(obj)
     if not USE_LOCAL_CACHE:
         return
     try:
@@ -693,12 +701,18 @@ def hn_of(street: str) -> str:
     return split_street(street)[1]
 
 
-def geocode_overpass(session, street: str, center, radius_m: int = 6000):
+def geocode_overpass(session, street: str, center, radius_m: int = 6000,
+                     name: str | None = None, hn: str | None = None, house_only: bool = False):
     """Adresse direkt in OpenStreetMap: Gebäude/Knoten mit addr:street + addr:housenumber im Umkreis des PLZ-Zentrums.
-    Ohne Tageskontingent. Fallback: Mitte der Straße. Rückgabe (Treffer, Grund)."""
+    Ohne Tageskontingent. Fallback: Mitte der Straße. Rückgabe (Treffer, Grund).
+    name/hn: echter OSM-Straßenname + Hausnummer (aus dem Straßenabgleich) statt Zerlegung von street.
+    house_only: nur Hausnummern-Treffer, keine Straßenmitte (spart eine Abfrage)."""
     if not center:
         return None, "Overpass: kein PLZ-Zentrum"
-    name, hn = split_street(street)
+    if name is None:
+        name, hn_raw = split_street(street)
+        hn = hn_raw if hn is None else hn
+    hn = hn or ""
     name = re.sub(r"\s+", " ", name).strip(" ,.")
     if not name:
         return None, "Overpass: keine Straße"
@@ -715,6 +729,8 @@ def geocode_overpass(session, street: str, center, radius_m: int = 6000):
         if pts:
             p = min(pts, key=lambda x: float(haversine(lat, lon, x[0], x[1])))
             return {"lat": p[0], "lon": p[1], "q": "addr", "src": "osm-overpass"}, ""
+    if house_only:
+        return None, "Overpass: Hausnummer nicht in OSM"
     q = (f'[out:json][timeout:40];way(around:{radius_m},{lat:.5f},{lon:.5f})'
          f'["highway"]["name"="{esc_name}"];out center 10;')
     pts = [p for p in (_el_latlon(e) for e in _ovp_query(session, q)) if p]
@@ -800,12 +816,12 @@ def connection_test(key: str) -> list:
 
 def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_failed: bool = False,
                       progress: Callable[[int, int], None] | None = None,
-                      osm_fallback: bool = True) -> tuple[pd.DataFrame, dict]:
+                      osm_fallback: bool = True, mem: dict | None = None) -> tuple[pd.DataFrame, dict]:
     """provider: 'ors' | 'ovp' (nur Overpass, ohne Kontingent) | 'osm' (Nominatim) | 'cache'.
     Overpass läuft bei allen aktiven Quellen als letzte Stufe mit."""
     backup_cache("geo_cache.json")
-    cache = load_cache("geo_cache.json")
-    save_cache("geo_cache.json", cache)   # zusammengeführten Stand (inkl. alter Ordner) sofort festschreiben
+    cache = load_cache("geo_cache.json", mem)
+    save_cache("geo_cache.json", cache, mem)   # zusammengeführten Stand (inkl. alter Ordner) sofort festschreiben
     stats = {"neu": 0, "fehl": 0, "offen": 0, "abbruch": "", "gruende": {}}
     todo = []
     seen = set()
@@ -837,7 +853,7 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
         lock = threading.Lock()
         state = {"ors_dead": not can_ors, "can_osm": can_osm, "street_fail": 0, "done": 0,
                  "can_photon": provider != "ovp"}
-        street_cache = load_cache("street_cache.json")
+        street_cache = load_cache("street_cache.json", mem)
         jobs: queue.Queue = queue.Queue()
 
         def join(*parts):
@@ -855,13 +871,42 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                 stats["offen"] -= 1
                 state["done"] += 1
                 if state["done"] % 25 == 0:
-                    save_cache("geo_cache.json", cache)
-                    save_cache("street_cache.json", street_cache)
+                    save_cache("geo_cache.json", cache, mem)
+                    save_cache("street_cache.json", street_cache, mem)
 
-        def osm_stage(ss, item, why):
+        def sap_street_name(street):
+            return re.sub(r"\s+", " ", split_street(street)[0]).strip(" ,.")
+
+        def upgrade_house(ss, street, center, res):
+            """Treffer nur auf Straßenmitte, Hausnummer bekannt → Overpass hausnummerngenau (ohne Kontingent).
+            Zuerst mit dem echten OSM-Straßennamen aus dem Straßenabgleich ('HAUPTstraße' → 'Hauptstraße'),
+            sonst in SAP-Schreibweise."""
+            hn = hn_of(street)
+            if not hn or center is None or state["street_fail"] >= 6:
+                return res
+            sap_name, names = sap_street_name(street), []
+            try:
+                hit = resolve_street(ss, street, center, street_cache)
+                state["street_fail"] = 0
+                if hit and hit[1]:
+                    names.append((hit[0], hit[1]))
+            except Exception:
+                state["street_fail"] += 1
+            if sap_name and all(nm != sap_name for nm, _ in names):
+                names.append((sap_name, hn))
+            for nm, h in names:
+                try:
+                    r_ovp, _ = geocode_overpass(ss, street, center, name=nm, hn=h, house_only=True)
+                except Exception:
+                    continue
+                if r_ovp:
+                    return {**r_ovp, "match": f"{nm} {h}"} if nm != sap_name else r_ovp
+            return res
+
+        def osm_stage(ss, item, why, pre=None):
             k, street, plz, city, center = item
-            res, retry_later = None, False
-            if state["can_osm"]:
+            res, retry_later = pre, False   # pre: ORS-Treffer auf Straßenmitte → nur noch Hausnummer suchen
+            if res is None and state["can_osm"]:
                 try:
                     res, w = geocode_nominatim(ss, street, plz, city, center)
                     why = join(why, w)
@@ -883,13 +928,8 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                     why = join(why, str(exc))
                 except Exception as exc:
                     why = join(why, f"Photon-Fehler: {type(exc).__name__}")
-            if res is not None and res.get("q") == "street" and hn_of(street) and center is not None and state["street_fail"] < 6:
-                try:   # Straßenmitte von Photon → Overpass versucht noch die Hausnummer
-                    r_ovp, _ = geocode_overpass(ss, street, center)
-                    if r_ovp and r_ovp.get("q") == "addr":
-                        res = r_ovp
-                except Exception:
-                    pass
+            if res is not None and res.get("q") == "street":
+                res = upgrade_house(ss, street, center, res)   # Straßenmitte (ORS/Nominatim/Photon) → Hausnummer
             if res is None and center is not None and state["street_fail"] < 6:
                 try:
                     r_ovp, w_ovp = geocode_overpass(ss, street, center)
@@ -921,8 +961,13 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                     real, hn, mid = hit
                     full = f"{real} {hn}".strip()
                     res2 = None
+                    if hn and real != sap_street_name(street):
+                        try:   # echter OSM-Name → Overpass hausnummerngenau, spart ORS-Kontingent
+                            res2, _ = geocode_overpass(ss, full, center, name=real, hn=hn, house_only=True)
+                        except Exception:
+                            res2 = None
                     try:
-                        if not state["ors_dead"]:
+                        if res2 is None and not state["ors_dead"]:
                             res2, _ = geocode_ors(ss, key, full, plz, "", center)
                         if res2 is None and state["can_osm"]:
                             res2, _ = geocode_nominatim(ss, full, plz, "", center)
@@ -949,7 +994,8 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                 try:
                     osm_stage(ss, *job)
                 except Exception as exc:
-                    store(job[0][0], None, f"Fehler: {str(exc)[:60]}", True)
+                    pre = job[2]   # ORS-Straßenmitte bleibt erhalten, wenn nur die Hausnummernsuche scheitert
+                    store(job[0][0], pre, "" if pre else f"Fehler: {str(exc)[:60]}", pre is None)
 
         th = threading.Thread(target=worker, daemon=True)
         th.start()
@@ -968,17 +1014,19 @@ def geocode_addresses(df: pd.DataFrame, provider: str, key: str = "", retry_fail
                     state["ors_dead"] = True
                 except Exception as exc:
                     why = f"ORS-Fehler: {str(exc)[:50]}"
-            if res:
+            if res and res.get("q") == "street" and hn_of(street) and center is not None:
+                jobs.put((item, "", res))   # nur Straßenmitte → Overpass sucht die Hausnummer (kein Kontingent)
+            elif res:
                 store(k, res, "")
             else:
-                jobs.put((item, why))   # Nominatim (falls verfügbar) + Overpass – Overpass hat kein Tageskontingent
+                jobs.put((item, why, None))   # Nominatim (falls verfügbar) + Overpass – Overpass hat kein Tageskontingent
         jobs.put(None)
         while th.is_alive():
             if progress:
                 progress(max(0, state["done"] - 1), len(todo))
             th.join(0.5)
-        save_cache("geo_cache.json", cache)
-        save_cache("street_cache.json", street_cache)
+        save_cache("geo_cache.json", cache, mem)
+        save_cache("street_cache.json", street_cache, mem)
 
     out = df.copy()
     lat, lon, gq = out["lat"].tolist(), out["lon"].tolist(), out["gq"].tolist()
@@ -1058,16 +1106,16 @@ STATUS_LABEL = {"datei": "fest (Datei)", "manuell": "fest (manuell)", "addr": "a
                 "street": "Straßenmitte", "plz": "PLZ – bitte prüfen", "geprueft": "Adresse geprüft – wird gesucht"}
 
 
-LAST_HISTORY: dict = {}
-LAST_EXCLUDED: list = []   # SAP-Ausschlussliste aus der Adressdatei
+MATRIX_PROFILES = ("driving-hgv", "driving-car")
+LEGACY_MATRIX_PROFILE = "driving-hgv"   # Adressdateien bis V29 ohne Spalte 'profil' – dort stand „LKW-Entfernungen“
 
 
-def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, dict]:
-    """Liest die Adressdatei (xlsx oder csv). Rückgabe: Adresstabelle, Matrix-Cache {coordkey: [km, min]}.
-    Ein vorhandenes Planungsgedächtnis landet in LAST_HISTORY."""
-    global LAST_HISTORY, LAST_EXCLUDED
-    LAST_HISTORY, LAST_EXCLUDED = {}, []
-    matrix: dict = {}
+def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, dict, dict]:
+    """Liest die Adressdatei (xlsx oder csv).
+    Rückgabe: Adresstabelle, Straßenmatrizen je Profil {profil: {coordkey: [km, min]}},
+    Zusatz {'history': Planungsgedächtnis, 'excluded': SAP-Ausschlussliste, 'legacy_matrix': Matrix ohne Profilangabe}."""
+    matrices: dict = {}
+    meta = {"history": {}, "excluded": [], "legacy_matrix": False}
     if name.lower().endswith(".csv"):
         adr = pd.read_csv(io.BytesIO(file_bytes), sep=None, engine="python", dtype=str, encoding="utf-8-sig")
     else:
@@ -1076,20 +1124,26 @@ def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, 
         if HIST_SHEET in xl.sheet_names:
             try:
                 hs = pd.read_excel(xl, sheet_name=HIST_SHEET, dtype=str)
-                LAST_HISTORY = json.loads("".join(hs["json"].fillna("").tolist()))
+                meta["history"] = json.loads("".join(hs["json"].fillna("").tolist()))
             except Exception:
-                LAST_HISTORY = {}
+                meta["history"] = {}
         if EXCL_SHEET in xl.sheet_names:
             try:
                 ex = pd.read_excel(xl, sheet_name=EXCL_SHEET, dtype=str)
-                LAST_EXCLUDED = parse_sap_list(" ".join(ex.iloc[:, 0].fillna("").tolist()))
+                meta["excluded"] = parse_sap_list(" ".join(ex.iloc[:, 0].fillna("").tolist()))
             except Exception:
-                LAST_EXCLUDED = []
+                meta["excluded"] = []
         if MATRIX_SHEET in xl.sheet_names:
             m = pd.read_excel(xl, sheet_name=MATRIX_SHEET)
+            has_prof = "profil" in [str(c).strip().lower() for c in m.columns]
+            meta["legacy_matrix"] = not has_prof and len(m) > 0
             for r in m.itertuples(index=False):
                 try:
-                    matrix[f"{float(r[0]):.5f},{float(r[1]):.5f}|{float(r[2]):.5f},{float(r[3]):.5f}"] = [float(r[4]), float(r[5])]
+                    prof = str(r[6]).strip() if has_prof and len(r) > 6 else LEGACY_MATRIX_PROFILE
+                    if prof not in MATRIX_PROFILES:
+                        continue
+                    ck = f"{float(r[0]):.5f},{float(r[1]):.5f}|{float(r[2]):.5f},{float(r[3]):.5f}"
+                    matrices.setdefault(prof, {})[ck] = [float(r[4]), float(r[5])]
                 except Exception:
                     continue
     adr.columns = [str(c).strip() for c in adr.columns]
@@ -1100,7 +1154,7 @@ def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, 
     if "SAP" not in adr.columns:
         raise ValueError("Adressdatei braucht eine Spalte SAP")
     adr["SAP"] = pd.to_numeric(adr["SAP"], errors="coerce").astype("Int64")
-    return adr.dropna(subset=["SAP"]).drop_duplicates("SAP", keep="last"), matrix
+    return adr.dropna(subset=["SAP"]).drop_duplicates("SAP", keep="last"), matrices, meta
 
 
 def parse_sap_list(text: str) -> list:
@@ -1155,10 +1209,11 @@ def apply_address_file(df: pd.DataFrame, adr: pd.DataFrame, addresses: bool = Tr
     return out, n_addr, n_coord
 
 
-def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrix_cache: dict,
+def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrices: dict,
                            prev: pd.DataFrame | None = None, history: dict | None = None,
                            excluded: list | None = None) -> bytes:
-    """Aktualisierte Adressdatei: alle Kunden mit bester Koordinate + Straßenmatrix (koordinatenbasiert)."""
+    """Aktualisierte Adressdatei: alle Kunden mit bester Koordinate + Straßenmatrix (koordinatenbasiert).
+    matrices: {profil: {coordkey: [km, min]}} – jedes Profil in eigenen Zeilen (Spalte 'profil')."""
     from openpyxl.styles import Alignment, Font, PatternFill
     orig = original.drop_duplicates("SAP").set_index("SAP")
     prev_idx = prev.set_index("SAP") if prev is not None and len(prev) else None
@@ -1183,21 +1238,25 @@ def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrix_cac
     adr = pd.DataFrame(rows, columns=ADDR_COLUMNS).sort_values(["Status", "Quelle", "SAP"],
                                                                   key=lambda s: s.map(lambda v: 0 if "prüfen" in str(v) or v in ("offen", "keine Adresse") else 1) if s.name == "Status" else s)
     mrows = []
-    for k, v in matrix_cache.items():
-        try:
-            a, b = k.split("|")
-            la1, lo1 = a.split(",")
-            la2, lo2 = b.split(",")
-            mrows.append([float(la1), float(lo1), float(la2), float(lo2), v[0], v[1]])
-        except Exception:
-            continue
-    mat = pd.DataFrame(mrows, columns=["von_lat", "von_lon", "nach_lat", "nach_lon", "km", "min"])
+    for prof, cache in (matrices or {}).items():
+        for k, v in (cache or {}).items():
+            try:
+                a, b = k.split("|")
+                la1, lo1 = a.split(",")
+                la2, lo2 = b.split(",")
+                mrows.append([float(la1), float(lo1), float(la2), float(lo2), v[0], v[1], prof])
+            except Exception:
+                continue
+    mat = pd.DataFrame(mrows, columns=["von_lat", "von_lon", "nach_lat", "nach_lon", "km", "min", "profil"])
+    n_prof = {p: len(c or {}) for p, c in (matrices or {}).items() if c}
     info = pd.DataFrame({"Info": [
         "Adressdatei für den Feiertags-Wochenplaner – bei jedem Lauf hochladen, danach die aktualisierte Version wieder herunterladen.",
         "Blatt Adressen: Straße/Plz/Ort überschreiben die SAP-Adresse. Sind lat/lon gefüllt, gilt die Koordinate fest (kein Geocoding).",
         "Status 'PLZ – bitte prüfen' / 'offen': Straße korrigieren ODER lat/lon eintragen (Google Maps: Rechtsklick → Koordinaten).",
         "Spalte Strasse_SAP ist nur zur Info (Original aus SAP).",
-        "Blatt Strassenmatrix: LKW-Entfernungen (km) und Fahrzeiten (Min.) – nicht bearbeiten.",
+        "Blatt Strassenmatrix: Entfernungen (km) und Fahrzeiten (Min.) je Profil (Spalte profil: driving-hgv = LKW, "
+        "driving-car = PKW) – nicht bearbeiten. Enthalten: "
+        + (", ".join(f"{p} {n}" for p, n in n_prof.items()) or "keine") + ".",
         "Blatt Ausschluss: SAP-Nummern, die der Planer nie umplant (eine je Zeile). Darf hier direkt gepflegt werden.",
         f"Erstellt: {datetime.now():%d.%m.%Y %H:%M} · {APP_BUILD}",
     ]})
@@ -1547,9 +1606,9 @@ def _matrix_batches(missing: dict, nodes: list) -> list:
 
 def fetch_matrix(nodes: list, pairs: set, key: str = "", max_requests: int = 450,
                  progress: Callable[[int, int], None] | None = None,
-                 profile: str = "driving-hgv") -> tuple[dict, dict, dict]:
+                 profile: str = "driving-hgv", mem: dict | None = None) -> tuple[dict, dict, dict]:
     cache_name = f"matrix_cache_{profile}.json"
-    cache = load_cache(cache_name)
+    cache = load_cache(cache_name, mem)
     missing: dict = defaultdict(set)
     for i, j in pairs:
         if _ckey(nodes, i, j) not in cache:
@@ -1603,9 +1662,9 @@ def fetch_matrix(nodes: list, pairs: set, key: str = "", max_requests: int = 450
                     cache[ck] = [round(float(km), 2), round(float(sec) / 60.0, 1)]
             stats["anfragen"] += 1
             if stats["anfragen"] % 10 == 0:
-                save_cache(cache_name, cache)
+                save_cache(cache_name, cache, mem)
             time.sleep(1.6)
-        save_cache(cache_name, cache)
+        save_cache(cache_name, cache, mem)
 
     mat, ratios, speeds = {}, [], []
     for i, j in pairs:
@@ -2480,7 +2539,13 @@ function buildClusters(fromDays,toDay,accept=null){
       else if(ms.length<newAt&&scored.length)t=scored[0].r;
       ms.forEach(x=>x.skip=true);
       let rest=ms;
-      if(t){const take=ms.slice(0,Math.max(0,hardRoom(t)));rest=ms.slice(take.length);blockTaken.add(t.id);reserve.set(t.id,(reserve.get(t.id)||0)+take.length);out.push(makeCluster({kind:'insert',source:src,target:t,family:null,members:take,toDay,note:`Tourblock ${DAY_SHORT[from.day]} ${from.tour}`+(rest.length?' (Rest als eigene Tour)':' geschlossen'),block:true}))}
+      if(t){
+        // harte Sperre: Kunden mit anderem Zeitfenster gehen nicht mit, sondern in den Rest (eigene Tour); Malus: passende zuerst
+        const fit=ms.filter(x=>slotOk(x.a,t)),off=ms.filter(x=>!slotOk(x.a,t));
+        if(!TW_HARD)fit.sort((p,q)=>(slotGap(p.a,t)>TIME_TOL)-(slotGap(q.a,t)>TIME_TOL));
+        const take=fit.slice(0,Math.max(0,hardRoom(t)));rest=[...fit.slice(take.length),...off];
+        if(take.length){blockTaken.add(t.id);reserve.set(t.id,(reserve.get(t.id)||0)+take.length);out.push(makeCluster({kind:'insert',source:src,target:t,family:null,members:take,toDay,note:`Tourblock ${DAY_SHORT[from.day]} ${from.tour}`+(rest.length?' (Rest als eigene Tour'+(off.length?`, ${off.length} wegen Zeitfenster`:'')+')':' geschlossen'),block:true}))}
+      }
       if(rest.length)chunkGeo(rest,srcCap(src)).forEach(ch=>out.push(makeCluster({kind:'new',source:src,family:null,members:ch,toDay,used,note:`Tourblock ${DAY_SHORT[from.day]} ${from.tour}`,block:true})));
     });
   }
@@ -2658,7 +2723,9 @@ function snapshotPlan(){return {list:[...routes],items:routes.map(r=>[r,[...r.it
 function restorePlan(s){routes=s.list;s.items.forEach(([r,it])=>{r.items=it;it.forEach(a=>{a.currentDay=r.day;a.currentTour=r.tour});evaluateRoute(r)});unplanned=s.unplanned;s.notes.forEach(([a,n])=>a.planNote=n)}
 function optWeights(){const n=(id,d)=>{const v=Number(document.getElementById(id)?.value);return Number.isFinite(v)?v:d};return {dna:n('dnaWeight',4),fixed:n('tourFixed',60),regular:!!document.getElementById('optRegular')?.checked}}
 function dnaPairs(items){let n=0;for(let i=0;i<items.length;i++)for(let j=i+1;j<items.length;j++){const A=items[i],B=items[j];if(affinity(A,B)>=.5)n++;if(A.originalRouteId===B.originalRouteId&&outageDays.has(A.originalDay))n+=4}return n}   // Kunden derselben Ausfalltour bleiben zusammen
-function routeTotal(items,r,W,dna){if(!items.length)return 0;return seqCost(evalSequence(items,r))-W.dna*(dna??dnaPairs(items))+W.fixed}
+/* Zeitfenster-Malus (nur Modus „Malus“): 20 Min. + ¼ der Überschreitung je Kunde außerhalb der Toleranz */
+function slotPen(a,r){if(TW_HARD)return 0;const g=slotGap(a,r);return g>TIME_TOL?20+(g-TIME_TOL)*.25:0}
+function routeTotal(items,r,W,dna){if(!items.length)return 0;let sp=0;if(!TW_HARD)for(const a of items)sp+=slotPen(a,r);return seqCost(evalSequence(items,r))+sp-W.dna*(dna??dnaPairs(items))+W.fixed}
 function dayKm(day){return routes.filter(r=>r.day===day&&r.items.length).reduce((s,r)=>s+evalSequence(r.items,r).km,0)}
 function optimizeDay(day,silent=false){
   const W=optWeights(),cand=routes.filter(r=>r.day===day&&!isLocked(r));
@@ -2678,7 +2745,7 @@ function optimizeDay(day,silent=false){
       if(!A.items.includes(a)||!movable(a,A))continue;
       const without=A.items.filter(x=>x!==a),cA=routeTotal(without,A,W),gainA=cost.get(A)-cA;let best=null;
       for(const B of cand){
-        if(B===A||B.source!==A.source)continue;
+        if(B===A||B.source!==A.source||!slotOk(a,B))continue;   // harte Sperre: nie in eine Tour mit anderem Zeitfenster
         if(!B.items.length||B.items.length>=Math.min(capOf(B),routeSoftLimit(B)))continue;
         const c=centOf(B);if(c&&hasGeo(a)&&dist(a,c)>70)continue;
         const cB=cost.get(B),dnaB=dnaPairs(B.items.concat([a]));
@@ -2691,7 +2758,7 @@ function optimizeDay(day,silent=false){
       const A=cand[i],B=cand[j];if(A.source!==B.source||!A.items.length||!B.items.length)continue;
       const ca=centOf(A),cb=centOf(B);if(ca&&cb&&dist(ca,cb)>60)continue;
       let done=false;
-      for(const a of [...A.items]){if(done)break;if(!movable(a,A))continue;for(const b of [...B.items]){if(!movable(b,B))continue;
+      for(const a of [...A.items]){if(done)break;if(!movable(a,A)||!slotOk(a,B))continue;for(const b of [...B.items]){if(!movable(b,B)||!slotOk(b,A))continue;
         if(hasGeo(a)&&hasGeo(b)&&cb&&ca&&dist(a,cb)>70&&dist(b,ca)>70)continue;
         const baseA=A.items.filter(x=>x!==a),baseB=B.items.filter(x=>x!==b),dA=dnaPairs(baseA.concat([b])),dB=dnaPairs(baseB.concat([a]));let bestS=null,bestT=null;
         for(let ka=0;ka<=baseA.length;ka++){const sA=baseA.slice(0,ka).concat([b],baseA.slice(ka));const nA=routeTotal(sA,A,W,dA);if(!bestS||nA<bestS.nA)bestS={sA,nA}}
@@ -3097,11 +3164,34 @@ def _host_from(url: str) -> str:
     return f"{u.scheme or 'https'}://{u.netloc or u.path.split('/')[0]}"
 
 
+def _digest(*parts) -> str:
+    """Fingerabdruck der Eingaben einer Rechenstufe (Bytes direkt, alles andere über repr)."""
+    h = hashlib.sha1()
+    for p in parts:
+        h.update(p if isinstance(p, (bytes, bytearray)) else repr(p).encode("utf-8", "replace"))
+        h.update(b"\x1f")
+    return h.hexdigest()
+
+
+def _no_rerun(st) -> dict:
+    """Download ohne Rerun (Streamlit ≥ 1.43: on_click='ignore'); ältere Versionen ohne das Argument."""
+    try:
+        ver = tuple(int(x) for x in re.findall(r"\d+", st.__version__)[:2])
+        return {"on_click": "ignore"} if ver >= (1, 43) else {}
+    except Exception:
+        return {}
+
+
 def main():
     global ORS_HOST
     import os
 
     import streamlit as st
+
+    ss = st.session_state
+    # Sitzungsspeicher: Geocoding-, Straßen- und Matrix-Cache überleben Reruns (Widget-Klicks, Downloads),
+    # sind aber je Browser-Sitzung getrennt – nichts wird zwischen Nutzern auf Streamlit Cloud geteilt.
+    mem = ss.setdefault("fwp_mem_cache", {})
 
     st.set_page_config(page_title="Feiertags-Wochenplaner V29", page_icon="📅", layout="wide")
     st.title("Feiertags-Wochenplaner V29 – HTML Generator")
@@ -3181,11 +3271,19 @@ def main():
             use_local = st.checkbox("Zusätzlich lokalen Cache nutzen", value=False,
                                     help=f"Aus: nichts wird auf dem Rechner gespeichert. Ein: Ordner {CACHE_DIR}")
         st.caption("Ohne lokalen Cache ist die **Adressdatei** der Speicher: Kunden mit Koordinaten darin werden nicht mehr gesucht, "
-                   "Straßenentfernungen daraus nicht erneut abgefragt.")
-        if st.button("Verbindungstest (ORS · Nominatim · Overpass)"):
-            with st.spinner("Teste Dienste …"):
-                ORS_HOST = _host_from(ors_base)
-                st.dataframe(pd.DataFrame(connection_test(ors_key)), use_container_width=True, hide_index=True)
+                   "Straßenentfernungen daraus nicht erneut abgefragt. Innerhalb der Sitzung wird nur neu gerechnet, "
+                   "wenn sich Dateien oder Einstellungen ändern – Klicks und Downloads fragen nichts erneut ab.")
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("Verbindungstest (ORS · Nominatim · Overpass)"):
+                with st.spinner("Teste Dienste …"):
+                    ORS_HOST = _host_from(ors_base)
+                    st.dataframe(pd.DataFrame(connection_test(ors_key)), use_container_width=True, hide_index=True)
+        with b2:
+            if st.button("Offene Adressen & Strecken jetzt nachladen",
+                         help="Nach einem Abbruch (Kontingent, Serverfehler): fragt nur ab, was noch fehlt. "
+                              "Bereits Gefundenes bleibt im Sitzungsspeicher."):
+                ss["fwp_force"] = ss.get("fwp_force", 0) + 1
 
     if upload is None or starts_upload is None or info_upload is None:
         st.info("Bitte Quelldatei, Normal_Tourenstart.csv und Kisoft_Kunden.csv hochladen.")
@@ -3193,40 +3291,79 @@ def main():
 
     global USE_LOCAL_CACHE
     USE_LOCAL_CACHE = bool(use_local)
-    _MEM_CACHE.clear()
-    adr_prev, n_fix = None, 0
+    ORS_HOST = _host_from(ors_base)
+    LIM_ORS_GEO.set(ors_rate)
+    force = ss.get("fwp_force", 0)
+
+    def stage(name: str, key: str, fn):
+        """Rechenstufe nur ausführen, wenn sich ihre Eingaben geändert haben – sonst Ergebnis aus der Sitzung."""
+        hit = ss.get("fwp_stage_" + name)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        val = fn()
+        ss["fwp_stage_" + name] = (key, val)
+        return val
+
+    source_bytes = upload.getvalue()
+    info_bytes = info_upload.getvalue()
+    addr_bytes = addr_upload.getvalue() if addr_upload is not None else b""
+    addr_name = addr_upload.name if addr_upload is not None else ""
+
+    # 1) Einlesen + Adressdatei ------------------------------------------------------------------
+    def do_load():
+        df = read_source(source_bytes)
+        original_addr = df[["SAP", "Strasse", "Plz", "Ort"]].copy()
+        df = enrich_customer_info(df, read_kisoft(info_bytes))
+        df = enrich_load_orders(df, source_bytes)
+        adr_prev, mats, n_adr, n_fix = None, {}, 0, 0
+        meta = {"history": {}, "excluded": [], "legacy_matrix": False}
+        if addr_upload is not None:
+            adr_prev, mats, meta = read_address_file(addr_bytes, addr_name)
+            df, n_adr, _ = apply_address_file(df, adr_prev, addresses=True, coords=False)
+        geo0 = enrich_geo(df)
+        if adr_prev is not None:
+            geo0, _, n_fix = apply_address_file(geo0, adr_prev, addresses=False, coords=True)
+        for prof, cache in mats.items():   # Straßenwerte der Datei in den Sitzungsspeicher, je Profil getrennt
+            tgt = mem.setdefault(f"matrix_cache_{prof}.json", {})
+            for k_, v_ in cache.items():
+                tgt.setdefault(k_, v_)
+        return {"geo": geo0, "original_addr": original_addr, "adr_prev": adr_prev, "meta": meta,
+                "n_adr": n_adr, "n_fix": n_fix, "n_mat": {p: len(c) for p, c in mats.items()}}
+
+    k_load = _digest(source_bytes, info_bytes, addr_bytes, addr_name)
     try:
         with st.spinner("Dateien werden zusammengeführt …"):
-            source_bytes = upload.getvalue()
-            df = read_source(source_bytes)
-            original_addr = df[["SAP", "Strasse", "Plz", "Ort"]].copy()
-            df = enrich_customer_info(df, read_kisoft(info_upload.getvalue()))
-            df = enrich_load_orders(df, source_bytes)
-            if addr_upload is not None:
-                adr_prev, mat_prev = read_address_file(addr_upload.getvalue(), addr_upload.name)
-                df, n_adr, _ = apply_address_file(df, adr_prev, addresses=True, coords=False)
-                _MEM_CACHE[f"matrix_cache_{profile}.json"] = mat_prev
-            geo = enrich_geo(df)
-            if adr_prev is not None:
-                geo, _, n_fix = apply_address_file(geo, adr_prev, addresses=False, coords=True)
-                st.caption(f"Adressdatei: {n_adr} Adressen korrigiert · {n_fix} Kunden mit fester Koordinate · "
-                           f"{len(mat_prev)} Straßenentfernungen übernommen.")
+            L = stage("load", k_load, do_load)
     except Exception as exc:
         st.error(f"Fehler: {exc}")
         return
+    meta = L["meta"]
+    if L["adr_prev"] is not None:
+        mat_txt = " · ".join(f"{n} Straßenentfernungen {'LKW' if p == 'driving-hgv' else 'PKW'}" for p, n in L["n_mat"].items() if n)
+        st.caption(f"Adressdatei: {L['n_adr']} Adressen korrigiert · {L['n_fix']} Kunden mit fester Koordinate · "
+                   + (mat_txt or "keine Straßenentfernungen") + " übernommen.")
+        if meta.get("legacy_matrix") and profile != LEGACY_MATRIX_PROFILE:
+            st.caption("Straßenmatrix der Adressdatei ist ohne Profilangabe (alte Version) → als LKW übernommen. "
+                       "Für PKW werden die Strecken neu abgefragt; die LKW-Werte bleiben in der Datei erhalten.")
 
-    ORS_HOST = _host_from(ors_base)
-    LIM_ORS_GEO.set(ors_rate)
+    # 2) Adressen verorten -----------------------------------------------------------------------
     provider = {"OpenRouteService": "ors", "Overpass (OSM, ohne Kontingent)": "ovp", "Photon (OSM, ohne Kontingent)": "photon",
                 "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
     if provider == "ors" and not ors_key:
         st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt.")
-    bar = st.progress(0.0, text="Adressen verorten …")
-    geo, gstats = geocode_addresses(
-        geo, provider, ors_key, retry_failed, osm_fallback=osm_fallback,
-        progress=lambda i, n: bar.progress(min(1.0, (i + 1) / max(1, n)), text=f"Adressen verorten … {i + 1}/{n}"),
-    )
-    bar.empty()
+
+    def do_geo():
+        bar = st.progress(0.0, text="Adressen verorten …")
+        try:
+            return geocode_addresses(
+                L["geo"], provider, ors_key, retry_failed, osm_fallback=osm_fallback, mem=mem,
+                progress=lambda i, n: bar.progress(min(1.0, (i + 1) / max(1, n)), text=f"Adressen verorten … {i + 1}/{n}"),
+            )
+        finally:
+            bar.empty()
+
+    k_geo = _digest(k_load, provider, retry_failed, osm_fallback, ors_key, ORS_HOST, force)
+    geo, gstats = stage("geo", k_geo, do_geo)
     n_match = int((geo.get("geo_match", pd.Series(dtype=str)).fillna("") != "").sum())
     if n_match:
         st.caption(f"Straßenabgleich (SAP-Abkürzungen → OSM-Straßen): {n_match} Kunden aufgelöst.")
@@ -3236,43 +3373,67 @@ def main():
     if ORS_QUOTA.get("geocode"):
         st.caption(f"ORS-Adresssuche: noch {ORS_QUOTA['geocode'][0]} Anfragen im Kontingent.")
     if gstats["abbruch"]:
-        st.warning(f"Geocoding abgebrochen: {gstats['abbruch']} – {gstats['offen']} Adressen offen, nächster Lauf macht weiter.")
+        st.warning(f"Geocoding abgebrochen: {gstats['abbruch']} – {gstats['offen']} Adressen offen. "
+                   "Später **„Offene Adressen & Strecken jetzt nachladen“** oder beim nächsten Lauf mit der Adressdatei.")
 
-    geo, nodes, node_src = build_nodes(geo)
-    matrix, net, pairs = {}, None, set()
-    if use_matrix:
+    # 3) Straßenmatrix ---------------------------------------------------------------------------
+    def do_matrix():
+        g, nodes, node_src = build_nodes(geo)
+        if not use_matrix:
+            return {"geo": g, "nodes": nodes, "pairs": set(), "matrix": {}, "net": None, "mstats": None}
         pairs = needed_pairs(nodes, node_src, k_neighbors)
-        bar = st.progress(0.0, text="LKW-Matrix …")
-        matrix, net, mstats = fetch_matrix(
-            nodes, pairs, ors_key, profile=profile,
-            progress=lambda i, n: bar.progress(min(1.0, (i + 1) / max(1, n)), text=f"LKW-Matrix … Anfrage {i + 1}/{n}"),
-        )
-        bar.empty()
+        bar = st.progress(0.0, text="LKW-Matrix …" if profile == "driving-hgv" else "PKW-Matrix …")
+        try:
+            matrix, net, mstats = fetch_matrix(
+                nodes, pairs, ors_key, profile=profile, mem=mem,
+                progress=lambda i, n: bar.progress(min(1.0, (i + 1) / max(1, n)), text=f"Straßenmatrix … Anfrage {i + 1}/{n}"),
+            )
+        finally:
+            bar.empty()
+        return {"geo": g, "nodes": nodes, "pairs": pairs, "matrix": matrix, "net": net, "mstats": mstats}
+
+    k_mat = _digest(k_geo, use_matrix, profile, k_neighbors, ors_key if use_matrix else "", force)
+    M = stage("matrix", k_mat, do_matrix)
+    net, mstats = M["net"], M["mstats"]
+    if mstats:
         if mstats["abbruch"]:
             st.warning(f"Straßenmatrix unvollständig: {mstats['abbruch']} – fehlende Strecken werden per Luftlinie geschätzt. "
-                       f"Beim nächsten Lauf mit der aktualisierten Adressdatei werden nur die fehlenden nachgeladen.")
+                       "Rest mit **„Offene Adressen & Strecken jetzt nachladen“** (später) oder beim nächsten Lauf mit der "
+                       "aktualisierten Adressdatei.")
         elif mstats["fehlend"] and not ors_key:
             st.caption(f"{mstats['fehlend']} Verbindungen nicht im Cache – ohne ORS-Key per Luftlinie geschätzt.")
 
-    history = dict(LAST_HISTORY) if adr_prev is not None and not hist_rebuild else {}
-    if hist_rebuild and not hist_uploads:
-        st.warning("Neuaufbau gewählt, aber keine Historien hochgeladen – das Planungsgedächtnis ist leer.")
-    if hist_uploads:
-        known = {fn for H in history.values() for fn in H.get("files", [])}
-        fresh = [(f.name, f.getvalue()) for f in hist_uploads if f.name not in known]
-        if len(fresh) < len(hist_uploads):
-            st.caption("Schon im Planungsgedächtnis (nicht doppelt gezählt): "
-                       + ", ".join(f.name for f in hist_uploads if f.name in known))
-        if fresh:
-            with st.spinner("Feiertags-Historie wird ausgewertet …"):
-                h_new, h_log = analyze_history(read_source(source_bytes), fresh, half_life)
-                history = merge_history(history, h_new)
-            st.dataframe(pd.DataFrame(h_log), use_container_width=True, hide_index=True)
-    if history:
-        st.caption("Planungsgedächtnis: " + " · ".join(f"{d}: {len(H.get('files', []))} Plan/Pläne, {len(H.get('tours', {}))} Touren"
-                                                      for d, H in history.items()))
+    # 4) Planungsgedächtnis ----------------------------------------------------------------------
+    hist_files = [(f.name, f.getvalue()) for f in (hist_uploads or [])]
 
-    excl_default = "\n".join(str(s) for s in (LAST_EXCLUDED if adr_prev is not None else []))
+    def do_hist():
+        history = dict(meta.get("history") or {}) if L["adr_prev"] is not None and not hist_rebuild else {}
+        log, skipped = None, []
+        if hist_files:
+            known = {fn for H in history.values() for fn in H.get("files", [])}
+            fresh = [(n_, b_) for n_, b_ in hist_files if n_ not in known]
+            skipped = [n_ for n_, _ in hist_files if n_ in known]
+            if fresh:
+                with st.spinner("Feiertags-Historie wird ausgewertet …"):
+                    h_new, log = analyze_history(read_source(source_bytes), fresh, half_life)
+                    history = merge_history(history, h_new)
+        return {"history": history, "log": log, "skipped": skipped}
+
+    k_hist = _digest(k_load, hist_rebuild, half_life, [(n_, hashlib.md5(b_).hexdigest()) for n_, b_ in hist_files])
+    H = stage("hist", k_hist, do_hist)
+    history = H["history"]
+    if hist_rebuild and not hist_files:
+        st.warning("Neuaufbau gewählt, aber keine Historien hochgeladen – das Planungsgedächtnis ist leer.")
+    if H["skipped"]:
+        st.caption("Schon im Planungsgedächtnis (nicht doppelt gezählt): " + ", ".join(H["skipped"]))
+    if H["log"]:
+        st.dataframe(pd.DataFrame(H["log"]), use_container_width=True, hide_index=True)
+    if history:
+        st.caption("Planungsgedächtnis: " + " · ".join(f"{d}: {len(Hd.get('files', []))} Plan/Pläne, {len(Hd.get('tours', {}))} Touren"
+                                                      for d, Hd in history.items()))
+
+    # 5) Ausschlussliste --------------------------------------------------------------------------
+    excl_default = "\n".join(str(s) for s in (meta.get("excluded") or [])) if L["adr_prev"] is not None else ""
     excl_txt = st.text_area("SAP-Ausschlussliste (wird nie umgeplant · wird in der Adressdatei gespeichert)", value=excl_default,
                             height=110, help="SAP-Nummern, getrennt durch Zeile, Komma, Semikolon oder Leerzeichen.")
     excluded = parse_sap_list(excl_txt)
@@ -3281,23 +3442,43 @@ def main():
     st.caption(f"{len(excluded)} SAP ausgeschlossen" + (f" · davon {len(unknown)} nicht in der Quelldatei: "
                                                         + ", ".join(map(str, unknown[:15])) + (" …" if len(unknown) > 15 else "") if unknown else ""))
 
-    matched, ref_name = None, ""
-    if ref_upload is not None:
-        try:
-            geo, matched = attach_reference(geo, ref_upload.getvalue())
-            ref_name = ref_upload.name
-        except Exception as exc:
-            st.warning(f"Referenzplan ignoriert: {exc}")
+    # 6) HTML + Adressdatei ----------------------------------------------------------------------
+    starts_bytes = starts_upload.getvalue()
+    ref_bytes = ref_upload.getvalue() if ref_upload is not None else b""
 
-    try:
+    def do_out():
+        g, matched, ref_name, ref_warn = M["geo"], None, "", ""
+        if ref_upload is not None:
+            try:
+                g, matched = attach_reference(g, ref_bytes)
+                ref_name = ref_upload.name
+            except Exception as exc:
+                ref_warn = str(exc)
         html = build_html(
-            make_payload(geo), read_tour_starts(starts_upload.getvalue()), upload.name, source_bytes,
-            get_day_column_map(source_bytes), info_upload.name, starts_upload.name, ref_name, matrix, net, history,
+            make_payload(g), read_tour_starts(starts_bytes), upload.name, source_bytes,
+            get_day_column_map(source_bytes), info_upload.name, starts_upload.name, ref_name, M["matrix"], net, history,
             excluded,
         )
+        # Adressdatei: alle Profile aus dem Sitzungsspeicher. Mit berechneter Matrix nur die Paare der aktuellen Kunden,
+        # ohne Berechnung alles unverändert – sonst ginge die gespeicherte Matrix verloren.
+        mats = {p: mem.get(f"matrix_cache_{p}.json", {}) for p in MATRIX_PROFILES}
+        if use_matrix and M["pairs"]:
+            keep = {_ckey(M["nodes"], i, j) for i, j in M["pairs"]}
+            mats = {p: {k_: v_ for k_, v_ in c.items() if k_ in keep} for p, c in mats.items()}
+        wb = build_address_workbook(g, L["original_addr"], mats, L["adr_prev"], history, excluded)
+        return {"html": html.encode("utf-8"), "wb": wb, "geo": g, "matched": matched, "ref_warn": ref_warn}
+
+    k_out = _digest(k_mat, k_hist, excluded, ref_bytes, ref_upload.name if ref_upload is not None else "",
+                    starts_bytes, upload.name, info_upload.name, starts_upload.name)
+    try:
+        with st.spinner("HTML und Adressdatei werden erstellt …"):
+            O = stage("out", k_out, do_out)
     except Exception as exc:
         st.error(f"Fehler: {exc}")
         return
+    geo, matched = O["geo"], O["matched"]
+    if O["ref_warn"]:
+        st.warning(f"Referenzplan ignoriert: {O['ref_warn']}")
 
     deliveries = sum(int(geo[d].notna().sum()) for d in DAY_COLUMNS)
     gq = geo["gq"].fillna("keine")
@@ -3314,18 +3495,15 @@ def main():
     with d1:
         st.download_button(
             "Feiertags_Wochenplaner_V29.html herunterladen",
-            data=html.encode("utf-8"), file_name="Feiertags_Wochenplaner_V29.html",
-            mime="text/html", use_container_width=True,
+            data=O["html"], file_name="Feiertags_Wochenplaner_V29.html",
+            mime="text/html", use_container_width=True, **_no_rerun(st),
         )
     with d2:
-        full_mat = _MEM_CACHE.get(f"matrix_cache_{profile}.json", {})
-        keep = {_ckey(nodes, i, j) for i, j in pairs} if use_matrix else set()
-        wb = build_address_workbook(geo, original_addr, {k_: v_ for k_, v_ in full_mat.items() if k_ in keep}, adr_prev, history,
-                                    excluded)
         st.download_button(
-            "Adressdatei aktualisiert (.xlsx)", data=wb, file_name="Kunden_Adressdatei.xlsx",
+            "Adressdatei aktualisiert (.xlsx)", data=O["wb"], file_name="Kunden_Adressdatei.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True,
-            help="Enthält alle gefundenen Koordinaten und Straßenentfernungen. Beim nächsten Lauf wieder hochladen.",
+            help="Enthält alle gefundenen Koordinaten und Straßenentfernungen (LKW und PKW getrennt). Beim nächsten Lauf wieder hochladen.",
+            **_no_rerun(st),
         )
     cols_bad = [c for c in ["SAP", "Name", "Strasse", "Plz", "Ort", "gq", "geo_grund"] if c in geo.columns]
     bad = geo[geo["gq"].isin(["plz"]) | geo["gq"].isna()][cols_bad].drop_duplicates("SAP")

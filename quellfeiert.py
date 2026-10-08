@@ -2297,12 +2297,11 @@ function syncExtras(){
   if(EXTRA_T&&EXTRA_T!==T)removeExtras();
   const active=activeSources(),has=new Set(assignments.filter(a=>a.extra).map(a=>a.uid));let n=0;
   CUSTOMERS.forEach(c=>{
-    if(has.has(c.uid)||!active.includes(c.Quelle)||excludedSaps.has(normSap(c.SAP)))return;
+    if(has.has(c.uid)||!active.includes(c.Quelle))return;
     const days=DAY_ORDER.filter(d=>c[d]!=null&&c[d]!=='');if(!days.length)return;
     if(days.includes(T)||days.some(d=>outageDays.has(d)))return;           // hat schon Zieltag bzw. wird ohnehin verschoben
     const ti=DAY_ORDER.indexOf(T),home=days.slice().sort((x,y)=>Math.abs(DAY_ORDER.indexOf(x)-ti)-Math.abs(DAY_ORDER.indexOf(y)-ti)||DAY_ORDER.indexOf(x)-DAY_ORDER.indexOf(y))[0];
-    const hr=getRoute(routeId(home,c.Quelle,c[home]));if(hr&&isLocked(hr))return;
-    const a={...c,aid:c.uid+'::+'+T,originalDay:home,originalTour:String(c[home]),currentDay:null,currentTour:null,originalRouteId:routeId(home,c.Quelle,c[home]),originalLoadOrder:null,loadOrderRow:null,extra:true,planNote:'Zusatz-Lieferung'};
+        const a={...c,aid:c.uid+'::+'+T,originalDay:home,originalTour:String(c[home]),currentDay:null,currentTour:null,originalRouteId:routeId(home,c.Quelle,c[home]),originalLoadOrder:null,loadOrderRow:null,extra:true,planNote:'Zusatz-Lieferung'};
     assignments.push(a);unplanned.push(a);n++;
   });
   EXTRA_T=T;return n;
@@ -3041,13 +3040,23 @@ function renderBacktest(){
   `<div class="reportsection"><h3>Abweichungen je Kunde</h3>${reportTable(miss,['SAP','Kunde','Ort','Original','Referenz','Algorithmus'])}</div>`;
 }
 function openBacktest(){renderBacktest();document.getElementById('backtestModal').classList.add('show')}
-/* „alle Kunden am Zieltag“: Ausfalltage danach komplett leeren (Rest → ungeplant) */
+/* „alle Kunden am Zieltag“: Ausfalltage komplett leeren – ALLE Kunden (auch gesperrt/ausgeschlossen/über Maximum) auf den Zieltag */
 function clearOutageDays(){
   if(!document.getElementById('allOnTarget')?.checked)return;
-  routes.filter(r=>outageDays.has(r.day)).forEach(r=>{
-    r.items.splice(0).forEach(a=>{if(!unplanned.some(u=>u.aid===a.aid))unplanned.push(a);if(!cancelReasons.has(a.aid))cancelReasons.set(a.aid,'Ausfalltag geleert (alle Kunden am Zieltag)')});
-    evaluateRoute(r);
+  const T=targetDays()[0];if(!T)return;
+  const pool=[];
+  routes.filter(r=>outageDays.has(r.day)).forEach(r=>{r.items.splice(0).forEach(a=>pool.push(a));evaluateRoute(r)});
+  unplanned.slice().forEach(a=>{if(cancelReasons.get(a.aid)==='Zieltag bereits vorhanden')return;if(a.extra||cancelledAids.has(a.aid)||outageDays.has(a.originalDay)){unplanned.splice(unplanned.indexOf(a),1);pool.push(a)}});
+  const touched=new Set();
+  pool.forEach(a=>{
+    const rs=routes.filter(r=>r.day===T&&String(r.source)===String(a.Quelle));
+    let best=null,bd=Infinity;
+    rs.forEach(r=>{let d=Infinity;r.items.forEach(x=>{const k=dist(a,x);if(Number.isFinite(k)&&k<d)d=k});if(d===Infinity)d=1e6+r.items.length;if(d<bd){bd=d;best=r}});
+    if(!best){let name='Rest',n=2;while(getRoute(routeId(T,a.Quelle,name)))name='Rest-'+(n++);best={id:routeId(T,a.Quelle,name),day:T,source:a.Quelle,tour:name,items:[],originalCount:0,manuallyCreated:true,normalStart:'',templateIds:[]};routes.push(best);routes.sort(daySort)}
+    best.items.push(a);a.currentDay=best.day;a.currentTour=best.tour;a.planNote='Alle Kunden am Zieltag';
+    cancelledAids.delete(a.aid);autoCoveredAids.delete(a.aid);cancelReasons.delete(a.aid);touched.add(best);
   });
+  touched.forEach(r=>optimizeRouteOrder(r));
 }
 function runAutoplan(silent=false){
   if(!silent){

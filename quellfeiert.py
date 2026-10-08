@@ -2349,6 +2349,7 @@ function historyTargetTour(a,toDay){
 /* Sa-Ausfall ohne Folgetag in der Woche: Kunden, die früher überwiegend weder auf Fr noch auf einen anderen Tag gingen
    (Historie „entfallen“), liefen beim Disponenten auf Montag der Folgewoche → nicht in die Woche einplanen, im Report ausweisen */
 function nextWeekCandidate(a){
+  if(document.getElementById('allOnTarget')?.checked)return false;   // „alle Kunden am Zieltag“: nichts in die Folgewoche schieben
   if(neighborDays().next)return false;
   const S=HISTORY?.[a.originalDay]?.sap?.[a.Quelle+'|'+sapOf(a)];
   return !!S&&(S.cov||0)>0&&(S.cov||0)>(S.prev||0)+(S.next||0);
@@ -3040,6 +3041,14 @@ function renderBacktest(){
   `<div class="reportsection"><h3>Abweichungen je Kunde</h3>${reportTable(miss,['SAP','Kunde','Ort','Original','Referenz','Algorithmus'])}</div>`;
 }
 function openBacktest(){renderBacktest();document.getElementById('backtestModal').classList.add('show')}
+/* „alle Kunden am Zieltag“: Ausfalltage danach komplett leeren (Rest → ungeplant) */
+function clearOutageDays(){
+  if(!document.getElementById('allOnTarget')?.checked)return;
+  routes.filter(r=>outageDays.has(r.day)).forEach(r=>{
+    r.items.splice(0).forEach(a=>{if(!unplanned.some(u=>u.aid===a.aid))unplanned.push(a);if(!cancelReasons.has(a.aid))cancelReasons.set(a.aid,'Ausfalltag geleert (alle Kunden am Zieltag)')});
+    evaluateRoute(r);
+  });
+}
 function runAutoplan(silent=false){
   if(!silent){
     const changed=routes.some(r=>r.manuallyCreated||routeChanged(r)&&!outageDays.has(r.day))||unplanned.some(a=>!autoCoveredAids.has(a.aid));
@@ -3047,7 +3056,7 @@ function runAutoplan(silent=false){
   }
   AUTO_OVER=Math.max(0,Number(document.getElementById('autoOver')?.value)||0);BLOCK_MODE=document.getElementById('blockMode')?.checked!==false;MERGE_SMALL=document.getElementById('mergeSmall')?.checked!==false;MERGE_KM=Math.max(5,Number(document.getElementById('mergeKm')?.value)||25);readTimeTol();parseLocked();
   buildOriginalPlan();syncExtras();clusters=buildAllClusters(selectedOutageDays());applyClusters(()=>true,true);
-  resolveMergedDuplicates();
+  resolveMergedDuplicates();clearOutageDays();
   if(document.getElementById('btOptimize')?.checked)targetDays().forEach(d=>optimizeDay(d,true));
   if(!silent)renderAll();return true;
 }
@@ -3134,7 +3143,7 @@ function initControls(){
   $('suggestBtn').addEventListener('click',computeSuggestions);
   $('applyVeryGoodBtn').addEventListener('click',()=>applyClusters(c=>c.quality==='good'));
   $('applyGoodBtn').addEventListener('click',()=>applyClusters(c=>c.quality==='good'||c.quality==='ok'));
-  $('applyAllBtn').addEventListener('click',()=>{if(confirm(`${clusters.length} Gruppen übernehmen – auch grenzwertige?`))applyClusters(()=>true)});
+  $('applyAllBtn').addEventListener('click',()=>{if(confirm(`${clusters.length} Gruppen übernehmen – auch grenzwertige?`)){applyClusters(()=>true);clearOutageDays();renderAll()}});
   $('closeSuggBtn').addEventListener('click',()=>$('suggestions').classList.remove('show'));
   $('applyRulesBtn').addEventListener('click',()=>{clampMax();parseExcluded();parseLocked();FAM_CACHE.clear();autoResolveCoveredDeliveries(true);if($('suggestions').classList.contains('show'))computeSuggestions()});
   $('maxCustomers').addEventListener('change',()=>{clampMax();SRC_TYP.clear();renderAll()});

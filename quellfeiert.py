@@ -62,7 +62,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK"]   # HUPA wird nicht geplant
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V29.1 · Build 28.09.26 (Sitzungs-Cache · Zeitfenster hart in Optimierung · Matrix je Profil · Overpass mit OSM-Namen)"
+APP_BUILD = "V29.2 · Build 28.09.26 (Sitzungs-Cache · Zeitfenster hart in Optimierung · Matrix je Profil · Overpass mit OSM-Namen)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -2260,17 +2260,19 @@ function routeChanged(r){return r.items.length!==r.originalCount||r.items.some((
 
 /* ---------- Ausfalltage ---------- */
 function selectedOutageDays(){return DAY_ORDER.filter(d=>outageDays.has(d))}
-function outageDaysLabel(days=selectedOutageDays()){return days.map(d=>DAY_LABELS[d]).join(' + ')}
+function outageDaysLabel(days=selectedOutageDays()){return days.length?days.map(d=>DAY_LABELS[d]).join(' + '):'kein Ausfalltag'}
 function syncTargetDayOptions(){
   const sel=document.getElementById('toDay');[...sel.options].forEach(o=>o.disabled=outageDays.has(o.value));
   const n=neighborDays(),ao=[...sel.options].find(o=>o.value==='auto');if(ao)ao.textContent=`Vortag + Folgetag (${[n.prev,n.next].filter(Boolean).map(d=>DAY_SHORT[d]).join(' + ')||'–'})`;
+  if(ao)ao.disabled=!outageDays.size;
+  if(!outageDays.size&&(sel.value==='auto'||!sel.value)){sel.value=DAY_ORDER.includes('Fr')?'Fr':DAY_ORDER[0];return}
   if(sel.value==='auto')return;
   if(!sel.value||outageDays.has(sel.value)){const ch=selectedOutageDays(),first=ch.length?Math.min(...ch.map(d=>DAY_ORDER.indexOf(d))):DAY_ORDER.length;let fb=null;for(let i=first-1;i>=0;i--)if(!outageDays.has(DAY_ORDER[i])){fb=DAY_ORDER[i];break}sel.value=fb||DAY_ORDER.find(d=>!outageDays.has(d))||''}
 }
 function renderOutageButtons(){
   const box=document.getElementById('outageDays');
   box.innerHTML=DAY_ORDER.map(d=>`<button type="button" class="outageday ${outageDays.has(d)?'active':''}" data-outage-day="${d}">${DAY_SHORT[d]}</button>`).join('');
-  box.querySelectorAll('[data-outage-day]').forEach(b=>b.addEventListener('click',()=>{const d=b.dataset.outageDay;if(outageDays.has(d)){if(outageDays.size===1){showInfo('Hinweis','Mindestens ein Ausfalltag muss ausgewählt bleiben.');return}outageDays.delete(d)}else outageDays.add(d);renderOutageButtons();syncTargetDayOptions();autoResolveCoveredDeliveries(true);if(document.getElementById('suggestions').classList.contains('show'))computeSuggestions()}));
+  box.querySelectorAll('[data-outage-day]').forEach(b=>b.addEventListener('click',()=>{const d=b.dataset.outageDay;if(outageDays.has(d)){outageDays.delete(d);if(!outageDays.size){const c=document.getElementById('allOnTarget');if(c&&!c.checked){c.checked=true;showInfo('Kein Ausfalltag','Es fällt kein Tag aus – alle Kunden werden am gewählten Zieltag beliefert („Alle Kunden am Zieltag" wurde aktiviert).')}}}else outageDays.add(d);renderOutageButtons();syncTargetDayOptions();autoResolveCoveredDeliveries(true);if(document.getElementById('suggestions').classList.contains('show'))computeSuggestions()}));
 }
 /* Vortag/Folgetag: Ausfall-Kunden gehen – wie in den historischen Plänen – auf den Tag davor oder danach */
 const DEFAULT_SIDE={Mo:'next',Die:'next',Mitt:'next',Don:'prev',Fr:'prev',Sam:'prev'};
@@ -2285,7 +2287,7 @@ function neighborDays(){
 function targetDays(){
   const v=document.getElementById('toDay')?.value;
   const allOn=document.getElementById('allOnTarget')?.checked;
-  if(v==='auto'){const n=neighborDays(),t=[n.prev,n.next].filter(Boolean);return allOn?t.slice(0,1):t}
+  if(v==='auto'){if(!outageDays.size)return [];const n=neighborDays(),t=[n.prev,n.next].filter(Boolean);return allOn?t.slice(0,1):t}
   return v&&!outageDays.has(v)?[v]:[];
 }
 /* „Alle Kunden am Zieltag“: jeder Kunde der Woche ohne Lieferung am Zieltag bekommt eine Zusatz-Lieferung */
@@ -2360,7 +2362,7 @@ function restoreAutoCovered(){
 function autoResolveCoveredDeliveries(notify=true){
   restoreAutoCovered();syncExtras();
   const fromDays=selectedOutageDays(),tds=targetDays(),daySet=new Set(fromDays);
-  if(!fromDays.length||!tds.length){renderAll();return}
+  if(!tds.length||(!fromDays.length&&!document.getElementById('allOnTarget').checked)){renderAll();return}
   const locked=routes.filter(r=>daySet.has(r.day)&&isLocked(r)).flatMap(r=>r.items);
   locked.forEach(a=>{const f=removeFromCurrent(a.aid);if(!f)return;cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);cancelReasons.set(a.aid,`gesperrte Tour ${a.originalTour} – entfällt am Ausfalltag`);unplanned.push(f.a)});
   // „bereits vorhanden“ nur für den Tag, auf den der Kunde gehen würde (Vortag ODER Folgetag) – wie in den Historien
@@ -2651,7 +2653,7 @@ function buildAllClusters(fromDays){
 }
 function computeSuggestions(){
   const fromDays=selectedOutageDays(),tds=targetDays(),box=document.getElementById('suggestions');
-  if(!fromDays.length||!tds.length){clusters=[];document.getElementById('suggTitle').textContent='Zieltag ungültig';document.getElementById('suggSub').textContent='Bitte Ausfalltage und einen anderen Zieltag wählen.';document.getElementById('suggBody').innerHTML='';box.classList.add('show');return}
+  if(!tds.length||(!fromDays.length&&!document.getElementById('allOnTarget').checked)){clusters=[];document.getElementById('suggTitle').textContent='Zieltag ungültig';document.getElementById('suggSub').textContent='Bitte Ausfalltage und einen anderen Zieltag wählen.';document.getElementById('suggBody').innerHTML='';box.classList.add('show');return}
   readTimeTol();syncExtras();clusters=buildAllClusters(fromDays);renderSuggestions();box.classList.add('show');
 }
 function clusterHtml(c){
@@ -3148,7 +3150,7 @@ function initControls(){
   $('toDay').innerHTML='<option value="auto">Vortag + Folgetag</option>'+DAY_ORDER.map(d=>`<option value="${d}">nur ${DAY_LABELS[d]}</option>`).join('');$('toDay').value='auto';
   renderOutageButtons();syncTargetDayOptions();
   $('toDay').addEventListener('change',()=>{autoResolveCoveredDeliveries(true);if($('suggestions').classList.contains('show'))computeSuggestions()});
-  $('allOnTarget').addEventListener('change',()=>{autoResolveCoveredDeliveries(false);const n=assignments.filter(a=>a.extra).length;if($('allOnTarget').checked)showInfo('Alle Kunden am Zieltag',`${n} Kunden bekommen zusätzlich eine Lieferung am ${targetLabel()} – über „Vorschläge“ oder Autoplan einplanen.`,'good');if($('suggestions').classList.contains('show'))computeSuggestions()});
+  $('allOnTarget').addEventListener('change',()=>{if(!$('allOnTarget').checked&&!outageDays.size){const t=$('toDay').value;outageDays.add(t==='Sam'?'Fr':'Sam');renderOutageButtons();syncTargetDayOptions()}autoResolveCoveredDeliveries(false);const n=assignments.filter(a=>a.extra).length;if($('allOnTarget').checked)showInfo('Alle Kunden am Zieltag',`${n} Kunden bekommen zusätzlich eine Lieferung am ${targetLabel()} – über „Vorschläge“ oder Autoplan einplanen.`,'good');if($('suggestions').classList.contains('show'))computeSuggestions()});
   $('suggestBtn').addEventListener('click',computeSuggestions);
   $('applyVeryGoodBtn').addEventListener('click',()=>applyClusters(c=>c.quality==='good'));
   $('applyGoodBtn').addEventListener('click',()=>applyClusters(c=>c.quality==='good'||c.quality==='ok'));

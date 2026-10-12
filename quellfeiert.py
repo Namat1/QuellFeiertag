@@ -1,4 +1,13 @@
-"""Feiertags-Wochenplaner V29 – Streamlit-Generator für eine eigenständige Dispo-HTML.
+"""Feiertags-Wochenplaner V30 – Streamlit-Generator für eine eigenständige Dispo-HTML.
+
+Neu in V30 (Oberfläche):
+- Dispo-HTML neu gestaltet: Arbeitsleiste in vier Schritten (Ausfall → Ziel → Umplanen → Abschließen) mit
+  Fortschritt und Exportstatus; Ausfalltage schraffiert, Zieltage grün markiert
+- Verschobene Kunden tragen Herkunftsfarbe und -tour, unveränderte bleiben neutral; Ladebalken je Tour
+- Unveränderte Touren zuklappbar, Ansicht „Ausfall + Ziel“, Filter „Mit Problemen“, Suche mit Taste /
+- Seitenleiste mit Vorschlägen, Ablage (inkl. automatisch gestrichener Lieferungen) und Änderungen;
+  Klick springt zur Karte auf der Tafel; Regeln als eigener Dialog; Kennzahlen in der Statuszeile
+- Generator: Ablauf in nummerierten Schritten, Status je Eingabedatei, Ergebnis mit Kennzahlen oben
 
 Neu in V29.1:
 - Reruns (Widget-Klick, Ausschlussliste, Download) fragen nichts mehr neu ab: Rechenstufen werden je Eingabe-Fingerabdruck
@@ -62,7 +71,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK"]   # HUPA wird nicht geplant
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V29.2 · Build 28.09.26 (Sitzungs-Cache · Zeitfenster hart in Optimierung · Matrix je Profil · Overpass mit OSM-Namen)"
+APP_BUILD = "V30.0 · Build 13.10.26 (neue Oberfläche: Arbeitsleiste, Fokus-Ansicht, Seitenleiste · Logik wie V29.2)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -1800,251 +1809,507 @@ HTML_TEMPLATE = r'''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Feiertags-Wochenplaner V29</title>
+<title>Feiertagsplanung V30</title>
 <style>
-:root{--bg:#eef0f3;--surface2:#f8f9fb;--ink:#22242a;--muted:#727680;--line:#dfe1e6;--line2:#eceef2;--accent:#6f54a6;--accent-soft:#eeeaf7;--good:#247348;--good-bg:#e8f5ed;--ok:#5e6f32;--ok-bg:#eff4df;--warn:#946200;--warn-bg:#fff3d2;--bad:#a03b3b;--bad-bg:#fde9e9;--blue:#46627d;--blue-bg:#eaf0f5;--mo:#477258;--mo-bg:#e5f2e8;--die:#8a6518;--die-bg:#fff1cf;--mitt:#6f57a1;--mitt-bg:#eee8f7;--don:#a45e3a;--don-bg:#fde7dc;--fr:#8f5368;--fr-bg:#f6e6ed;--sam:#5e5f7f;--sam-bg:#e9e9f1}
+:root{
+  --ground:#e7eaee;--panel:#fff;--panel2:#f5f6f8;--ink:#1c232e;--ink2:#465061;--muted:#6b7483;--line:#d3d8df;--line2:#e5e8ed;
+  --accent:#1d5c9e;--accent-h:#174d86;--accent-soft:#e5eef8;--focus:#3b82d6;
+  --out:#c8102e;--out-soft:#fdecee;--tgt:#13804f;--tgt-soft:#e4f3eb;
+  --good:#13804f;--good-bg:#e4f3eb;--ok:#4d7a1c;--ok-bg:#edf5e1;--warn:#9a5a00;--warn-bg:#fcf0d9;--bad:#b42318;--bad-bg:#fdeceb;
+  --Mo:#2c7a6a;--Mo-bg:#e2f1ec;--Die:#9c6400;--Die-bg:#f8eed6;--Mitt:#6a4db0;--Mitt-bg:#ece7f7;--Don:#b0502a;--Don-bg:#f8e6dd;--Fr:#a03a70;--Fr-bg:#f5e3ec;--Sam:#3a5897;--Sam-bg:#e4e9f4;
+  --f-ui:"Segoe UI Variable Text","Segoe UI",Inter,system-ui,-apple-system,Roboto,Arial,sans-serif;
+  --f-sign:Bahnschrift,"DIN Alternate","DIN 2014","Barlow Semi Condensed","Roboto Condensed","Arial Narrow","DejaVu Sans Condensed",sans-serif;
+  --hatch:repeating-linear-gradient(-45deg,var(--out) 0 7px,#fff 7px 14px);
+  --r-col:10px;--r-card:8px;--r-cust:6px;--r-tag:4px;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:12px/1.35 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
-button,input,select,textarea{font:inherit}button{cursor:pointer}
-summary::-webkit-details-marker{display:none}
-.top{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.97);border-bottom:1px solid var(--line)}
-.topin{padding:9px 12px 8px}
-.headrow{display:flex;align-items:center;justify-content:space-between;gap:18px}
-h1{font-size:18px;margin:0;font-weight:900;letter-spacing:-.02em}
-.sub{color:var(--muted);font-size:10px;margin-top:2px}
-.filepill{max-width:48vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;padding:4px 7px;background:#f7f7f8;border:1px solid var(--line);border-radius:999px;color:var(--muted)}
-.compactbar{display:flex;align-items:center;gap:7px;margin-top:7px}
-.searchwrap{flex:1;min-width:220px}
-.search{width:100%;height:34px;border:1px solid var(--line);background:#f7f8fa;border-radius:8px;padding:6px 8px;outline:none}
-.search:focus{border-color:#9e8ac9;box-shadow:0 0 0 3px var(--accent-soft)}
-.filterdetails,.moremenu{position:relative}
-.filterdetails>summary,.moremenu>summary{list-style:none;border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 10px;font-weight:800;cursor:pointer;white-space:nowrap}
-.filterdetails .chips{position:absolute;top:40px;left:0;z-index:120;width:310px;padding:9px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 35px rgba(0,0,0,.14);display:flex;gap:5px;flex-wrap:wrap}
-.allon{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:700;color:var(--muted);margin-top:3px;white-space:nowrap}
-.ctxmenu{position:fixed;z-index:400;width:330px;max-height:70vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 35px rgba(0,0,0,.18);padding:6px;font-size:12px}
-.ctxmenu .ctxhead{padding:6px 8px 8px;border-bottom:1px solid var(--line2);margin-bottom:4px}
-.ctxmenu .ctxhead b{display:block}.ctxmenu .ctxhead span{color:var(--muted);font-size:10px}
-.ctxmenu .ctxin{display:flex;gap:5px;padding:4px 6px 6px}.ctxmenu .ctxin input{flex:1;height:30px;border:1px solid var(--line);border-radius:7px;padding:4px 8px;font-weight:700}
-.ctxmenu .ctxin button{border:0;background:var(--accent);color:#fff;border-radius:7px;padding:0 10px;font-weight:800;cursor:pointer}
-.ctxmenu .ctxsec{padding:6px 8px 3px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
-.ctxmenu .ctxitem{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 8px;border-radius:7px;cursor:pointer}
-.ctxmenu .ctxitem:hover,.ctxmenu .ctxitem.sel{background:var(--accent-soft)}.ctxmenu .ctxitem.dis{opacity:.45;cursor:not-allowed}
-.ctxmenu .ctxitem small{color:var(--muted);font-size:10px}.ctxmenu .ctxhint{padding:2px 8px 6px;color:var(--muted);font-size:10px}
-.chip{display:flex;align-items:center;gap:5px;padding:4px 7px;background:var(--surface2);border:1px solid var(--line2);border-radius:999px;font-size:11px}
-.menupop{position:absolute;top:40px;right:0;z-index:120;width:200px;padding:7px;display:grid;gap:5px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 35px rgba(0,0,0,.14)}
-.menupop .btn{width:100%;text-align:left}
-.actions{display:flex;gap:6px;align-items:center}
-.primaryactions{margin-left:auto}
-.btn{border:1px solid var(--line);background:#fff;border-radius:8px;min-height:34px;padding:6px 10px;color:#373941;font-weight:750}
-.btn:hover{background:#fafafa}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn.small{min-height:26px;padding:3px 8px;font-size:10px}
-.viewfilter{display:flex;gap:4px}
-.viewbtn{border:1px solid var(--line);background:#fff;border-radius:7px;height:34px;padding:6px 9px;font-size:10px;font-weight:800;color:#555}
-.viewbtn.active{background:var(--accent-soft);border-color:#b9a8d8;color:var(--accent)}
-main{padding:9px 12px 22px}
-.plannerbar{background:#fff;border:1px solid var(--line);border-radius:10px;margin-bottom:7px;padding:8px 10px}
-.plannerflow{display:flex;align-items:end;gap:7px;flex-wrap:wrap}
-.flowfield{display:grid;gap:3px}
-.flowfield>span{font-size:8px;text-transform:uppercase;letter-spacing:.08em;font-weight:900;color:var(--muted)}
-.flowfield select{height:34px;min-width:150px;border:1px solid var(--line);border-radius:8px;background:#f8f9fa;padding:0 9px;font-weight:800}
-.outagedays{display:flex;gap:4px;flex-wrap:wrap}
-.outageday{height:34px;min-width:43px;padding:0 9px;border:1px solid var(--line);border-radius:8px;background:#f8f9fa;font-size:10px;font-weight:900}
-.outageday.active{border-color:#9c3340;box-shadow:inset 0 0 0 1px #9c3340;background:#fbe9eb;color:#9c3340}
-.flowarrow{height:34px;display:grid;place-items:center;color:#9a9ca3;font-weight:900}
-.flowstatus{display:inline-flex;gap:8px;border:1px solid var(--line);border-radius:8px;padding:8px 9px;font-size:10px;font-weight:800;white-space:nowrap}
-.flowstatus b{font-size:12px}.flowstatus .done{color:var(--good)}
-.flowhint{margin-left:auto;align-self:center;font-size:9px;color:var(--muted)}
-.settingspanel,.collapsedchanges{background:#fff;border:1px solid var(--line);border-radius:9px;margin-bottom:7px}
-.settingspanel>summary,.collapsedchanges>summary{list-style:none;cursor:pointer;padding:7px 10px;display:flex;justify-content:space-between;gap:12px;font-weight:850}
-.summaryhint{font-size:9px;color:var(--muted);font-weight:600}
-.settingspanel[open]>summary,.collapsedchanges[open]>summary{border-bottom:1px solid var(--line2)}
-.planningrules{display:grid;grid-template-columns:180px minmax(320px,1fr) auto auto;gap:8px;align-items:end;padding:9px 10px;background:#fafafa}
-.rulefield label{display:block;font-size:9px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
-.rulefield input,.rulefield textarea{width:100%;border:1px solid var(--line);border-radius:8px;background:#fff;padding:7px 8px;min-height:34px}
-.rulefield textarea{height:52px;resize:vertical}
-.rulemeta{font-size:9px;color:var(--muted);margin-top:3px}
-.compactnotice{border-top:1px solid var(--line2);background:#fafafa;padding:7px 10px;font-size:9px;color:#555963}
-.compactmetrics{display:flex;gap:5px;margin-bottom:7px;overflow-x:auto}
-.metric{min-width:88px;flex:0 0 auto;padding:3px 7px;border-right:1px solid #d9dbe0}
-.metric:last-child{border-right:0}.metric .v{font-size:14px;font-weight:850}.metric .k{font-size:8px;color:var(--muted)}
-.metric.issue .v{color:var(--bad)}
-.unplanned{background:#fff;border:1px solid #d3b6b6;border-radius:10px;margin-bottom:7px;overflow:hidden}
-.unplanned-head{display:flex;align-items:center;justify-content:space-between;padding:5px 8px}
-.unplanned-title{font-weight:850;color:#844}
-.dropnote{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:900}
-.unplanned-drop{min-height:36px;max-height:88px;overflow:auto;padding:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:flex-start}
-.unplanned-drop .cust{width:260px}
-.weekwrap{overflow-x:auto}
-.week{display:grid;grid-template-columns:repeat(6,minmax(195px,1fr));min-width:1180px;gap:5px}
-.daycol{min-width:0;height:calc(100vh - 235px);min-height:520px;display:flex;flex-direction:column}
-.daycol.outage-selected{outline:2px solid rgba(156,51,64,.28);outline-offset:-2px;border-radius:8px}
-.dayhead{border-radius:8px 8px 0 0;padding:7px 8px;display:flex;justify-content:space-between;align-items:center;gap:7px;border:1px solid var(--line)}
-.dayhead.day-Mo{background:var(--mo-bg)}.dayhead.day-Die{background:var(--die-bg)}.dayhead.day-Mitt{background:var(--mitt-bg)}.dayhead.day-Don{background:var(--don-bg)}.dayhead.day-Fr{background:var(--fr-bg)}.dayhead.day-Sam{background:var(--sam-bg)}
-.dayhead.day-Mo .dayname{color:var(--mo)}.dayhead.day-Die .dayname{color:var(--die)}.dayhead.day-Mitt .dayname{color:var(--mitt)}.dayhead.day-Don .dayname{color:var(--don)}.dayhead.day-Fr .dayname{color:var(--fr)}.dayhead.day-Sam .dayname{color:var(--sam)}
-.dayname{font-size:13px;font-weight:850}.daymeta{font-size:8px;opacity:.78}
-.outagebadge{margin-left:5px;padding:2px 5px;border-radius:999px;background:#9c3340;color:#fff;font-size:8px;font-weight:900}
-.addtour{border:1px solid rgba(80,80,90,.18);background:rgba(255,255,255,.62);border-radius:7px;padding:4px 6px;font-size:9px;font-weight:850;white-space:nowrap}
-.daybody{background:#e5e7ea;border:1px solid #d5d7db;border-top:0;border-radius:0 0 8px 8px;padding:4px;min-height:0;overflow-y:auto;overscroll-behavior:contain;flex:1}
-.route{background:#fff;border:1px solid var(--line);border-radius:7px;margin-bottom:4px;overflow:hidden}
-.route.changed{box-shadow:inset 3px 0 0 var(--accent)}
-.route.newroute{box-shadow:inset 3px 0 0 var(--accent);border-color:#c8bddc}
-.route.overcap{border-color:#d9a7a7}.route.timeconflict{border-color:#e1c58c}
-.routehead{padding:6px;background:#fbfbfc;border-bottom:1px solid var(--line2);display:flex;align-items:flex-start;justify-content:space-between;gap:6px}
-.rleft{min-width:0}.rtitle{font-weight:850;font-size:11px;display:flex;gap:4px;align-items:center;flex-wrap:wrap}
-.rmeta{font-size:8px;color:var(--muted);margin-top:2px;line-height:1.25}
-.capwarn{color:var(--bad);font-weight:850}
-.source{font-size:7px;font-weight:850;color:#62656d;background:#e9e9ec;border-radius:999px;padding:1px 4px;white-space:nowrap}
-.newbadge{font-size:8px;font-weight:900;background:var(--accent);color:#fff;border-radius:999px;padding:1px 5px}
-.lockbadge{font-size:7px;font-weight:900;background:#3a3d46;color:#fff;border-radius:999px;padding:1px 5px}
-.fambadge{font-size:7px;font-weight:850;background:var(--blue-bg);color:var(--blue);border-radius:999px;padding:1px 4px}
-.route-right{display:flex;align-items:center;gap:2px;flex-wrap:wrap;justify-content:flex-end;max-width:116px}
-.delta{font-size:8px;font-weight:850;padding:2px 4px;border-radius:999px;background:var(--accent-soft);color:var(--accent)}
-.seqbtn{border:1px solid var(--line);background:#f7f7f8;border-radius:6px;padding:3px 4px;font-size:8px;color:#5b5f68}
-.route-delete{border:0;background:transparent;color:#a2a4aa;border-radius:5px;padding:2px 5px;font-weight:900;font-size:13px;line-height:1}
-.route-delete:hover{background:var(--bad-bg);color:var(--bad)}
-.dropzone{min-height:25px;padding:2px}
-.dropzone.over,.unplanned-drop.over{outline:2px dashed #9e8ac9;outline-offset:-2px;background:#f5f2fb}
-.cust{display:grid;grid-template-columns:16px minmax(0,1fr) 14px;gap:4px;align-items:start;border:1px solid var(--line2);background:#fff;border-radius:6px;padding:5px;margin:3px 0;cursor:grab;border-left-width:4px}
-.cust.origin-Mo{border-left-color:var(--mo);background:var(--mo-bg)}.cust.origin-Die{border-left-color:var(--die);background:var(--die-bg)}.cust.origin-Mitt{border-left-color:var(--mitt);background:var(--mitt-bg)}.cust.origin-Don{border-left-color:var(--don);background:var(--don-bg)}.cust.origin-Fr{border-left-color:var(--fr);background:var(--fr-bg)}.cust.origin-Sam{border-left-color:var(--sam);background:var(--sam-bg)}
-.cust.moved{box-shadow:0 0 0 1px rgba(111,84,166,.22)}.cust.badmove{box-shadow:0 0 0 2px rgba(160,59,59,.22)}
-.cust.excluded{opacity:.58;filter:grayscale(.25)}
-.seq{width:16px;height:16px;border-radius:999px;background:rgba(255,255,255,.72);border:1px solid rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:900}
+html,body{height:100%}
+body{margin:0;background:var(--ground);color:var(--ink);font:13px/1.4 var(--f-ui);-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+summary{list-style:none}summary::-webkit-details-marker{display:none}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.num{font-family:var(--f-sign);font-variant-numeric:tabular-nums}
+.mut{color:var(--muted)}
+
+/* ---------- Grundgerüst ---------- */
+.app{display:flex;flex-direction:column;height:100vh;min-height:560px}
+.main{flex:1;min-height:0;display:flex}
+.board{flex:1;min-width:0;overflow:auto;padding:0 12px 10px}
+
+/* ---------- Buttons & Felder ---------- */
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border:1px solid var(--line);background:var(--panel);border-radius:6px;font-weight:600;color:var(--ink);white-space:nowrap}
+.btn:hover{background:var(--panel2);border-color:#c3c9d2}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent-h)}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--ink2)}
+.btn.ghost:hover{background:var(--panel2)}
+.btn.sm{height:26px;padding:0 9px;font-size:12px}
+.btn:disabled{opacity:.55;cursor:progress}
+.iconbtn{display:inline-grid;place-items:center;width:26px;height:26px;border:0;background:transparent;border-radius:5px;color:var(--muted)}
+.iconbtn:hover{background:var(--panel2);color:var(--ink)}
+.iconbtn.danger:hover{background:var(--bad-bg);color:var(--bad)}
+input[type=text],input[type=number],input:not([type]),select,textarea{border:1px solid var(--line);background:var(--panel);border-radius:6px;height:32px;padding:0 9px}
+textarea{height:auto;padding:7px 9px;resize:vertical}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px var(--accent-soft)}
+input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
+.chk{display:inline-flex;align-items:center;gap:7px;cursor:pointer;color:var(--ink2);white-space:nowrap}
+.seg{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:2px;gap:2px}
+.seg button{border:0;background:transparent;height:26px;padding:0 10px;border-radius:5px;font-weight:600;color:var(--ink2);white-space:nowrap}
+.seg button:hover{background:var(--panel2)}
+.seg button.active{background:var(--ink);color:#fff}
+
+/* ---------- Kopfzeile ---------- */
+.hdr{display:flex;align-items:center;gap:16px;height:46px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:9px}
+.mark{width:22px;height:22px}
+.ttl{font-family:var(--f-sign);font-size:18px;font-weight:600;letter-spacing:-.01em}
+.ctx{display:flex;align-items:baseline;gap:10px;min-width:0;color:var(--muted);font-size:12px;overflow:hidden;white-space:nowrap}
+.ctx b{color:var(--ink2);font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.hdr-r{margin-left:auto;display:flex;align-items:center;gap:4px}
+.moremenu{position:relative}
+.moremenu>summary{width:34px;justify-content:center;padding:0}
+.menupop{position:absolute;right:0;top:38px;z-index:300;width:230px;padding:5px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 12px 32px rgba(20,30,45,.16)}
+.mi{display:block;width:100%;text-align:left;border:0;background:transparent;padding:8px 10px;border-radius:5px}
+.mi:hover{background:var(--panel2)}.mi.danger{color:var(--bad)}
+.menupop hr{border:0;border-top:1px solid var(--line2);margin:4px 2px}
+
+/* ---------- Arbeitsleiste ---------- */
+.flow{display:flex;flex-wrap:wrap;align-items:stretch;background:var(--panel);border-bottom:1px solid var(--line)}
+.step{display:flex;flex-direction:column;gap:7px;padding:9px 18px 11px;border-right:1px solid var(--line2);min-width:0}
+.step:last-child{border-right:0}
+.step.grow{flex:1}
+.sh{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--ink2)}
+.sn{display:inline-grid;place-items:center;width:19px;height:19px;border-radius:50%;border:1.5px solid #9aa3b1;color:var(--muted);font:600 11px/1 var(--f-sign)}
+.step.done .sn{background:var(--ink);border-color:var(--ink);color:#fff}
+.step.current .sn{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.step.bad .sn{background:var(--bad);border-color:var(--bad);color:#fff}
+.sc{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.days{display:flex;gap:4px}
+.dbtn{position:relative;width:42px;height:34px;border:1px solid var(--line);border-radius:6px;background:var(--panel);font:600 14px/1 var(--f-sign);color:var(--ink2);overflow:hidden}
+.dbtn:hover{border-color:#aab2be}
+.dbtn.active{border-color:var(--out);color:var(--out);background:var(--out-soft)}
+.dbtn.active::after{content:"";position:absolute;left:0;right:0;bottom:0;height:5px;background:var(--hatch)}
+.dbtn.tgt{border-color:var(--tgt);color:var(--tgt)}
+.dbtn.tgt::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--tgt)}
+#toDay{min-width:190px;font-weight:600}
+.prog{display:grid;gap:4px;min-width:190px;margin-left:8px;flex:1;max-width:300px}
+.progtxt{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.progtxt b{font:600 20px/1 var(--f-sign);font-variant-numeric:tabular-nums}
+.progbar{height:6px;background:var(--line2);border-radius:3px;overflow:hidden}
+.progbar i{display:block;height:100%;width:0;background:var(--tgt);transition:width .35s}
+.progsub{font-size:11.5px;color:var(--muted)}
+.progsub b{color:var(--good);font-weight:600}
+.ready{font-weight:600;font-size:12px;padding:1px 7px;border-radius:var(--r-tag)}
+.ready.ok{background:var(--good-bg);color:var(--good)}.ready.bad{background:var(--bad-bg);color:var(--bad)}.ready.wait{background:var(--panel2);color:var(--muted)}
+#xlsxBtn.armed{box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* ---------- Werkzeugzeile ---------- */
+.tools{display:flex;align-items:center;gap:8px;padding:9px 12px;flex-wrap:wrap}
+.searchwrap{position:relative;width:250px}
+.searchwrap svg{position:absolute;left:9px;top:8px;color:var(--muted)}
+.search{width:100%;padding-left:30px!important;padding-right:30px!important}
+.kbd{position:absolute;right:7px;top:7px;font:600 11px/16px var(--f-ui);color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 5px;background:var(--panel2)}
+.srcchips{display:flex;gap:4px}
+.srcchip{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);font-weight:600;font-size:12px;color:var(--ink2);cursor:pointer;user-select:none}
+.srcchip input{position:absolute;opacity:0;pointer-events:none}
+.srcchip::before{content:"";width:9px;height:9px;border-radius:2px;border:1.5px solid #9aa3b1}
+.srcchip:has(input:checked)::before{background:var(--ink);border-color:var(--ink)}
+.srcchip:has(input:not(:checked)){color:var(--muted);background:transparent}
+.tgl{font-size:12px;height:30px;padding:0 10px;color:var(--ink2)}
+.tgl.box::before{content:"";width:9px;height:9px;border-radius:2px;border:1.5px solid #9aa3b1}
+.tgl.box[aria-pressed=true]::before{background:var(--ink);border-color:var(--ink)}
+#sideBtn{position:relative;width:34px;padding:0;justify-content:center}
+#sideBtn[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:#fff}
+#sideBadge{position:absolute;top:-6px;right:-6px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--accent);color:#fff;font:600 11px/17px var(--f-sign);text-align:center}
+#sideBadge:empty{display:none}
+.tools .spacer{flex:1}
+.issues{display:flex;align-items:center;gap:4px}
+.issues .lbl{font-size:12px;color:var(--muted);margin-right:2px}
+.ichip{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--muted);font-size:12px;font-weight:600}
+.ichip b{font:600 14px/1 var(--f-sign);color:var(--ink2)}
+.ichip.has{border-color:#e9b8b3;background:var(--bad-bg);color:var(--bad)}
+.ichip.has b{color:var(--bad)}
+.ichip.has.soft{border-color:#ecd3a3;background:var(--warn-bg);color:var(--warn)}
+.ichip.has.soft b{color:var(--warn)}
+.ichip.zero::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good)}
+
+/* ---------- Wochentafel ---------- */
+.week{display:grid;grid-template-columns:repeat(var(--cols,6),minmax(196px,1fr));gap:8px;height:100%;min-width:calc(var(--cols,6)*204px - 8px)}
+.week.focus{grid-template-columns:repeat(var(--cols,2),minmax(300px,1fr));min-width:calc(var(--cols,2)*308px)}
+.daycol{container-type:inline-size;display:flex;flex-direction:column;min-height:0;background:#dde1e6;border-radius:var(--r-col);overflow:hidden}
+.dayhead{position:relative;padding:11px 8px 8px 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+.dayrow2{display:flex;align-items:flex-end;justify-content:space-between;gap:8px;margin-top:3px;min-height:20px}
+.dayhead::before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:var(--line)}
+.daycol.is-out .dayhead::before{height:7px;background:var(--hatch)}
+.daycol.is-tgt .dayhead::before{background:var(--tgt)}
+.dayline{display:flex;align-items:center;flex-wrap:wrap;gap:3px 7px}
+.dayname{font:600 17px/1.1 var(--f-sign);letter-spacing:-.01em}
+.role{font-size:11px;font-weight:700;padding:2px 6px;border-radius:var(--r-tag)}
+.role.out{background:var(--out);color:#fff}
+.role.tgt{background:var(--tgt);color:#fff}
+.daystats{display:flex;flex-wrap:wrap;gap:0 10px;font-size:12px;color:var(--muted)}
+.daystats span{white-space:nowrap}
+.daystats b{font:600 13px/1 var(--f-sign);color:var(--ink2);font-variant-numeric:tabular-nums}
+.daybig{text-align:right;white-space:nowrap;font-size:11.5px;color:var(--muted);line-height:1.15;margin-top:-6px}
+.daybig b{display:block;font:600 22px/1 var(--f-sign);color:var(--out);font-variant-numeric:tabular-nums}
+.daycol.is-tgt .daybig b{color:var(--tgt)}
+.daybig.done b{color:var(--tgt);font-size:15px}
+.addtour{margin-left:auto;margin-right:-2px}
+.daybody{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:7px}
+.daycol.is-out .daybody{background:repeating-linear-gradient(-45deg,transparent 0 10px,rgba(200,16,46,.045) 10px 20px)}
+.emptyday{padding:22px 10px;text-align:center;color:var(--muted);font-size:12px}
+.emptyday b{display:block;color:var(--tgt);font-size:13px;margin-bottom:3px}
+.hiddenroutes{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 9px;margin-top:4px;border:1px dashed #b9c0ca;border-radius:var(--r-card);color:var(--muted);font-size:12px}
+.hiddenroutes button{border:0;background:transparent;color:var(--accent);font-weight:600;font-size:12px;padding:2px 4px}
+
+/* ---------- Tourkarte ---------- */
+.route{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-card);margin-bottom:6px}
+.route.changed{border-color:#9db7d6}
+.route.newroute{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+.route.overcap{border-color:#e3a39c;box-shadow:inset 3px 0 0 var(--bad)}
+.route.locked{background:#f6f7f9}
+.rhead{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:4px 6px;align-items:center;padding:7px 7px 7px 5px;cursor:pointer;border-radius:var(--r-card)}
+.rhead:hover{background:#fafbfc}
+.rtoggle{display:grid;place-items:center;width:18px;height:18px;border:0;padding:0;background:transparent;color:var(--muted);border-radius:4px}
+.rtoggle svg{transition:transform .15s}
+.route.collapsed .rtoggle svg{transform:rotate(-90deg)}
+.rtop{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden}
+.rtop>*{flex:none}
+.rno{font:600 16px/1 var(--f-sign);letter-spacing:.01em;font-variant-numeric:tabular-nums}
+.src{font-size:10.5px;font-weight:700;color:var(--muted);letter-spacing:.02em}
+.tag{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:1px 5px;border-radius:var(--r-tag);white-space:nowrap}
+.tag.new{background:var(--accent);color:#fff}
+.tag.lock{background:#3a4250;color:#fff}
+.tag.fam{background:var(--accent-soft);color:var(--accent);font-weight:600;max-width:110px;overflow:hidden;text-overflow:ellipsis}
+.delta{font:600 12px/1 var(--f-sign);padding:2px 5px;border-radius:var(--r-tag);background:var(--accent-soft);color:var(--accent)}
+.delta.neg{background:var(--panel2);color:var(--muted)}
+.ract{display:flex;align-items:center;gap:0;opacity:.6}
+.route:hover .ract,.ract:focus-within{opacity:1}
+.rload{grid-column:2/4;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted);min-width:0;overflow:hidden}
+.lbar{flex:1;min-width:24px;max-width:220px;height:5px;background:var(--line2);border-radius:3px;overflow:hidden}
+.lbar i{display:block;height:100%;background:#8994a5;border-radius:3px}
+.lbar.near i{background:var(--warn)}.lbar.full i{background:#5b6677}.lbar.over i{background:var(--bad)}
+.lcnt{font:600 12.5px/1 var(--f-sign);color:var(--ink2);font-variant-numeric:tabular-nums}
+.lcnt.over{color:var(--bad)}
+.ldep{white-space:nowrap}
+.lwarn{display:inline-flex;align-items:center;gap:2px;color:var(--warn);font:600 12px/1 var(--f-sign)}
+.lwarn svg{width:12px;height:12px}
+.rmeta{grid-column:2/4;display:flex;flex-wrap:wrap;gap:2px 10px;font-size:11.5px;color:var(--muted)}
+.rmeta .warn{color:var(--warn);font-weight:600}.rmeta .bad{color:var(--bad);font-weight:600}
+.route.collapsed .rmeta,.route.collapsed .dropzone{display:none}
+.dropzone{min-height:30px;padding:0 6px 6px}
+.dropzone .empty{border:1.5px dashed var(--line);border-radius:var(--r-cust);padding:9px;text-align:center;color:var(--muted);font-size:12px}
+.over-route,.dropzone.over{outline:2px solid var(--accent);outline-offset:-1px;background:var(--accent-soft)}
+body.dragging .route.collapsed .rhead{background:#f4f7fb}
+
+/* ---------- Kundenkarte ---------- */
+.cust{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr) 18px;gap:6px;align-items:start;padding:6px 4px 6px 6px;margin-top:4px;background:var(--panel);border:1px solid var(--line2);border-left:3px solid transparent;border-radius:var(--r-cust);cursor:grab}
+.cust:hover{border-top-color:#c3c9d2;border-right-color:#c3c9d2;border-bottom-color:#c3c9d2}
+.cust.moved{border-left-color:var(--oc,var(--accent))}
+.cust.moved.d-Mo{--oc:var(--Mo)}.cust.moved.d-Die{--oc:var(--Die)}.cust.moved.d-Mitt{--oc:var(--Mitt)}.cust.moved.d-Don{--oc:var(--Don)}.cust.moved.d-Fr{--oc:var(--Fr)}.cust.moved.d-Sam{--oc:var(--Sam)}
+.cust.badmove{background:#fffafa}
+.cust.excluded{background:var(--panel2);color:var(--muted)}
+.cust.dragsrc{opacity:.4}
+.cust.flash,.route.flash{animation:flash 1.6s ease-out}
+@keyframes flash{0%,30%{box-shadow:0 0 0 3px var(--focus);background:var(--accent-soft)}100%{box-shadow:0 0 0 0 transparent}}
+.seq{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--panel2);font:600 11px/1 var(--f-sign);color:var(--ink2);font-variant-numeric:tabular-nums}
+.cust.moved .seq{background:var(--oc);color:#fff}
 .cmain{min-width:0}
-.cname{font-size:9.5px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.csub{font-size:8.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
-.geoline{display:flex;align-items:center;gap:2px;flex-wrap:wrap;margin-top:3px}
-.fit,.flag{font-size:7px;font-weight:900;border-radius:999px;padding:1px 4px;white-space:nowrap}
-.fit.good{background:var(--good-bg);color:var(--good)}.fit.ok{background:var(--ok-bg);color:var(--ok)}.fit.warn{background:var(--warn-bg);color:var(--warn)}.fit.bad{background:var(--bad-bg);color:var(--bad)}.fit.unknown{background:#eee;color:#666}
-.flag.plz{background:#eee;color:#777}.optlog{font-size:9px;color:var(--muted)}
-.flag{background:var(--blue-bg);color:var(--blue)}.flag.dupe,.flag.area{background:var(--bad-bg);color:var(--bad)}.flag.time{background:#fff0d7;color:#855700}.flag.dna{background:#efe9f8;color:var(--accent)}
-.remove{border:0;background:transparent;color:#aaa;font-weight:900;font-size:12px;line-height:1;padding:1px 2px;border-radius:4px}
+.cl1{display:flex;align-items:center;gap:6px;min-width:0}
+.sap{font:600 13px/1.2 var(--f-sign);font-variant-numeric:tabular-nums;flex:none}
+.cname{font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cl1 svg{width:13px;height:13px;color:var(--warn);flex:none}
+.cl2{display:flex;gap:6px;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;margin-top:1px}
+.cl2 .ort{color:var(--ink2);font-weight:500;flex:none}
+.cl2 .str{overflow:hidden;text-overflow:ellipsis}
+.ctags{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px}
+.otag{font:600 11px/1.45 var(--f-sign);padding:0 5px;border-radius:var(--r-tag);background:var(--panel2);color:var(--ink2)}
+.otag.d-Mo{background:var(--Mo-bg);color:var(--Mo)}.otag.d-Die{background:var(--Die-bg);color:var(--Die)}.otag.d-Mitt{background:var(--Mitt-bg);color:var(--Mitt)}.otag.d-Don{background:var(--Don-bg);color:var(--Don)}.otag.d-Fr{background:var(--Fr-bg);color:var(--Fr)}.otag.d-Sam{background:var(--Sam-bg);color:var(--Sam)}
+.fit,.flag{font-size:10.5px;font-weight:600;line-height:16px;padding:0 5px;border-radius:var(--r-tag);white-space:nowrap}
+.fit.good{background:var(--good-bg);color:var(--good)}.fit.ok{background:var(--ok-bg);color:var(--ok)}.fit.warn{background:var(--warn-bg);color:var(--warn)}.fit.bad{background:var(--bad-bg);color:var(--bad)}.fit.unknown{background:var(--panel2);color:var(--muted)}
+.flag{background:var(--accent-soft);color:var(--accent)}
+.flag.dupe,.flag.area{background:var(--bad-bg);color:var(--bad)}.flag.time{background:var(--warn-bg);color:var(--warn)}.flag.plz,.flag.ex{background:var(--panel2);color:var(--muted)}.flag.gone{background:#3a4250;color:#fff}
+.remove{display:grid;place-items:center;width:18px;height:18px;border:0;background:transparent;color:#a3aab5;border-radius:4px;padding:0;opacity:0}
+.cust:hover .remove,.remove:focus-visible{opacity:1}
 .remove:hover{color:var(--bad);background:var(--bad-bg)}
-.empty{color:#a0a2a8;font-size:9px;text-align:center;padding:7px 4px}
-.suggestions{position:fixed;display:none;right:12px;top:88px;bottom:12px;width:min(680px,calc(100vw - 24px));z-index:140;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.24);overflow:hidden}
-.suggestions.show{display:flex;flex-direction:column}
-.sugghead{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line2)}
-.quickapply{display:flex;gap:5px;flex-wrap:wrap;padding:7px 10px;border-bottom:1px solid var(--line2);background:#fafafa}
-.suggbody{flex:1;overflow:auto;padding:8px}
-.iconclose{border:0;background:#f0f1f3;border-radius:7px;width:30px;height:30px;font-size:18px;color:#666}
-.clu{border:1px solid var(--line);border-radius:9px;margin-bottom:8px;overflow:hidden}
-.clu.q-good{border-left:4px solid var(--good)}.clu.q-ok{border-left:4px solid var(--ok)}.clu.q-warn{border-left:4px solid var(--warn)}.clu.q-bad{border-left:4px solid var(--bad)}
-.cluhead{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:8px 9px;background:#fbfbfc;border-bottom:1px solid var(--line2)}
-.clutitle{font-weight:900;font-size:12px}.clumeta{font-size:9px;color:var(--muted);margin-top:2px}
-.clumem{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:6px;align-items:center;padding:4px 9px;border-bottom:1px solid var(--line2);font-size:10px}
-.clumem:last-child{border-bottom:0}
-.clumem .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.anc{font-size:7px;font-weight:900;border-radius:999px;padding:1px 5px;white-space:nowrap}
-.anc.direct{background:var(--good-bg);color:var(--good)}.anc.peer{background:#efe9f8;color:var(--accent)}.anc.geo{background:#eee;color:#666}
-.drawer{position:fixed;right:12px;bottom:12px;z-index:200;max-width:400px;background:#fff;border:1px solid var(--line);border-left:5px solid var(--accent);border-radius:10px;padding:10px 12px;box-shadow:0 12px 35px rgba(0,0,0,.15);display:none}
-.drawer.show{display:block}.drawer.good{border-left-color:var(--good)}.drawer.ok{border-left-color:var(--ok)}.drawer.warn{border-left-color:var(--warn)}.drawer.bad{border-left-color:var(--bad)}
-.drawer h3{margin:0 0 3px;font-size:13px}.drawer p{margin:0;color:var(--muted);font-size:10px}
-.modalback{position:fixed;inset:0;z-index:150;background:rgba(28,30,35,.44);display:none;align-items:center;justify-content:center;padding:20px}
+.remove svg{width:12px;height:12px}
+
+/* ---------- Seitenleiste ---------- */
+.side{width:380px;flex:none;display:flex;flex-direction:column;min-height:0;background:var(--panel);border-left:1px solid var(--line)}
+.app.side-hidden .side{display:none}
+.tabs{display:flex;gap:2px;padding:6px 8px 0;border-bottom:1px solid var(--line)}
+.tab{display:inline-flex;align-items:center;gap:6px;border:0;background:transparent;height:36px;padding:0 8px;font-weight:600;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--ink);border-bottom-color:var(--ink)}
+.tab .cnt{font:600 11.5px/18px var(--f-sign);min-width:20px;padding:0 5px;border-radius:9px;background:var(--panel2);color:var(--ink2);text-align:center}
+.tab .cnt.hot{background:var(--accent);color:#fff}
+.side .x{margin-left:auto;align-self:center}
+.pane{display:none;flex:1;min-height:0;flex-direction:column}
+.pane.active{display:flex}
+.panehead{padding:12px 14px 10px;border-bottom:1px solid var(--line2)}
+.panehead h2{margin:0;font:600 16px/1.2 var(--f-sign)}
+.panehead p{margin:3px 0 0;color:var(--muted);font-size:12px}
+.panebody{flex:1;min-height:0;overflow:auto;padding:10px 12px}
+.quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.sempty{padding:28px 18px;text-align:center;color:var(--muted)}
+.sempty h3{margin:0 0 6px;color:var(--ink);font:600 16px/1.2 var(--f-sign)}
+.sempty p{margin:0 auto 14px;max-width:300px;font-size:12.5px}
+
+/* Vorschlagsgruppen */
+.clu{border:1px solid var(--line);border-radius:var(--r-card);margin-bottom:9px;background:var(--panel);overflow:hidden}
+.clu{box-shadow:inset 3px 0 0 var(--qc,var(--line))}
+.clu.q-good{--qc:var(--good)}.clu.q-ok{--qc:var(--ok)}.clu.q-warn{--qc:var(--warn)}.clu.q-bad{--qc:var(--bad)}.clu.q-unknown{--qc:#9aa3b1}
+.cluhead{display:flex;align-items:flex-start;gap:8px;padding:9px 10px 7px 13px}
+.clut{flex:1;min-width:0}
+.clut .t1{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 7px}
+.clut .t1 b{font:600 15px/1.2 var(--f-sign)}
+.clut .t1 .mut{font-size:12px}
+.cluwhy{font-size:12px;color:var(--ink2);margin-top:3px}
+.clumeta{display:flex;flex-wrap:wrap;gap:2px 10px;font-size:11.5px;color:var(--muted);margin-top:3px}
+.clumeta .bad{color:var(--bad);font-weight:600}
+.clumem{display:grid;grid-template-columns:auto minmax(0,1fr) auto 20px;gap:6px;align-items:center;padding:4px 8px 4px 13px;border-top:1px solid var(--line2);font-size:12px}
+.clumem .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.clumem .nm:hover{color:var(--accent);text-decoration:underline}
+.clumem .nm b{font:600 12.5px var(--f-sign)}
+.clumem .remove{opacity:1}
+.anc{font-size:10.5px;font-weight:600;line-height:16px;border-radius:var(--r-tag);padding:0 5px;white-space:nowrap}
+.anc.direct{background:var(--good-bg);color:var(--good)}.anc.peer{background:var(--Mitt-bg);color:var(--Mitt)}.anc.geo{background:var(--panel2);color:var(--muted)}
+
+/* Ablage */
+.unplanned-drop{min-height:120px;border:1.5px dashed var(--line);border-radius:var(--r-card);padding:4px 6px 6px}
+.unplanned-drop .emptyhint{padding:26px 10px;text-align:center;color:var(--muted);font-size:12.5px}
+.unplanned-drop .cust{cursor:grab}
+.gone{margin-top:14px;border-top:1px solid var(--line2);padding-top:10px}
+.gone>summary{display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;color:var(--ink2)}
+.gone>summary .cnt{font:600 12px/18px var(--f-sign);padding:0 6px;border-radius:9px;background:var(--panel2)}
+.gone>summary svg{transition:transform .15s;transform:rotate(-90deg)}
+.gone[open]>summary svg{transform:none}
+.gonegrp{margin-top:8px}
+.gonegrp h4{margin:10px 0 2px;font-size:12px;color:var(--muted);font-weight:600}
+.reason{font-size:11px;color:var(--muted);margin-top:3px}
+
+/* Änderungen */
+.chgrp{margin-bottom:12px}
+.chgrp h4{display:flex;align-items:center;gap:8px;margin:0 0 4px;padding:4px 2px;font:600 14px/1.2 var(--f-sign);cursor:pointer}
+.chgrp h4:hover{color:var(--accent)}
+.chgrp h4 .mut{font:500 12px var(--f-ui)}
+.chg{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:7px;align-items:center;padding:5px 6px;border-radius:5px;cursor:pointer;font-size:12px}
+.chg:hover{background:var(--panel2)}
+.chg .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chg .nm b{font:600 12.5px var(--f-sign)}
+.chg .note{grid-column:2/4;font-size:11px;color:var(--muted);margin-top:-3px}
+
+/* ---------- Statuszeile ---------- */
+.status{display:flex;align-items:center;gap:16px;height:28px;padding:0 12px;background:var(--panel);border-top:1px solid var(--line);font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden}
+.status b{font:600 13px/1 var(--f-sign);color:var(--ink2);font-variant-numeric:tabular-nums;margin-right:3px}
+.status .r{margin-left:auto;overflow:hidden;text-overflow:ellipsis}
+
+/* ---------- Kontextmenü ---------- */
+.ctxmenu{position:fixed;z-index:400;width:340px;max-height:72vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 16px 40px rgba(20,30,45,.2);padding:5px;font-size:12.5px}
+.ctxmenu .ctxhead{padding:7px 9px 9px;border-bottom:1px solid var(--line2);margin-bottom:4px}
+.ctxmenu .ctxhead b{display:block;font-weight:600}
+.ctxmenu .ctxhead span{color:var(--muted);font-size:11.5px}
+.ctxmenu .ctxin{display:flex;gap:5px;padding:4px 6px 6px}
+.ctxmenu .ctxin input{flex:1;font-weight:600}
+.ctxmenu .ctxin button{border:0;background:var(--accent);color:#fff;border-radius:6px;padding:0 12px;font-weight:600}
+.ctxmenu .ctxsec{padding:8px 9px 3px;color:var(--muted);font-size:11.5px;font-weight:600}
+.ctxmenu .ctxitem{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 9px;border-radius:5px;cursor:pointer}
+.ctxmenu .ctxitem:hover{background:var(--accent-soft)}
+.ctxmenu .ctxitem.dis{opacity:.45;cursor:not-allowed}
+.ctxmenu .ctxitem small{color:var(--muted);font-size:11px}
+.ctxmenu .ctxhint{padding:0 9px 6px;color:var(--muted);font-size:11px}
+
+/* ---------- Meldung ---------- */
+.drawer{position:fixed;right:16px;bottom:40px;z-index:500;width:min(420px,calc(100vw - 32px));display:none;background:var(--ink);color:#fff;border-radius:8px;padding:11px 14px 12px 16px;box-shadow:0 16px 40px rgba(20,30,45,.3);cursor:pointer}
+.drawer::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;border-radius:8px 0 0 8px;background:var(--tc,var(--accent))}
+.drawer.show{display:block;animation:pop .18s ease-out}
+.drawer.good{--tc:#3ccf8e}.drawer.ok{--tc:#9ccc65}.drawer.warn{--tc:#f2b33d}.drawer.bad{--tc:#ff6b5e}.drawer.unknown{--tc:#9aa3b1}
+.drawer h3{margin:0 0 3px;font:600 14px/1.25 var(--f-sign)}
+.drawer p{margin:0;color:#c9d0da;font-size:12px}
+@keyframes pop{from{transform:translateY(6px);opacity:0}to{transform:none;opacity:1}}
+
+/* ---------- Dialoge ---------- */
+.modalback{position:fixed;inset:0;z-index:450;background:rgba(22,28,38,.45);display:none;align-items:center;justify-content:center;padding:20px}
 .modalback.show{display:flex}
-.modal{width:min(420px,100%);background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 55px rgba(0,0,0,.22);padding:14px}
-.modal h2{font-size:16px;margin:0 0 3px}.modal .hint{font-size:10px;color:var(--muted);margin-bottom:12px}
-.formrow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.field label{display:block;font-size:9px;font-weight:850;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
-.field input,.field select{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px}
-.modalactions{display:flex;justify-content:flex-end;gap:6px;margin-top:12px}
-.modalerror{min-height:16px;margin-top:6px;color:var(--bad);font-size:10px;font-weight:750}
-.reportmodal{width:min(1120px,100%);max-height:88vh;overflow:auto}
-.mapsmodal{width:min(650px,100%)}
-.mapslist{display:grid;gap:7px}
-.mapslink{display:flex;justify-content:space-between;align-items:center;gap:10px;text-decoration:none}
-.mapslink small{color:var(--muted)}
-.reportstatus{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:7px;margin:10px 0}
-.reportkpi{border:1px solid var(--line);border-radius:8px;padding:8px;background:#fafafa}
-.reportkpi b{display:block;font-size:18px}.reportkpi span{font-size:9px;color:var(--muted)}
-.reportwarn{border:1px solid #ead6a6;background:#fff8e8;border-radius:8px;padding:8px;margin:8px 0;font-size:10px}
-.reporterror{border:1px solid #e3b2b2;background:var(--bad-bg);color:#7b3333;border-radius:8px;padding:8px;margin:8px 0;font-size:10px;font-weight:750}
-.reportok{border:1px solid #bcdcc8;background:var(--good-bg);border-radius:8px;padding:8px;margin:8px 0;font-size:10px}
-.reportsection{margin-top:12px}.reportsection h3{font-size:12px;margin:0 0 5px}
-.reporttable{width:100%;border-collapse:collapse;font-size:9.5px}
-.reporttable th,.reporttable td{padding:5px 6px;border-bottom:1px solid var(--line2);text-align:left;vertical-align:top}
-.reporttable th{background:#fafafa;color:#666;position:sticky;top:0}
-.reportscroll{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px}
-.changetable{width:100%;border-collapse:collapse;font-size:9px}
-.changetable th,.changetable td{padding:6px 7px;text-align:left;border-bottom:1px solid var(--line2);white-space:nowrap}
-.changetable th{background:#fafafa;color:#666}
-@media(max-width:900px){.compactbar{flex-wrap:wrap}.searchwrap{flex-basis:100%}.planningrules{grid-template-columns:1fr}.flowhint,.filepill{display:none}}
-@media print{.top,.plannerbar,.settingspanel,.compactmetrics,.unplanned,.collapsedchanges,.remove,.drawer,.addtour,.route-delete,.modalback,.suggestions,.seqbtn{display:none!important}main{padding:0}.weekwrap{overflow:visible}.week{min-width:0;grid-template-columns:repeat(3,1fr);gap:4px}.daycol{height:auto;min-height:0}.daybody{overflow:visible}.dayhead,.cust{-webkit-print-color-adjust:exact;print-color-adjust:exact}.cust{break-inside:avoid}}
+.modal{width:min(440px,100%);max-height:90vh;overflow:auto;background:var(--panel);border-radius:10px;box-shadow:0 24px 60px rgba(20,30,45,.3);padding:18px 20px}
+.modal h2{margin:0 0 3px;font:600 19px/1.2 var(--f-sign)}
+.modal .hint{font-size:12.5px;color:var(--muted);margin-bottom:14px}
+.formrow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:4px}
+.field input,.field select{width:100%}
+.modalactions{position:sticky;bottom:-18px;display:flex;justify-content:flex-end;gap:6px;margin:16px -20px -18px;padding:12px 20px;background:var(--panel);border-top:1px solid var(--line2)}
+.modalerror{min-height:16px;margin-top:6px;color:var(--bad);font-size:12px;font-weight:600}
+.reportmodal{width:min(1140px,100%)}
+.mapsmodal{width:min(640px,100%)}
+.mapslist{display:grid;gap:6px}
+.mapslink{display:flex;justify-content:space-between;align-items:center;gap:10px;height:40px;text-decoration:none}
+.mapslink small{color:var(--muted);font-weight:500}
+/* Regeln */
+.rulesmodal{width:min(860px,100%)}
+.rgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.rsec{border:1px solid var(--line2);border-radius:var(--r-card);padding:12px 14px}
+.rsec h3{margin:0 0 10px;font:600 14px/1.2 var(--f-sign)}
+.rsec.wide{grid-column:1/-1}
+.rrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;align-items:center;padding:6px 0;border-top:1px solid var(--line2)}
+.rrow:first-of-type{border-top:0}
+.rrow>label,.rrow>.rl{font-weight:600;font-size:12.5px}
+.rrow .rhelp{grid-column:1/-1;font-size:11.5px;color:var(--muted)}
+.rrow input[type=number]{width:76px;text-align:right}
+.rrow .inl{display:flex;align-items:center;gap:6px}
+.rrow textarea{grid-column:1/-1;width:100%;height:70px}
+.rrow #lockedTours{width:260px}
+.rnote{font-size:12px;color:var(--ink2);background:var(--panel2);border-radius:6px;padding:10px 12px;line-height:1.5}
+/* Report */
+.reportstatus{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;margin:12px 0}
+.reportkpi{border:1px solid var(--line2);border-radius:var(--r-card);padding:9px 11px}
+.reportkpi b{display:block;font:600 22px/1.1 var(--f-sign);font-variant-numeric:tabular-nums}
+.reportkpi span{font-size:11.5px;color:var(--muted)}
+.reportwarn,.reporterror,.reportok{border-radius:var(--r-card);padding:10px 12px;margin:8px 0;font-size:12.5px;line-height:1.55}
+.reportwarn{background:var(--warn-bg);color:#6e4100}
+.reporterror{background:var(--bad-bg);color:#8a1c12;font-weight:600}
+.reportok{background:var(--good-bg);color:#0d5c39}
+.reportsection{margin-top:16px}
+.reportsection h3{margin:0 0 6px;font:600 15px/1.2 var(--f-sign)}
+.reportscroll{max-height:280px;overflow:auto;border:1px solid var(--line2);border-radius:var(--r-card)}
+.reporttable{width:100%;border-collapse:collapse;font-size:12px}
+.reporttable th,.reporttable td{padding:6px 8px;border-bottom:1px solid var(--line2);text-align:left;vertical-align:top}
+.reporttable th{position:sticky;top:0;background:var(--panel2);color:var(--ink2);font-weight:600}
+.reporttable tr:hover td{background:#fafbfc}
+.optlog{display:inline-flex;align-items:center;gap:6px;font-size:12.5px}
+.btrow{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+
+@container (max-width:250px){
+  .dayhead{padding-right:4px}.dayname{font-size:16px}.daystats{font-size:11.5px}
+  .daybig{font-size:10.5px}.daybig b{font-size:19px}.daybig.done b{font-size:14px}
+  .rhead{grid-template-columns:18px minmax(0,1fr)}
+  .ract{position:absolute;right:5px;top:4px;background:var(--panel);border-radius:6px;box-shadow:0 0 0 1px var(--line2);opacity:0}
+  .route:hover .ract,.ract:focus-within{opacity:1}
+  .rload,.rmeta{grid-column:2/3}
+  .cust{grid-template-columns:20px minmax(0,1fr) 16px;gap:5px}
+  .cname{font-size:12px}
+  .fit .fl{display:none}
+}
+@media (max-width:1180px){.side{position:fixed;right:0;top:0;bottom:0;z-index:420;box-shadow:-16px 0 40px rgba(20,30,45,.18)}.app:not(.side-hidden) .board{padding-right:12px}}
+@media (max-width:900px){.step{border-right:0;border-bottom:1px solid var(--line2);width:100%}.ctx,.status .r{display:none}.searchwrap{width:100%}.rgrid{grid-template-columns:1fr}.side{width:min(420px,100vw)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media print{
+  body{background:#fff}.app{height:auto;display:block}.hdr,.flow,.tools,.side,.status,.drawer,.modalback,.addtour,.ract,.remove,.hiddenroutes{display:none!important}.rtoggle{visibility:hidden}
+  .board{overflow:visible;padding:0}.week,.week.focus{min-width:0!important;height:auto;grid-template-columns:repeat(3,1fr)!important;gap:6px}
+  .daycol{background:#fff;border:1px solid #ccc}.daybody{overflow:visible}
+  .route.collapsed .dropzone{display:block}.route.collapsed .rmeta{display:flex}
+  .route,.cust{break-inside:avoid}.dayhead::before,.cust,.otag,.seq,.fit,.role{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
 </style>
 </head>
 <body>
-<div class="top"><div class="topin">
-  <div class="headrow">
-    <div><h1>Feiertagsplanung</h1><div class="sub">Woche verschieben · prüfen · optimieren · exportieren · V29</div></div>
-    <div class="filepill">__SRC____AUX__ · __GENERATED__</div>
+<div class="app" id="app">
+<header class="hdr">
+  <div class="brand"><svg class="mark" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="2" width="20" height="18" rx="3" fill="#1c232e"/><rect x="4" y="6" width="4" height="11" rx="1" fill="#fff"/><rect x="9" y="6" width="4" height="7" rx="1" fill="#fff"/><rect x="14" y="6" width="4" height="9" rx="1" fill="#c8102e"/></svg><span class="ttl">Feiertagsplanung</span></div>
+  <div class="ctx" title="__SRC____AUX__ · erstellt __GENERATED__"><b>__SRC__</b><span>erstellt __GENERATED__</span></div>
+  <div class="hdr-r">
+    <button class="btn ghost" id="rulesBtn" type="button"><svg class="i" viewBox="0 0 16 16"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/><circle cx="6" cy="4" r="1.7" fill="#fff"/><circle cx="10.5" cy="8" r="1.7" fill="#fff"/><circle cx="5" cy="12" r="1.7" fill="#fff"/></svg>Regeln</button>
+    <button class="btn ghost" id="backtestBtn" type="button" style="display:none">Backtest</button>
+    <details class="moremenu"><summary class="btn ghost" aria-label="Weitere Aktionen" title="Weitere Aktionen"><svg class="i" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".9" fill="currentColor"/><circle cx="8" cy="8" r=".9" fill="currentColor"/><circle cx="12.5" cy="8" r=".9" fill="currentColor"/></svg></summary>
+      <div class="menupop"><button class="mi" id="csvBtn" type="button">Änderungen als CSV</button><button class="mi" type="button" onclick="window.print()">Drucken</button><hr><button class="mi danger" id="resetBtn" type="button">Alle Änderungen zurücksetzen</button></div></details>
   </div>
-  <div class="compactbar">
-    <div class="searchwrap"><input id="search" class="search" placeholder="SAP, Name, Ort oder Tour suchen …"></div>
-    <details class="filterdetails"><summary>Bereiche</summary><div class="chips" id="sourceChips"></div></details>
-    <div class="viewfilter"><button class="viewbtn active" data-view="all" type="button">Alle</button><button class="viewbtn" data-view="new" type="button">Neu</button><button class="viewbtn" data-view="changed" type="button">Geändert</button></div>
-    <div class="actions primaryactions"><button class="btn" id="backtestBtn" type="button" style="display:none">Backtest</button><button class="btn" id="finishBtn" type="button">Report</button><button class="btn primary" id="xlsxBtn" type="button">Excel exportieren</button></div>
-    <details class="moremenu"><summary>Mehr</summary><div class="menupop"><button class="btn" id="resetBtn" type="button">Zurücksetzen</button><button class="btn" id="csvBtn" type="button">Änderungen CSV</button><button class="btn" type="button" onclick="window.print()">Drucken</button></div></details>
+</header>
+
+<section class="flow" aria-label="Arbeitsablauf">
+  <div class="step" id="step1"><div class="sh"><span class="sn">1</span>Welche Tage fallen aus?</div><div class="sc"><div class="days" id="outageDays"></div></div></div>
+  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Wohin?</div><div class="sc"><select id="toDay" aria-label="Zieltag"></select><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten). Bei Vortag + Folgetag gilt der Vortag."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label></div></div>
+  <div class="step grow" id="step3"><div class="sh"><span class="sn">3</span>Umplanen</div><div class="sc">
+    <button class="btn primary" id="suggestBtn" type="button">Vorschläge berechnen</button>
+    <button class="btn" id="optimizeBtn" type="button" title="Reihenfolge je Tour (2-opt/Or-opt) und Kundentausch zwischen Touren am Zieltag">Touren optimieren</button>
+    <button class="btn ghost" id="undoBtn" type="button" style="display:none">Optimierung rückgängig</button>
+    <div class="prog" title="Lieferungen der Ausfalltage, die noch umgeplant werden müssen"><div class="progtxt"><b id="openOutageCount">0</b><span>offen</span><span class="mut" id="flowDone"></span></div><div class="progbar"><i id="flowProg"></i></div><div class="progsub">am Zieltag schon beliefert: <b id="coveredOutageCount">0</b></div></div>
+  </div></div>
+  <div class="step" id="step4"><div class="sh"><span class="sn">4</span>Abschließen <span class="ready wait" id="readyState">–</span></div><div class="sc">
+    <button class="btn" id="finishBtn" type="button">Prüfbericht</button>
+    <button class="btn primary" id="xlsxBtn" type="button"><svg class="i" viewBox="0 0 16 16"><path d="M8 2.5v8M4.5 7.5L8 11l3.5-3.5M3 13.5h10"/></svg>Excel exportieren</button>
+  </div></div>
+</section>
+
+<div class="tools">
+  <div class="searchwrap"><svg class="i" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg><input id="search" class="search" type="text" placeholder="SAP, Kunde, Ort oder Tour" autocomplete="off"><span class="kbd" title="Taste / springt in die Suche">/</span></div>
+  <div class="seg" role="group" aria-label="Touren anzeigen"><button class="active" data-view="all" type="button">Alle</button><button data-view="changed" type="button">Geändert</button><button data-view="new" type="button">Neu</button><button data-view="issues" type="button">Mit Problemen</button></div>
+  <div class="seg" role="group" aria-label="Tage anzeigen"><button class="active" data-layout="week" type="button" title="Alle sechs Wochentage">Woche</button><button data-layout="focus" type="button" title="Nur Ausfall- und Zieltage, dafür breiter">Ausfall + Ziel</button></div>
+  <div class="srcchips" id="sourceChips"></div>
+  <button class="btn tgl box" id="collapseBtn" type="button" aria-pressed="true" title="Touren ohne Änderung nur als Kopfzeile zeigen – Klick auf einen Tourkopf klappt einzeln auf">Unveränderte zuklappen</button>
+  <div class="spacer"></div>
+  <div class="issues"><span class="lbl">Prüfung</span>
+    <button class="ichip" id="chipDup" type="button" data-issue title="Neue Doppelbelieferungen – blockieren den Export"><b id="mDup">0</b>Doppelungen</button>
+    <button class="ichip" id="chipCap" type="button" data-issue title="Touren über der Obergrenze – blockieren den Export"><b id="mCap">0</b>über Maximum</button>
+    <button class="ichip" id="chipTime" type="button" data-issue title="Voraussichtlich verletzte Anlieferzeiten"><b id="mTime">0</b>Zeitkonflikte</button>
   </div>
+  <button class="btn" id="sideBtn" type="button" aria-pressed="false" title="Seitenleiste: Vorschläge, Ablage, Änderungen"><svg class="i" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M10 3v10"/></svg><span id="sideBadge"></span></button>
+</div>
+
+<div class="main">
+  <div class="board"><div id="week" class="week"></div></div>
+  <aside class="side" id="side" aria-label="Seitenleiste">
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="sugg" type="button" role="tab">Vorschläge <span class="cnt" id="cntSugg">–</span></button>
+      <button class="tab" data-tab="drop" type="button" role="tab">Ablage <span class="cnt" id="mOut">0</span></button>
+      <button class="tab" data-tab="chg" type="button" role="tab">Änderungen <span class="cnt" id="cntChg">0</span></button>
+      <button class="iconbtn x" id="sideClose" type="button" title="Seitenleiste schließen" aria-label="Seitenleiste schließen"><svg class="i" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+    </div>
+    <div class="pane active" data-pane="sugg">
+      <div id="suggestions" class="suggestions" style="display:contents">
+        <div class="panehead" id="suggHead" hidden><div style="display:flex;align-items:flex-start;gap:8px"><div style="flex:1;min-width:0"><h2 id="suggTitle">Vorschläge</h2><p id="suggSub"></p></div><button class="btn sm ghost" id="closeSuggBtn" type="button" title="Vorschläge verwerfen">Verwerfen</button></div>
+          <div class="quick"><button class="btn sm primary" id="applyGoodBtn" type="button">Sehr gut + gut übernehmen</button><button class="btn sm" id="applyVeryGoodBtn" type="button">Nur sehr gute</button><button class="btn sm" id="applyAllBtn" type="button">Alle inkl. Resttouren</button></div></div>
+        <div class="panebody" id="suggBody"></div>
+      </div>
+    </div>
+    <div class="pane" data-pane="drop">
+      <div class="panehead"><h2>Ablage</h2><p>Kunden hierher ziehen, um sie auszuplanen. Von hier wieder in jede Tour ziehbar.</p></div>
+      <div class="panebody"><div id="unplannedDrop" class="unplanned-drop" data-route="UNPLANNED"></div><div id="goneBox"></div></div>
+    </div>
+    <div class="pane" data-pane="chg">
+      <div class="panehead"><h2>Änderungen</h2><p>Original → neu, nach Zieltour gruppiert. Klick springt zur Karte.</p></div>
+      <div class="panebody" id="changeBody"></div>
+    </div>
+  </aside>
+</div>
+
+<footer class="status">
+  <span><b id="mDeliveries">0</b>Lieferungen</span><span><b id="mRoutes">0</b>Touren</span><span><b id="mMoved">0</b>verschoben</span><span><b id="mGood">0</b>davon passend</span><span><b id="mCancelled">0</b>gestrichen</span><span><b id="mKm">0</b>km am Zieltag</span>
+  <span class="r" id="netHint"></span>
+</footer>
+</div>
+
+<div id="drawer" class="drawer" role="status" aria-live="polite"><h3 id="drawerTitle"></h3><p id="drawerText"></p></div>
+
+<div id="rulesModal" class="modalback" aria-hidden="true"><div class="modal rulesmodal" role="dialog" aria-modal="true" aria-labelledby="rulesTitle">
+  <h2 id="rulesTitle">Regeln</h2><div class="hint">Gelten für Vorschläge, Autoplan und Optimierung. Dauerhafte Ausschlüsse gehören in die Adressdatei bzw. den Generator.</div>
+  <div class="rgrid">
+    <section class="rsec"><h3>Tourgrößen</h3>
+      <div class="rrow"><label for="maxCustomers">Höchstens Kunden je Tour</label><input id="maxCustomers" type="number" min="1" max="30" step="1" value="12"><div class="rhelp">Harte Obergrenze. Touren, die im Original schon größer sind, behalten ihre Größe.</div></div>
+      <div class="rrow"><label for="autoOver">Neue Touren größer als Tourfamilie um</label><span class="inl"><input type="number" id="autoOver" min="0" max="10" step="1" value="2"> Kunden</span></div>
+      <div class="rrow"><label for="lockedTours">Gesperrte Touren</label><input type="text" id="lockedTours" value="1058, 2058, 3058, 4058, 5058, 6030" title="Nichts hinzufügen, nichts herausnehmen – am Ausfalltag entfällt die Tour komplett"><div class="rhelp">Nichts hinzufügen, nichts herausnehmen – am Ausfalltag entfällt die Tour komplett.</div></div>
+    </section>
+    <section class="rsec"><h3>Umplanung</h3>
+      <div class="rrow"><label class="chk" for="blockMode" title="Die offenen Kunden einer Ausfalltour bleiben zusammen: große Blöcke bekommen eine eigene Tour (nächste freie Nummer), kleine gehen in die passendste bestehende Zieltag-Tour."><input type="checkbox" id="blockMode" checked> Ausfalltouren als Block umplanen</label><span></span><div class="rhelp">Große Blöcke bekommen eine eigene Tour, kleine gehen in die passendste Zieltag-Tour.</div></div>
+      <div class="rrow"><label class="chk" for="mergeSmall" title="Neue Touren unter Normalgröße werden mit einer nahen neuen Tour zusammengelegt oder an eine nahe Tour mit Platz angehängt. Touren aus dem Planungsgedächtnis nur bis 12 km."><input type="checkbox" id="mergeSmall" checked> Kleine neue Touren zusammenlegen</label><span class="inl">bis <input type="number" id="mergeKm" min="5" max="60" step="5" value="25"> km</span></div>
+      <div class="rrow"><label for="timeTol" title="Abweichung der Abfahrt gegenüber der Herkunftstour. Malus: Tour bleibt möglich, Bewertung sinkt. Sperre: Tour ist ausgeschlossen.">Zeitfenster-Toleranz</label><span class="inl"><input type="number" id="timeTol" min="0" max="24" step="0.5" value="2"> h als <select id="timeHard"><option value="soft" selected>Malus</option><option value="hard">Sperre</option></select></span><div class="rhelp">Abweichung der Abfahrt gegenüber der Herkunftstour. Malus senkt die Bewertung, Sperre schließt die Tour aus.</div></div>
+    </section>
+    <section class="rsec"><h3>Optimierung</h3>
+      <div class="rrow"><label class="chk" for="optRegular"><input type="checkbox" id="optRegular"> Darf auch Stammkunden der Zieltag-Touren verschieben</label><span></span></div>
+      <div class="rrow"><label for="dnaWeight">Tour-DNA-Bonus je Partner</label><span class="inl"><input type="number" id="dnaWeight" min="0" max="30" step="1" value="4"> Min.</span></div>
+      <div class="rrow"><label for="tourFixed">Fixkosten je Tour</label><span class="inl"><input type="number" id="tourFixed" min="0" max="240" step="10" value="60"> Min.</span></div>
+    </section>
+    <section class="rsec"><h3>Ausschlussliste</h3>
+      <div class="rrow"><label for="excludeSaps">SAP nicht umplanen</label><span></span><textarea id="excludeSaps" placeholder="SAP-Nummern – Zeile, Leerzeichen, Komma oder Semikolon">__EXCLUDED_TXT__</textarea><div class="rhelp" id="excludeMeta">0 SAP ausgeschlossen</div></div>
+    </section>
+    <section class="rsec wide"><h3>So wird gerechnet</h3><div class="rnote">Startzeit aus der CSV = Ladebeginn, nach 60 Min. Laden folgt die Abfahrt; Valluhn ist Stopp 0. Die Reihenfolge der Vorlage-Tour bleibt Anker, neue Kunden kommen an die günstigste Stelle, Zeitfenster können die Reihenfolge ändern. Manuell an eine Position gezogene Kunden bleiben dort, bis die Tour neu sortiert wird.</div></section>
+  </div>
+  <div class="modalactions"><button class="btn" id="sequenceAllBtn" type="button" style="margin-right:auto">Geänderte Touren neu sortieren</button><button class="btn" id="closeRulesBtn" type="button">Schließen</button><button class="btn primary" id="applyRulesBtn" type="button">Regeln anwenden</button></div>
 </div></div>
-<main>
-  <section class="plannerbar">
-    <div class="plannerflow">
-      <div class="flowfield"><span>Ausfalltage · mehrere möglich</span><div class="outagedays" id="outageDays"></div></div>
-      <div class="flowarrow">→</div>
-      <div class="flowfield"><span>Zieltag(e)</span><select id="toDay"></select><label class="allon" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten). Bei Vortag+Folgetag gilt der Vortag."><input type="checkbox" id="allOnTarget"> alle Kunden am Zieltag</label></div>
-      <button class="btn primary" id="suggestBtn" type="button">Vorschläge</button>
-      <button class="btn" id="optimizeBtn" type="button" title="Reihenfolge je Tour (2-opt/Or-opt) und Kundentausch zwischen Touren am Zieltag">Touren optimieren</button>
-      <button class="btn" id="undoBtn" type="button" style="display:none">Rückgängig</button>
-      <div class="flowstatus"><span>offen <b id="openOutageCount">0</b></span><span class="done">bereits am Zieltag <b id="coveredOutageCount">0</b></span></div>
-      <div class="flowhint" id="netHint"></div>
-    </div>
-  </section>
 
-  <details class="settingspanel">
-    <summary><span>Regeln &amp; Ausschlüsse</span><span class="summaryhint">Max. Kunden · SAP ausschließen · Sortierung</span></summary>
-    <div class="planningrules">
-      <div class="rulefield"><label for="maxCustomers">Max. Kunden je Tour</label><input id="maxCustomers" type="number" min="1" max="30" step="1" value="12"><div class="rulemeta">Harte Obergrenze je Tour. Bestehende Touren, die schon größer sind, behalten ihre Originalgröße.</div></div>
-      <div class="rulefield"><label for="excludeSaps">SAP nicht berücksichtigen</label><textarea id="excludeSaps" placeholder="SAP-Nummern einfügen – Zeile, Leerzeichen, Komma oder Semikolon">__EXCLUDED_TXT__</textarea><div class="rulemeta" id="excludeMeta">0 SAP ausgeschlossen</div></div>
-      <button class="btn" id="applyRulesBtn" type="button">Regeln übernehmen</button>
-      <button class="btn" id="sequenceAllBtn" type="button">Geänderte Touren sortieren</button>
-    </div>
-    <div class="compactnotice"><label title="Die offenen Kunden einer Ausfalltour bleiben zusammen: große Blöcke bekommen eine eigene Tour (nächste freie Nummer), kleine gehen in die passendste bestehende Zieltag-Tour – so planen die Disponenten in den Historien."><input type="checkbox" id="blockMode" checked> Ausfalltouren als Block umplanen</label> · <label title="Neue Touren unter Normalgröße werden mit einer nahen neuen Tour zusammengelegt oder an eine nahe Tour mit Platz angehängt (z. B. Hamburg). Touren aus dem Planungsgedächtnis nur bis 12 km."><input type="checkbox" id="mergeSmall" checked> kleine neue Touren zusammenlegen bis <input type="number" id="mergeKm" min="5" max="60" step="5" value="25" style="width:48px"> km</label> · <label title="Abweichung der Abfahrt gegenüber der Herkunftstour. Malus: Tour bleibt möglich, Bewertung sinkt (eine Stufe über Toleranz, zwei über doppelter Toleranz). Sperre: Tour ist ausgeschlossen. Neue Touren übernehmen das Zeitfenster der Herkunftstour."><input type="number" id="timeTol" min="0" max="24" step="0.5" value="2" style="width:48px"> h Zeitfenster-Toleranz als <select id="timeHard"><option value="soft" selected>Malus</option><option value="hard">Sperre</option></select></label> · <label><input type="checkbox" id="optRegular"> Optimierung darf auch Stammkunden der Zieltag-Touren verschieben</label> · <label>Tour-DNA-Bonus <input type="number" id="dnaWeight" min="0" max="30" step="1" value="4" style="width:48px"> Min. je Partner</label> · <label>Fixkosten je Tour <input type="number" id="tourFixed" min="0" max="240" step="10" value="60" style="width:56px"> Min.</label> · <label>Gesperrte Touren <input type="text" id="lockedTours" value="1058, 2058, 3058, 4058, 5058, 6030" style="width:230px" title="Nichts hinzufügen, nichts herausnehmen – am Ausfalltag entfällt die Tour komplett"></label> · <label>Übergröße neuer Touren + <input type="number" id="autoOver" min="0" max="10" step="1" value="2" style="width:44px"> Kunden ggü. Tourfamilie</label></div>
-    <div class="compactnotice"><b>Zeit:</b> CSV-Start = Ladebeginn, +60 Min. Laden → Abfahrt. Valluhn = Stopp 0. <b>Reihenfolge:</b> Reihenfolge der Vorlage-Tour bleibt Anker, neue Kunden werden an der günstigsten Stelle eingefügt; Zeitfenster können die Reihenfolge ändern. Manuell an eine Position gezogene Kunden bleiben dort, bis „Sort.“ gedrückt wird.</div>
-  </details>
-
-  <section class="suggestions" id="suggestions">
-    <div class="sugghead"><div><strong id="suggTitle">Vorschläge</strong><div class="sub" id="suggSub"></div></div><button class="iconclose" id="closeSuggBtn" type="button" aria-label="Schließen">×</button></div>
-    <div class="quickapply"><button class="btn" id="applyVeryGoodBtn" type="button">Sehr gute übernehmen</button><button class="btn primary" id="applyGoodBtn" type="button">Sehr gut + gut</button><button class="btn" id="applyAllBtn" type="button">Alle übernehmen (inkl. Resttouren)</button></div>
-    <div class="suggbody" id="suggBody"></div>
-  </section>
-
-  <div class="compactmetrics">
-    <div class="metric"><div class="v" id="mDeliveries">0</div><div class="k">Lieferungen</div></div>
-    <div class="metric"><div class="v" id="mRoutes">0</div><div class="k">Touren</div></div>
-    <div class="metric"><div class="v" id="mMoved">0</div><div class="k">verschoben</div></div>
-    <div class="metric"><div class="v" id="mGood">0</div><div class="k">Geo passend</div></div>
-    <div class="metric"><div class="v" id="mOut">0</div><div class="k">ausgeplant</div></div>
-    <div class="metric"><div class="v" id="mCancelled">0</div><div class="k">Zieltag schon da</div></div>
-    <div class="metric"><div class="v" id="mKm">0</div><div class="k">km Zieltag</div></div>
-    <div class="metric issue"><div class="v" id="mDup">0</div><div class="k">Doppelungen</div></div>
-    <div class="metric issue"><div class="v" id="mCap">0</div><div class="k">über Maximum</div></div>
-    <div class="metric issue"><div class="v" id="mTime">0</div><div class="k">Zeitkonflikte</div></div>
-  </div>
-
-  <section class="unplanned">
-    <div class="unplanned-head"><div><span class="unplanned-title">Ausgeplant</span><span class="sub"> · manuell ausgeplante Kunden</span></div><span class="dropnote">Ablage</span></div>
-    <div id="unplannedDrop" class="unplanned-drop" data-route="UNPLANNED"></div>
-  </section>
-
-  <div class="weekwrap"><div id="week" class="week"></div></div>
-
-  <details class="collapsedchanges">
-    <summary><span>Änderungsübersicht</span><span class="summaryhint">Original → Neu</span></summary>
-    <div style="overflow:auto"><table class="changetable"><thead><tr><th>SAP</th><th>Kunde</th><th>Original</th><th>Neu</th><th>Bewertung</th><th>Nächster Kunde</th><th>Entfernung</th><th>Hinweis</th></tr></thead><tbody id="changeBody"></tbody></table></div>
-  </details>
-</main>
-<div id="drawer" class="drawer"><h3 id="drawerTitle"></h3><p id="drawerText"></p></div>
-<div id="tourModal" class="modalback" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true"><h2>Neue Tour anlegen</h2><div class="hint" id="newTourHint"></div><div class="formrow"><div class="field"><label for="newTourNo">Tournummer / Name</label><input id="newTourNo" autocomplete="off" placeholder="z. B. 5044"></div><div class="field"><label for="newTourSource">Startbereich</label><select id="newTourSource"></select></div></div><div class="field" style="margin-top:8px"><label for="newTourStart">Ladebeginn (optional)</label><input id="newTourStart" autocomplete="off" placeholder="z. B. 03:00 → Abfahrt 04:00"></div><div id="newTourError" class="modalerror"></div><div class="modalactions"><button class="btn" id="cancelTourBtn" type="button">Abbrechen</button><button class="btn primary" id="createTourBtn" type="button">Tour anlegen</button></div></div></div>
-<div id="reportModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Abschlussreport</h2><div class="hint">Zusammenfassung der aktuellen Feiertagsplanung.</div><div id="reportBody"></div><div class="modalactions"><button class="btn" id="closeReportBtn" type="button">Schließen</button><button class="btn" id="reportDownloadBtn" type="button">Report HTML</button><button class="btn primary" id="reportExcelBtn" type="button">Excel Originalstruktur</button></div></div></div>
-<div id="backtestModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Backtest gegen Referenzplan</h2><div class="hint" id="backtestHint"></div><label class="optlog"><input type="checkbox" id="btOptimize"> Autoplan inkl. Touren-Optimierung</label> · <button class="btn small" id="sweepBtn" type="button">Parameter-Vergleich (12 Varianten)</button><div id="sweepBody"></div><div id="backtestBody"></div><div class="modalactions"><button class="btn" id="closeBacktestBtn" type="button">Schließen</button><button class="btn" id="backtestCurrentBtn" type="button">Aktuellen Plan vergleichen</button><button class="btn primary" id="backtestAutoBtn" type="button">Autoplan rechnen &amp; vergleichen</button></div></div></div>
+<div id="tourModal" class="modalback" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true"><h2>Neue Tour anlegen</h2><div class="hint" id="newTourHint"></div><div class="formrow"><div class="field"><label for="newTourNo">Tournummer oder Name</label><input id="newTourNo" autocomplete="off" placeholder="z. B. 5044"></div><div class="field"><label for="newTourSource">Startbereich</label><select id="newTourSource"></select></div></div><div class="field" style="margin-top:10px"><label for="newTourStart">Ladebeginn (optional)</label><input id="newTourStart" autocomplete="off" placeholder="z. B. 03:00 → Abfahrt 04:00"></div><div id="newTourError" class="modalerror"></div><div class="modalactions"><button class="btn" id="cancelTourBtn" type="button">Abbrechen</button><button class="btn primary" id="createTourBtn" type="button">Tour anlegen</button></div></div></div>
+<div id="reportModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Prüfbericht</h2><div class="hint">Stand der aktuellen Feiertagsplanung. Der Excel-Export ist nur ohne Fehler möglich.</div><div id="reportBody"></div><div class="modalactions"><button class="btn" id="closeReportBtn" type="button">Schließen</button><button class="btn" id="reportDownloadBtn" type="button">Bericht als HTML</button><button class="btn primary" id="reportExcelBtn" type="button">Excel exportieren</button></div></div></div>
+<div id="backtestModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Backtest gegen Referenzplan</h2><div class="hint" id="backtestHint"></div><div class="btrow"><label class="optlog"><input type="checkbox" id="btOptimize"> Autoplan inkl. Touren-Optimierung</label><button class="btn sm" id="sweepBtn" type="button">Parameter vergleichen (16 Varianten)</button></div><div id="sweepBody"></div><div id="backtestBody"></div><div class="modalactions"><button class="btn" id="closeBacktestBtn" type="button">Schließen</button><button class="btn" id="backtestCurrentBtn" type="button">Aktuellen Plan vergleichen</button><button class="btn primary" id="backtestAutoBtn" type="button">Autoplan rechnen und vergleichen</button></div></div></div>
 <div id="mapsModal" class="modalback" aria-hidden="true"><div class="modal mapsmodal" role="dialog" aria-modal="true"><h2 id="mapsTitle">Google Maps</h2><div class="hint" id="mapsHint"></div><div id="mapsBody" class="mapslist"></div><div class="modalactions"><button class="btn" id="closeMapsBtn" type="button">Schließen</button></div></div></div>
 <script>eval(atob('__JSZIP__'))</script>
 <script>
@@ -2089,7 +2354,7 @@ function leg(a,b){
 function netKm(a,b){const l=leg(a,b);return l?l.km:NaN}
 function legKm0(a,b){const l=leg(a,b);return l?l.km:0}
 function fmtDur(m){if(!Number.isFinite(m))return '–';const h=Math.floor(m/60),mm=Math.round(m%60);return h+':'+String(mm).padStart(2,'0')+' h'}
-function fmt(n){return Number.isFinite(n)?n.toFixed(1):'–'}
+function fmt(n){return Number.isFinite(n)?n.toFixed(1).replace('.',','):'–'}
 function pct(n){return Number.isFinite(n)?Math.round(n*100)+' %':'–'}
 function srcLabel(s){return String(s||'')}
 function routeId(day,source,tour){return day+'::'+source+'::'+String(tour)}
@@ -2237,7 +2502,7 @@ function daySort(a,b){const dd=DAY_ORDER.indexOf(a.day)-DAY_ORDER.indexOf(b.day)
 function sortOriginal(r){r.items.sort((x,y)=>(x.originalRouteId===r.id?x.origIndex:1e6)-(y.originalRouteId===r.id?y.origIndex:1e6))}
 function buildOriginalPlan(){
   assignments=[];routes=[];unplanned=[];clusters=[];cancelledAids=new Set();cancelReasons=new Map();autoCoveredAids=new Set();SAP_ROUTES=new Map();FAM_CACHE.clear();AFF_CACHE.clear();SRC_TYP.clear();EXTRA_T=null;UNDO=null;LAST_OPT=null;{const ub=document.getElementById('undoBtn');if(ub)ub.style.display='none'}
-  document.getElementById('suggestions').classList.remove('show');
+  hideSugg();
   CUSTOMERS.forEach(c=>DAY_ORDER.forEach(day=>{
     const tour=c[day];if(tour==null||tour==='')return;
     const a={...c,aid:c.uid+'::'+day,originalDay:day,originalTour:String(tour),currentDay:day,currentTour:String(tour),originalRouteId:routeId(day,c.Quelle,tour),originalLoadOrder:c['LRF_'+day]??null,loadOrderRow:c['LRFROW_'+day]??null};
@@ -2271,8 +2536,8 @@ function syncTargetDayOptions(){
 }
 function renderOutageButtons(){
   const box=document.getElementById('outageDays');
-  box.innerHTML=DAY_ORDER.map(d=>`<button type="button" class="outageday ${outageDays.has(d)?'active':''}" data-outage-day="${d}">${DAY_SHORT[d]}</button>`).join('');
-  box.querySelectorAll('[data-outage-day]').forEach(b=>b.addEventListener('click',()=>{const d=b.dataset.outageDay;if(outageDays.has(d)){outageDays.delete(d);if(!outageDays.size){const c=document.getElementById('allOnTarget');if(c&&!c.checked){c.checked=true;showInfo('Kein Ausfalltag','Es fällt kein Tag aus – alle Kunden werden am gewählten Zieltag beliefert („Alle Kunden am Zieltag" wurde aktiviert).')}}}else outageDays.add(d);renderOutageButtons();syncTargetDayOptions();autoResolveCoveredDeliveries(true);if(document.getElementById('suggestions').classList.contains('show'))computeSuggestions()}));
+  box.innerHTML=DAY_ORDER.map(d=>`<button type="button" class="dbtn ${outageDays.has(d)?'active':''}" aria-pressed="${outageDays.has(d)}" data-outage-day="${d}">${DAY_SHORT[d]}</button>`).join('');
+  box.querySelectorAll('[data-outage-day]').forEach(b=>b.addEventListener('click',()=>{const d=b.dataset.outageDay;if(outageDays.has(d)){outageDays.delete(d);if(!outageDays.size){const c=document.getElementById('allOnTarget');if(c&&!c.checked){c.checked=true;showInfo('Kein Ausfalltag','Es fällt kein Tag aus – alle Kunden werden am gewählten Zieltag beliefert („Alle Kunden am Zieltag" wurde aktiviert).')}}}else outageDays.add(d);renderOutageButtons();syncTargetDayOptions();autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()}));
 }
 /* Vortag/Folgetag: Ausfall-Kunden gehen – wie in den historischen Plänen – auf den Tag davor oder danach */
 const DEFAULT_SIDE={Mo:'next',Die:'next',Mitt:'next',Don:'prev',Fr:'prev',Sam:'prev'};
@@ -2378,7 +2643,12 @@ function autoResolveCoveredDeliveries(notify=true){
 function updateOutageStatus(){
   const daySet=new Set(selectedOutageDays());
   const open=routes.filter(r=>daySet.has(r.day)).reduce((n,r)=>n+r.items.filter(a=>!isExcluded(a)).length,0);
-  const ex=unplanned.filter(a=>a.extra).length;document.getElementById('openOutageCount').textContent=open+(ex?` + ${ex} Zusatz`:'');document.getElementById('coveredOutageCount').textContent=[...autoCoveredAids].filter(x=>{const c=cancelReasons.get(x)||'';return c==='Zieltag bereits vorhanden'||c.startsWith('zusammengelegt')}).length;
+  const ex=unplanned.filter(a=>a.extra).length,total=assignments.filter(a=>a.extra||(daySet.has(a.originalDay)&&!isExcluded(a))).length,done=Math.max(0,total-open-ex);
+  document.getElementById('openOutageCount').textContent=open+ex;
+  document.getElementById('flowDone').textContent=total?`${done} von ${total} erledigt`+(ex?`, ${ex} Zusatz offen`:''):'';
+  document.getElementById('flowProg').style.width=(total?Math.round(done/total*100):0)+'%';
+  document.getElementById('coveredOutageCount').textContent=[...autoCoveredAids].filter(x=>{const c=cancelReasons.get(x)||'';return c==='Zieltag bereits vorhanden'||c.startsWith('zusammengelegt')}).length;
+  return open+ex;
 }
 
 /* ---------- Regeln ---------- */
@@ -2652,25 +2922,34 @@ function buildAllClusters(fromDays){
   return all;
 }
 function computeSuggestions(){
-  const fromDays=selectedOutageDays(),tds=targetDays(),box=document.getElementById('suggestions');
-  if(!tds.length||(!fromDays.length&&!document.getElementById('allOnTarget').checked)){clusters=[];document.getElementById('suggTitle').textContent='Zieltag ungültig';document.getElementById('suggSub').textContent='Bitte Ausfalltage und einen anderen Zieltag wählen.';document.getElementById('suggBody').innerHTML='';box.classList.add('show');return}
-  readTimeTol();syncExtras();clusters=buildAllClusters(fromDays);renderSuggestions();box.classList.add('show');
+  const fromDays=selectedOutageDays(),tds=targetDays();
+  if(!tds.length||(!fromDays.length&&!document.getElementById('allOnTarget').checked)){clusters=[];showSugg();document.getElementById('suggTitle').textContent='Zieltag fehlt';document.getElementById('suggSub').textContent='Bitte oben Ausfalltage und einen anderen Zieltag wählen.';document.getElementById('suggBody').innerHTML='';return}
+  readTimeTol();syncExtras();clusters=buildAllClusters(fromDays);showSugg();renderSuggestions();
 }
 function clusterHtml(c){
   const origins=[...new Set(c.members.map(x=>DAY_SHORT[x.a.originalDay]+' '+x.from.tour))].join(', ');
-  let title,meta=[];
-  if(c.kind==='insert'){title=`→ ${DAY_LABELS[c.toDay]} · Tour ${esc(c.target.tour)} <span class="sub">(${c.target.items.length} → ${c.target.items.length+c.members.length} Kunden)</span>`;const clk=routeClockInfo(c.target);if(clk)meta.push(clk)}
-  else{title=`→ neue Tour ${esc(c.name)} · ${DAY_LABELS[c.toDay]} <span class="sub">(${c.members.length} Kunden)</span>`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(clk);if(c.compact)meta.push('Gebiet '+c.compact.label+(Number.isFinite(c.compact.avg)?' · Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
-  const why=c.memory?'<b>Planungsgedächtnis</b> – so bei früheren Feiertagen geplant':c.block?`<b>Tourblock</b> – Ausfalltour bleibt zusammen`:c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?` · Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''} · ${c.direct} fahren dort bereits, ${c.peer} über Mitfahrer`:'keine Tourfamilie · Geo-Zuordnung';
-  meta.push(esc(srcLabel(c.source))+' · aus '+esc(origins));if(Number.isFinite(c.km))meta.push('ca. '+Math.round(c.km)+' km Rundlauf'+(HAS_MATRIX?' (Straße)':' (geschätzt)'));
-  const mem=c.members.map(x=>{const a=x.a,f=x.fit;return `<div class="clumem"><span class="anc ${x.anchor}">${ANCHOR_LABEL[x.anchor]}</span><span class="nm"><b>${esc(a.SAP)}</b> · ${esc(a.Name)} · ${esc(a.Ort)}</span><span>${f?`<span class="fit ${f.key}">${esc(f.label)}${Number.isFinite(f.nearest)?' · '+fmt(f.nearest)+' km':''}</span>`:''}${a.Zeitkritisch?` <span class="flag time" title="${esc(timeInfo(a))}">Zeit</span>`:''}</span><button class="remove" type="button" title="Aus Vorschlag entfernen" data-drop-member="${c.id}|${esc(x.aid)}">×</button></div>`}).join('');
-  return `<div class="clu q-${c.quality}"><div class="cluhead"><div><div class="clutitle">${title}</div><div class="clumeta">${why}</div><div class="clumeta">${meta.join(' · ')}${c.timeViol?` · <span class="capwarn">${c.timeViol} Zeitkonflikt(e)</span>`:''}${c.note?' · '+esc(c.note):''}</div></div><div style="display:grid;gap:4px;justify-items:end"><span class="fit ${c.quality}">${QUALITY_LABEL[c.quality]}</span><button class="btn small primary" type="button" data-apply-cluster="${c.id}">Übernehmen</button></div></div>${mem}</div>`;
+  let title,sub;const meta=[esc(srcLabel(c.source))+', aus '+esc(origins)];
+  if(c.kind==='insert'){title=`${DAY_SHORT[c.toDay]} · Tour ${esc(c.target.tour)}`;sub=`${c.target.items.length} → ${c.target.items.length+c.members.length} Kunden`;const clk=routeClockInfo(c.target);if(clk)meta.push(esc(clk))}
+  else{title=`${DAY_SHORT[c.toDay]} · neue Tour ${esc(c.name)}`;sub=`${c.members.length} Kunden`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(esc(clk));if(c.compact)meta.push('Gebiet '+esc(c.compact.label)+(Number.isFinite(c.compact.avg)?', Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
+  const why=c.memory?'<b>Planungsgedächtnis</b>: so bei früheren Feiertagen geplant':c.block?'<b>Tourblock</b>: die Ausfalltour bleibt zusammen':c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?`, Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''}: ${c.direct} fahren dort schon, ${c.peer} über Mitfahrer`:'Keine Tourfamilie – Zuordnung nach Lage';
+  if(Number.isFinite(c.km))meta.push('ca. '+Math.round(c.km)+' km Rundlauf'+(HAS_MATRIX?' (Straße)':' (geschätzt)'));
+  const mem=c.members.map(x=>{const a=x.a,f=x.fit;return `<div class="clumem"><span class="anc ${x.anchor}">${ANCHOR_LABEL[x.anchor]}</span><span class="nm" data-focus="${esc(x.aid)}" title="Auf der Tafel zeigen"><b>${esc(a.SAP)}</b> ${esc(a.Name)}, ${esc(a.Ort)}</span><span>${f?`<span class="fit ${f.key}" title="${esc(f.label)}${Number.isFinite(f.nearest)?' · '+fmt(f.nearest)+' km zum nächsten Kunden':''}">${Number.isFinite(f.nearest)?fmt(f.nearest)+' km':esc(FIT_SHORT[f.key]||f.label)}</span>`:''}${a.Zeitkritisch?` <span class="flag time" title="${esc(timeInfo(a))}">Zeit</span>`:''}</span><button class="remove" type="button" title="Aus dem Vorschlag nehmen" aria-label="Aus dem Vorschlag nehmen" data-drop-member="${c.id}|${esc(x.aid)}">${ICON.x}</button></div>`}).join('');
+  return `<article class="clu q-${c.quality}"><div class="cluhead"><div class="clut"><div class="t1"><b>${title}</b><span class="mut">${sub}</span><span class="fit ${c.quality}">${QUALITY_LABEL[c.quality]}</span></div><div class="cluwhy">${why}</div><div class="clumeta"><span>${meta.join('</span><span>')}</span>${c.timeViol?`<span class="bad">${c.timeViol} Zeitkonflikt${c.timeViol>1?'e':''}</span>`:''}${c.note?`<span>${esc(c.note)}</span>`:''}</div></div><button class="btn sm primary" type="button" data-apply-cluster="${c.id}">Übernehmen</button></div>${mem}</article>`;
 }
 function renderSuggestions(){
-  const fromDays=selectedOutageDays(),n=clusters.reduce((s,c)=>s+c.members.length,0);
+  const fromDays=selectedOutageDays(),n=clusters.reduce((s,c)=>s+c.members.length,0),cnt=p=>clusters.filter(p).length;
   document.getElementById('suggTitle').textContent=`${outageDaysLabel(fromDays)} → ${targetLabel()}`;
-  document.getElementById('suggSub').textContent=`${clusters.length} Gruppen · ${n} Kunden · ${clusters.filter(c=>c.memory).length} aus dem Planungsgedächtnis · ${clusters.filter(c=>c.block).length} Tourblöcke · ${clusters.filter(c=>c.family).length} über Tourfamilien · ${clusters.filter(c=>c.kind==='new').length} neue Touren · ${autoCoveredAids.size} am Zieltag bereits vorhanden · ${excludedSaps.size} SAP ausgeschlossen`;
-  const body=document.getElementById('suggBody');body.innerHTML=clusters.length?clusters.map(clusterHtml).join(''):'<div class="empty">Keine offenen Kunden auf den Ausfalltagen.</div>';
+  const parts=[`${clusters.length} Gruppe${clusters.length===1?'':'n'} mit ${n} Kunden`],mem=cnt(c=>c.memory),blk=cnt(c=>c.block),fam=cnt(c=>c.family),nw=cnt(c=>c.kind==='new');
+  if(mem)parts.push(mem+' wie bei früheren Feiertagen');if(blk)parts.push(blk+' Tourblöcke');if(fam)parts.push(fam+' über Tourfamilien');if(nw)parts.push(nw+' neue Touren');
+  if(autoCoveredAids.size)parts.push(autoCoveredAids.size+' gestrichen');if(excludedSaps.size)parts.push(excludedSaps.size+' SAP ausgeschlossen');
+  document.getElementById('suggSub').textContent=parts.join(', ')+'.';
+  const g=cnt(c=>c.quality==='good'),go=cnt(c=>c.quality==='good'||c.quality==='ok');
+  document.getElementById('applyGoodBtn').textContent=`Sehr gut + gut übernehmen (${go})`;
+  document.getElementById('applyVeryGoodBtn').textContent=`Nur sehr gute (${g})`;
+  document.getElementById('applyAllBtn').textContent=`Alle inkl. Resttouren (${clusters.length})`;
+  const cs=document.getElementById('cntSugg');cs.textContent=clusters.length;cs.classList.toggle('hot',clusters.length>0);
+  const body=document.getElementById('suggBody');
+  body.innerHTML=clusters.length?clusters.map(clusterHtml).join(''):'<div class="sempty"><h3>Nichts mehr offen</h3><p>Auf den Ausfalltagen liegen keine offenen Kunden mehr. Weiter mit „Touren optimieren“ oder dem Prüfbericht.</p></div>';
   body.querySelectorAll('[data-apply-cluster]').forEach(b=>b.addEventListener('click',()=>applyCluster(b.dataset.applyCluster)));
   body.querySelectorAll('[data-drop-member]').forEach(b=>b.addEventListener('click',()=>{const v=b.dataset.dropMember,p=v.indexOf('|'),cid=v.slice(0,p),aid=v.slice(p+1);const c=clusters.find(x=>x.id===cid);if(!c)return;c.members=c.members.filter(x=>x.aid!==aid);if(!c.members.length)clusters=clusters.filter(x=>x!==c);else evaluateCluster(c);renderSuggestions()}));
 }
@@ -2776,7 +3055,7 @@ function optimizeDay(day,silent=false){
   cand.filter(r=>r.items.length&&(touched.has(r)||r.manuallyCreated||routeChanged(r))).forEach(r=>{if(r.manualOrder&&!touched.has(r))evaluateRoute(r);else optimizeRouteOrder(r)});
   const kmAfter=dayKm(day);
   LAST_OPT={day,moves,swaps,removed:removed.map(r=>r.tour),kmBefore,kmAfter,ms:Math.round(performance.now()-t0),at:new Date()};
-  if(!silent){document.getElementById('undoBtn').style.display='';renderAll();if(document.getElementById('suggestions').classList.contains('show'))computeSuggestions();
+  if(!silent){document.getElementById('undoBtn').style.display='';renderAll();if(suggOpen())computeSuggestions();
     showInfo('Touren optimiert',`${DAY_LABELS[day]}: ${moves} verschoben · ${swaps} getauscht · ${removed.length} Tour(en) eingespart · ${fmt(kmBefore)} → ${fmt(kmAfter)} km (${fmt(kmBefore-kmAfter)} km weniger)`,'good')}
   return LAST_OPT;
 }
@@ -2787,55 +3066,174 @@ function optimizeTargets(){
   if(!res.length){showInfo('Nichts zu optimieren','Keine geänderten oder neuen Touren an den Zieltagen.','warn');return}
   const sum=k=>res.reduce((s,r)=>s+(Array.isArray(r[k])?r[k].length:r[k]),0);
   LAST_OPT={day:tds.join('+'),moves:sum('moves'),swaps:sum('swaps'),removed:res.flatMap(r=>r.removed),kmBefore:sum('kmBefore'),kmAfter:sum('kmAfter'),ms:sum('ms'),at:new Date()};
-  document.getElementById('undoBtn').style.display='';renderAll();if(document.getElementById('suggestions').classList.contains('show'))computeSuggestions();
+  document.getElementById('undoBtn').style.display='';renderAll();if(suggOpen())computeSuggestions();
   showInfo('Touren optimiert',`${targetLabel()}: ${LAST_OPT.moves} verschoben · ${LAST_OPT.swaps} getauscht · ${LAST_OPT.removed.length} Tour(en) eingespart · ${fmt(LAST_OPT.kmBefore)} → ${fmt(LAST_OPT.kmAfter)} km`,'good');
 }
 
 /* ---------- Oberfläche ---------- */
+const ICON={
+  chev:'<svg class="i" viewBox="0 0 16 16"><path d="M4.5 6l3.5 3.5L11.5 6"/></svg>',
+  pin:'<svg class="i" viewBox="0 0 16 16"><path d="M8 14.2s4.6-4.1 4.6-7.6a4.6 4.6 0 0 0-9.2 0c0 3.5 4.6 7.6 4.6 7.6z"/><circle cx="8" cy="6.6" r="1.7"/></svg>',
+  sort:'<svg class="i" viewBox="0 0 16 16"><path d="M5 2.8v10.4M2.8 11l2.2 2.2L7.2 11M11 13.2V2.8M8.8 5L11 2.8 13.2 5"/></svg>',
+  del:'<svg class="i" viewBox="0 0 16 16"><path d="M3 4.5h10M6.2 4.5V3h3.6v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>',
+  x:'<svg class="i" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+  clock:'<svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.2l2.2 1.4"/></svg>',
+  lock:'<svg class="i" viewBox="0 0 16 16" style="width:11px;height:11px"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2"/><path d="M5.5 7V5.3a2.5 2.5 0 0 1 5 0V7"/></svg>',
+  plus:'<svg class="i" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg>'
+};
+const FIT_SHORT={good:'passt sehr gut',ok:'passt gut',warn:'grenzwertig',bad:'eher nicht',unknown:'nicht bewertbar'};
+const GONE_LABEL={'Zieltag bereits vorhanden':'Am Zieltag schon beliefert','gesperrte Tour':'Gesperrte Tour entfällt','vermutlich Folgewoche (Mo)':'Vermutlich Folgewoche – bitte prüfen','zusammengelegt':'Mit anderer Ausfall-Lieferung zusammengelegt'};
+function lsGet(k,d){try{const v=localStorage.getItem('fwp30_'+k);return v==null?d:JSON.parse(v)}catch(e){return d}}
+function lsSet(k,v){try{localStorage.setItem('fwp30_'+k,JSON.stringify(v))}catch(e){}}
+let layoutMode=lsGet('layout','week'),collapseUnchanged=lsGet('collapse',true),sideTab='sugg',ISSUES=null;
+const routeOpen=new Map(),showEmptyOut=new Set();
+
 function activeSources(){return SOURCES.filter(s=>document.getElementById('src_'+s)?.checked)}
 function matches(a,r){if(!searchText)return true;return [a.SAP,a.CSB,a.Name,a.Ort,a.Plz,a.Strasse,r?.tour,r?.source,DAY_LABELS[r?.day]].some(v=>String(v??'').toLowerCase().includes(searchText))}
-function routeVisibleByMode(r){if(routeViewMode==='new')return !!r.manuallyCreated;if(routeViewMode==='changed')return !!r.manuallyCreated||routeChanged(r);return true}
+function issueContext(){const dup=new Set();findDuplicateDeliveries().forEach(g=>g.forEach(x=>dup.add(x.a.aid)));return {dup}}
+function routeHasIssue(r){
+  if(r.items.length>capOf(r))return true;
+  return r.items.some(a=>a._timeViolation||ISSUES?.dup.has(a.aid)||(a.originalRouteId!==r.id&&fitFor(a,r,true).key==='bad'));
+}
+function routeVisibleByMode(r){if(routeViewMode==='new')return !!r.manuallyCreated;if(routeViewMode==='changed')return !!r.manuallyCreated||routeChanged(r);if(routeViewMode==='issues')return routeHasIssue(r);return true}
+function visibleDays(){if(layoutMode!=='focus')return DAY_ORDER;const s=new Set([...selectedOutageDays(),...targetDays()]),d=DAY_ORDER.filter(x=>s.has(x));return d.length?d:DAY_ORDER}
+/* Unveränderte Touren zugeklappt; geänderte, neue und Ausfalltag-Touren offen – Klick auf den Kopf überschreibt das je Tour */
+function routeIsOpen(r){
+  if(routeOpen.has(r.id))return routeOpen.get(r.id);
+  if(!collapseUnchanged||searchText||routeViewMode==='issues')return true;
+  if(r.manuallyCreated)return true;
+  if(!r.items.length)return false;
+  return routeChanged(r)||outageDays.has(r.day);
+}
 function cardHtml(a,r,pos){
   if(!matches(a,r))return '';
-  const moved=a.originalRouteId!==r.id,fit=moved?fitFor(a,r):null,ex=isExcluded(a);let geo='';
-  if(moved){geo=`<div class="geoline"><span class="fit ${fit.key}">${esc(fit.label)}${Number.isFinite(fit.nearest)?' · '+fmt(fit.nearest)+' km':''}</span>${fit.peers>=2?`<span class="flag dna">DNA ${fit.peers}</span>`:''}${fit.dupe?'<span class="flag dupe">Doppellieferung</span>':''}${a.Zeitkritisch?`<span class="flag time" title="${esc(timeInfo(a))}">Zeit</span>`:''}${fit.startMismatch?'<span class="flag area">Startbereich!</span>':''}${a.gq==='plz'?'<span class="flag plz" title="Nur PLZ-genau verortet">PLZ</span>':''}</div>`}
-  return `<div class="cust origin-${a.originalDay} ${moved?'moved':''} ${fit?.key==='bad'?'badmove':''} ${ex?'excluded':''}" draggable="true" data-aid="${esc(a.aid)}" title="Ladefolge ${pos} · Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${esc(a.originalTour)}${Number.isFinite(a._eta)?' · ETA '+formatMin(a._eta):''}${ex?' · Ausschlussliste':''}"><div class="seq">${pos}</div><div class="cmain"><div class="cname">${esc(a.SAP)} · ${esc(a.Strasse||'')}</div><div class="csub"><strong>${esc(a.Name)}</strong> · ${esc(a.Ort)}</div>${geo}</div><button class="remove" type="button" title="Ausplanen" data-remove="${esc(a.aid)}">×</button></div>`;
+  const moved=a.originalRouteId!==r.id,fit=moved?fitFor(a,r):null,ex=isExcluded(a);let tags='';
+  if(moved){
+    const km=Number.isFinite(fit.nearest)?' · '+fmt(fit.nearest)+' km':'';
+    tags=`<div class="ctags"><span class="otag d-${a.originalDay}" title="Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${esc(a.originalTour)}">${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span><span class="fit ${fit.key}" title="${esc(fit.label)}${fit.nearName?' · nächster Kunde '+esc(fit.nearName):''}">${km?`<span class="fl">${esc(FIT_SHORT[fit.key]||fit.label)} · </span>${km.slice(3)}`:esc(FIT_SHORT[fit.key]||fit.label)}</span>${fit.peers>=2?`<span class="flag dna" title="${fit.peers} Kunden dieser Tour fahren sonst mit ihm zusammen">DNA ${fit.peers}</span>`:''}${fit.dupe?'<span class="flag dupe">Doppellieferung</span>':''}${fit.timeRisk||a._timeViolation?'<span class="flag time">Zeit prüfen</span>':''}${fit.startMismatch?'<span class="flag area">Startbereich!</span>':''}${a.gq==='plz'?'<span class="flag plz" title="Nur PLZ-genau verortet">nur PLZ</span>':''}${a.extra?'<span class="flag">Zusatz</span>':''}</div>`;
+  }else if(ex||a._timeViolation){tags=`<div class="ctags">${ex?'<span class="flag ex">Ausschlussliste</span>':''}${a._timeViolation?'<span class="flag time">Zeitkonflikt</span>':''}</div>`}
+  const tip=`Ladefolge ${pos} · Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${a.originalTour}${Number.isFinite(a._eta)?' · ETA '+formatMin(a._eta):''}${a.Zeitkritisch?' · '+timeInfo(a):''}${ex?' · Ausschlussliste':''}\nZiehen zum Verschieben · Rechtsklick: zu Tour …`;
+  return `<div class="cust ${moved?'moved d-'+a.originalDay:''} ${fit?.key==='bad'?'badmove':''} ${ex?'excluded':''}" draggable="true" data-aid="${esc(a.aid)}" title="${esc(tip)}"><span class="seq">${pos}</span><div class="cmain"><div class="cl1"><span class="sap">${esc(a.SAP)}</span><span class="cname">${esc(a.Name)}</span>${a.Zeitkritisch?ICON.clock:''}</div><div class="cl2"><span class="ort">${esc(a.Ort||'')}</span><span class="str">${esc(a.Strasse||'')}</span></div>${tags}</div><button class="remove" type="button" title="In die Ablage (ausplanen)" aria-label="Ausplanen" data-remove="${esc(a.aid)}">${ICON.x}</button></div>`;
 }
 function routeHtml(r){
   if(!activeSources().includes(r.source)||!routeVisibleByMode(r))return '';
   const cards=r.items.map((a,i)=>cardHtml(a,r,i+1)).join('');if(searchText&&!cards&&!r.manuallyCreated)return '';
-  const d=r.items.length-r.originalCount,cap=r.items.length>capOf(r),tc=r.items.filter(a=>a._timeViolation).length,clock=routeClockInfo(r);
-  const km=r.items.length&&Number.isFinite(r.km)?` · ${Math.round(r.km)} km · ${fmtDur(r.dur)}`+(Number.isFinite(r.end)?' · zurück '+formatMin(r.end):''):'';
-  const meta=`${r.items.length}/${capOf(r)} Kunden`+km+(clock?' · '+clock:'')+(r.repLabel?' · Vorlage '+esc(r.repLabel):'')+(tc?` · ⚠ ${tc} Zeitkonflikt(e)`:'');
-  return `<section class="route ${routeChanged(r)?'changed':''} ${r.manuallyCreated?'newroute':''} ${cap?'overcap':''} ${tc?'timeconflict':''}" data-route="${esc(r.id)}"><div class="routehead"><div class="rleft"><div class="rtitle">Tour ${esc(r.tour)} ${r.manuallyCreated?'<span class="newbadge">NEU</span>':''}<span class="source">${esc(srcLabel(r.source))}</span>${isLocked(r)?'<span class="lockbadge" title="Gesperrte Tour: nichts hinzufügen/herausnehmen">GESPERRT</span>':''}${r.familyLabel?`<span class="fambadge" title="Tourfamilie">${esc(r.familyLabel)}</span>`:''}</div><div class="rmeta ${cap?'capwarn':''}">${meta}</div></div><div class="route-right">${d?`<span class="delta">${d>0?'+':''}${d}</span>`:''}<button class="seqbtn" type="button" data-google-maps="${esc(r.id)}">Maps</button><button class="seqbtn" type="button" title="Reihenfolge ab Valluhn berechnen" data-seq-route="${esc(r.id)}">Sort.</button>${r.manuallyCreated?`<button class="route-delete" type="button" title="Neue Tour löschen" data-delete-route="${esc(r.id)}">×</button>`:''}</div></div><div class="dropzone" data-route="${esc(r.id)}">${cards||'<div class="empty">Kunden hierher ziehen</div>'}</div></section>`;
+  const n=r.items.length,cap=capOf(r),d=n-r.originalCount,over=n>cap,tc=r.items.filter(a=>a._timeViolation).length,chg=routeChanged(r),open=routeIsOpen(r),lk=isLocked(r);
+  const w=Math.min(100,Math.round(n/Math.max(1,cap)*100)),lv=over?'over':n>=cap?'full':n>=cap*.85?'near':'';
+  const dep=hasRouteStart(r)?'ab '+formatMin(departureMinutes(r)):'';
+  const meta=[];
+  if(n&&Number.isFinite(r.km))meta.push(`<span>${Math.round(r.km)} km</span><span>${fmtDur(r.dur)}</span>`+(Number.isFinite(r.end)?`<span>zurück ${formatMin(r.end)}</span>`:''));
+  if(hasRouteStart(r))meta.push(`<span>Laden ${formatMin(routeStartMinutes(r))}</span>`);
+  if(r.repLabel)meta.push(`<span>Vorlage ${esc(r.repLabel)}</span>`);
+  if(tc)meta.push(`<span class="warn">${tc} Zeitkonflikt${tc>1?'e':''}</span>`);
+  if(over)meta.push(`<span class="bad">${n-cap} über Maximum</span>`);
+  const title=`${DAY_LABELS[r.day]} · Tour ${r.tour} · ${srcLabel(r.source)} · ${n} von max. ${cap} Kunden${hasRouteStart(r)?' · '+routeClockInfo(r):''}${r.items.length?'':' · leer'}\nKlick: auf-/zuklappen · Kunden auf den Kopf ziehen = anhängen`;
+  return `<section class="route ${chg?'changed':''} ${r.manuallyCreated?'newroute':''} ${over?'overcap':''} ${tc?'timeconflict':''} ${lk?'locked':''} ${open?'':'collapsed'}" data-route="${esc(r.id)}">`+
+  `<div class="rhead" data-route-head="${esc(r.id)}" title="${esc(title)}"><button class="rtoggle" type="button" aria-expanded="${open}" aria-label="Tour ${esc(r.tour)} auf-/zuklappen">${ICON.chev}</button>`+
+  `<div class="rtop"><span class="rno">${esc(r.tour)}</span><span class="src">${esc(srcLabel(r.source))}</span>${r.manuallyCreated?'<span class="tag new">neu</span>':''}${lk?`<span class="tag lock" title="Gesperrte Tour: nichts hinzufügen oder herausnehmen">${ICON.lock}gesperrt</span>`:''}${r.familyLabel?`<span class="tag fam" title="Tourfamilie ${esc(r.familyLabel)}">${esc(r.familyLabel)}</span>`:''}${d?`<span class="delta ${d<0?'neg':''}" title="gegenüber Original">${d>0?'+':''}${d}</span>`:''}</div>`+
+  `<div class="ract"><button class="iconbtn" type="button" title="In Google Maps öffnen" aria-label="Google Maps" data-google-maps="${esc(r.id)}">${ICON.pin}</button><button class="iconbtn" type="button" title="Reihenfolge ab Valluhn neu berechnen" aria-label="Neu sortieren" data-seq-route="${esc(r.id)}">${ICON.sort}</button>${r.manuallyCreated?`<button class="iconbtn danger" type="button" title="Neue Tour löschen" aria-label="Tour löschen" data-delete-route="${esc(r.id)}">${ICON.del}</button>`:''}</div>`+
+  `<div class="rload"><span class="lbar ${lv}"><i style="width:${w}%"></i></span><span class="lcnt ${over?'over':''}">${n}/${cap}</span>${dep?`<span class="ldep">${dep}</span>`:''}${tc&&!open?`<span class="lwarn" title="${tc} voraussichtliche Zeitkonflikte">${ICON.clock}${tc}</span>`:''}</div>`+
+  `${meta.length?`<div class="rmeta">${meta.join('')}</div>`:''}</div>`+
+  `<div class="dropzone" data-route="${esc(r.id)}">${cards||'<div class="empty">Kunden hierher ziehen</div>'}</div></section>`;
 }
 function renderWeek(){
-  document.getElementById('week').innerHTML=DAY_ORDER.map(day=>{
-    const rs=routes.filter(r=>r.day===day),act=rs.filter(r=>activeSources().includes(r.source)&&routeVisibleByMode(r)),total=act.reduce((n,r)=>n+r.items.length,0);
-    return `<div class="daycol ${outageDays.has(day)?'outage-selected':''}"><div class="dayhead day-${day}"><div><div class="dayname">${DAY_LABELS[day]}${outageDays.has(day)?'<span class="outagebadge">AUSFALL</span>':''}</div><div class="daymeta">${act.length} Touren · ${total} Kunden</div></div><button class="addtour" type="button" data-add-tour="${day}">+ Tour</button></div><div class="daybody" data-day="${day}">${rs.map(routeHtml).join('')||'<div class="empty">Keine Touren</div>'}</div></div>`;
+  const days=visibleDays(),tds=targetDays(),wk=document.getElementById('week'),src=activeSources();
+  ISSUES=routeViewMode==='issues'?issueContext():null;
+  wk.style.setProperty('--cols',days.length);wk.classList.toggle('focus',layoutMode==='focus');
+  /* erledigte Ausfalltage schmaler, damit die Zieltage Platz bekommen */
+  const mn=layoutMode==='focus'?300:196;wk.style.gridTemplateColumns=days.map(d=>outageDays.has(d)&&!routes.some(r=>r.day===d&&r.items.length)?`minmax(${Math.min(mn,220)}px,.55fr)`:`minmax(${mn}px,1fr)`).join(' ');
+  wk.innerHTML=days.map(day=>{
+    const rs=routes.filter(r=>r.day===day),out=outageDays.has(day),tgt=tds.includes(day);
+    const act=rs.filter(r=>src.includes(r.source)&&routeVisibleByMode(r)),total=act.reduce((n,r)=>n+r.items.length,0);
+    let role='',big='';
+    if(out){const open=rs.reduce((n,r)=>n+r.items.filter(a=>!isExcluded(a)).length,0);role='<span class="role out">Ausfall</span>';big=open?`<div class="daybig"><b>${open}</b>noch offen</div>`:'<div class="daybig done"><b>erledigt</b>nichts mehr offen</div>'}
+    else if(tgt){const inn=rs.reduce((n,r)=>n+r.items.filter(a=>a.originalRouteId!==r.id).length,0),nw=rs.filter(r=>r.manuallyCreated&&r.items.length).length;role='<span class="role tgt">Ziel</span>';big=`<div class="daybig"><b>+${inn}</b>${nw?nw+' neue Tour'+(nw>1?'en':''):'eingeplant'}</div>`}
+    let hidden=0;
+    const parts=rs.map(r=>{if(out&&!r.items.length&&!r.manuallyCreated&&!showEmptyOut.has(day)&&!searchText&&src.includes(r.source)){hidden++;return ''}return routeHtml(r)}).join('');
+    const hid=hidden?`<div class="hiddenroutes"><span>${hidden} geleerte Tour${hidden>1?'en':''} ausgeblendet</span><button type="button" data-show-empty="${day}">anzeigen</button></div>`:'';
+    const empty=!parts?(out?'<div class="emptyday"><b>Alles umgeplant</b>An diesem Tag liegt keine Lieferung mehr.</div>':`<div class="emptyday">${searchText||routeViewMode!=='all'?'Keine passenden Touren':'Keine Touren'}</div>`):'';
+    return `<div class="daycol ${out?'is-out':''} ${tgt?'is-tgt':''}" data-daycol="${day}"><div class="dayhead"><div class="dayline"><span class="dayname">${DAY_LABELS[day]}</span>${role}<button class="iconbtn addtour" type="button" title="Neue Tour am ${DAY_LABELS[day]} anlegen" aria-label="Tour anlegen" data-add-tour="${day}">${ICON.plus}</button></div><div class="dayrow2"><div class="daystats"><span><b>${act.length}</b> Touren</span><span><b>${total}</b> Kunden</span></div>${big}</div></div><div class="daybody" data-day="${day}">${parts}${empty}${hid}</div></div>`;
   }).join('');
 }
+function miniCard(a,extra=''){return `<div class="cust moved d-${a.originalDay}" draggable="true" data-aid="${esc(a.aid)}" title="Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${esc(a.originalTour)} – zum Einplanen in eine Tour ziehen oder Rechtsklick"><span class="seq">–</span><div class="cmain"><div class="cl1"><span class="sap">${esc(a.SAP)}</span><span class="cname">${esc(a.Name)}</span></div><div class="cl2"><span class="ort">${esc(a.Ort||'')}</span><span class="str">${esc(a.Strasse||'')}</span></div><div class="ctags"><span class="otag d-${a.originalDay}">${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span>${extra}</div></div><span></span></div>`}
+function goneKey(a){return (cancelReasons.get(a.aid)||'gestrichen').replace(/ – .*/,'').replace(/^gesperrte Tour .*/,'gesperrte Tour').replace(/^zusammengelegt.*/,'zusammengelegt')}
 function renderUnplanned(){
-  const list=unplanned.filter(a=>!autoCoveredAids.has(a.aid)&&activeSources().includes(a.Quelle)&&matches(a,null));
-  document.getElementById('unplannedDrop').innerHTML=list.map(a=>`<div class="cust origin-${a.originalDay} moved" draggable="true" data-aid="${esc(a.aid)}" title="Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${esc(a.originalTour)}"><div class="seq">–</div><div class="cmain"><div class="cname">${esc(a.SAP)} · ${esc(a.Strasse||'')}</div><div class="csub"><strong>${esc(a.Name)}</strong> · ${esc(a.Ort)}${cancelledAids.has(a.aid)?' · <b>GESTRICHEN</b>':''}</div></div><span></span></div>`).join('')||'<div class="empty">Keine ausgeplanten Kunden</div>';
+  const src=activeSources();
+  const list=unplanned.filter(a=>!autoCoveredAids.has(a.aid)&&src.includes(a.Quelle)&&matches(a,null));
+  document.getElementById('unplannedDrop').innerHTML=list.map(a=>miniCard(a,(cancelledAids.has(a.aid)?'<span class="flag gone">gestrichen</span>':'')+(a.extra?'<span class="flag">Zusatz-Lieferung</span>':''))).join('')||'<div class="emptyhint">Keine ausgeplanten Kunden.<br>Karte hierher ziehen oder × auf der Karte.</div>';
+  const gone=unplanned.filter(a=>autoCoveredAids.has(a.aid)&&src.includes(a.Quelle)&&matches(a,null));
+  const grp=new Map();gone.forEach(a=>pushMap(grp,goneKey(a),a));
+  const box=document.getElementById('goneBox'),wasOpen=!!box.querySelector('details[open]');
+  box.innerHTML=gone.length?`<details class="gone"${wasOpen?' open':''}><summary>${ICON.chev}Automatisch gestrichen <span class="cnt">${gone.length}</span></summary>${[...grp.entries()].map(([k,l])=>`<div class="gonegrp"><h4>${esc(GONE_LABEL[k]||k)} (${l.length})</h4>${l.map(a=>{const why=cancelReasons.get(a.aid)||'';return miniCard(a,k==='zusammengelegt'&&why.includes(' – ')?`<span class="reason">${esc(why.split(' – ')[1])}</span>`:'')}).join('')}</div>`).join('')}</details>`:'';
+}
+function setStep(n,state){const e=document.getElementById('step'+n);if(!e)return;e.classList.remove('done','current','bad');if(state)e.classList.add(state)}
+function updateSteps(open,errors){
+  const s1=outageDays.size>0||!!document.getElementById('allOnTarget')?.checked,s2=targetDays().length>0;
+  setStep(1,s1?'done':'current');setStep(2,!s1?'':s2?'done':'current');
+  setStep(3,!(s1&&s2)?'':open?'current':'done');
+  setStep(4,errors?'bad':(!open&&s1&&s2)?'current':'');
+  const rs=document.getElementById('readyState'),x=document.getElementById('xlsxBtn');
+  if(errors){rs.className='ready bad';rs.textContent=errors+' Fehler – Export gesperrt'}
+  else if(open){rs.className='ready wait';rs.textContent='noch '+open+' offen'}
+  else{rs.className='ready ok';rs.textContent='bereit'}
+  x.classList.toggle('armed',!errors&&!open&&s1&&s2);
+  const tds=targetDays();document.querySelectorAll('[data-outage-day]').forEach(b=>{const on=tds.includes(b.dataset.outageDay);b.classList.toggle('tgt',on);b.title=DAY_LABELS[b.dataset.outageDay]+(outageDays.has(b.dataset.outageDay)?' fällt aus – klicken zum Aufheben':on?' ist Zieltag':' – klicken: fällt aus')});
 }
 function renderMetrics(){
   let moved=0,good=0;routes.forEach(r=>r.items.forEach(a=>{if(a.originalRouteId!==r.id){moved++;const k=fitFor(a,r).key;if(k==='good'||k==='ok')good++}}));
-  const set=(id,v)=>document.getElementById(id).textContent=v;
-  set('mDeliveries',assignments.length);set('mRoutes',routes.filter(r=>activeSources().includes(r.source)).length);set('mMoved',moved);set('mGood',good);
-  set('mOut',unplanned.filter(a=>!autoCoveredAids.has(a.aid)).length);set('mCancelled',autoCoveredAids.size);set('mDup',findDuplicateDeliveries().length);
-  set('mCap',routes.filter(r=>r.items.length>capOf(r)).length);set('mKm',Math.round(routes.filter(r=>targetDays().includes(r.day)).reduce((s,r)=>s+(r.items.length&&Number.isFinite(r.km)?r.km:0),0)));set('mTime',routes.reduce((n,r)=>n+r.items.filter(a=>a._timeViolation).length,0));
-  updateOutageStatus();
+  const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v},nf=n=>Number(n).toLocaleString('de-DE');
+  const dup=findDuplicateDeliveries().length,cap=routes.filter(r=>r.items.length>capOf(r)).length,tm=routes.reduce((n,r)=>n+r.items.filter(a=>a._timeViolation).length,0),out=unplanned.filter(a=>!autoCoveredAids.has(a.aid)).length;
+  set('mDeliveries',nf(assignments.length));set('mRoutes',routes.filter(r=>activeSources().includes(r.source)&&r.items.length).length);set('mMoved',nf(moved));set('mGood',nf(good));
+  set('mOut',out);set('mCancelled',nf(autoCoveredAids.size));set('mDup',dup);set('mCap',cap);set('mTime',tm);
+  set('mKm',nf(Math.round(routes.filter(r=>targetDays().includes(r.day)).reduce((s,r)=>s+(r.items.length&&Number.isFinite(r.km)?r.km:0),0))));
+  const chip=(id,n,soft)=>{const e=document.getElementById(id);e.classList.toggle('has',n>0);e.classList.toggle('soft',!!soft&&n>0);e.classList.toggle('zero',!n)};
+  chip('chipDup',dup);chip('chipCap',cap);chip('chipTime',tm,true);
+  document.getElementById('mOut').classList.toggle('hot',out>0);document.getElementById('sideBadge').textContent=out||'';
+  if(!suggOpen())document.getElementById('suggBody').innerHTML=suggEmptyHtml();
+  updateSteps(updateOutageStatus(),dup+cap);
 }
+function chgRow(a,right,note=''){return `<div class="chg" data-focus="${esc(a.aid)}" title="Auf der Tafel zeigen"><span class="otag d-${a.originalDay}">${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span><span class="nm"><b>${esc(a.SAP)}</b> ${esc(a.Name)}, ${esc(a.Ort||'')}</span>${right}${note?`<div class="note">${esc(note)}</div>`:''}</div>`}
 function renderChanges(){
-  const rows=[];
-  routes.forEach(r=>r.items.forEach(a=>{if(a.originalRouteId===r.id)return;const f=fitFor(a,r),n=[];if(a.originalDay!==r.day)n.push('Tag geändert');if(a.planNote)n.push(a.planNote);if(f.dupe)n.push('Doppellieferung');if(a.Zeitkritisch)n.push('Zeitinfo');rows.push([a.SAP,a.Name,`${DAY_LABELS[a.originalDay]} / ${a.originalTour}`,`${DAY_LABELS[r.day]} / ${r.tour}`,f.label,f.nearName,Number.isFinite(f.nearest)?fmt(f.nearest)+' km':'–',n.join(', ')])}));
-  unplanned.forEach(a=>rows.push([a.SAP,a.Name,`${DAY_LABELS[a.originalDay]} / ${a.originalTour}`,cancelledAids.has(a.aid)?'GESTRICHEN':'AUSGEPLANT','–','–','–',cancelReasons.get(a.aid)||'ausgeplant']));
-  document.getElementById('changeBody').innerHTML=rows.length?rows.map(r=>`<tr>${r.map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join(''):'<tr><td colspan="8" style="color:#888">Noch keine Änderungen.</td></tr>';
+  const groups=new Map();let n=0;
+  routes.forEach(r=>r.items.forEach(a=>{if(a.originalRouteId===r.id)return;pushMap(groups,r.id,a);n++}));
+  const html=[...groups.entries()].map(([rid,list])=>({r:getRoute(rid),list})).sort((x,y)=>daySort(x.r,y.r)).map(({r,list})=>
+    `<div class="chgrp"><h4 data-focus-route="${esc(r.id)}" title="Tour auf der Tafel zeigen">${DAY_SHORT[r.day]} ${esc(r.tour)}${r.manuallyCreated?' <span class="tag new">neu</span>':''}<span class="mut">+${list.length} Kunden, ${esc(srcLabel(r.source))}</span></h4>${list.map(a=>{const f=fitFor(a,r),notes=[];if(a.planNote&&a.planNote!=='Geo')notes.push(a.planNote);if(f.dupe)notes.push('Doppellieferung');if(a.Zeitkritisch)notes.push(timeInfo(a));return chgRow(a,`<span class="fit ${f.key}" title="${esc(f.label)}">${esc(FIT_SHORT[f.key]||f.label)}</span>`,notes.join(' · '))}).join('')}</div>`);
+  const op=unplanned.filter(a=>!autoCoveredAids.has(a.aid));
+  if(op.length)html.push(`<div class="chgrp"><h4 data-tab-go="drop">Ausgeplant<span class="mut">${op.length} Kunden</span></h4>${op.map(a=>chgRow(a,`<span class="flag ${cancelledAids.has(a.aid)?'gone':'ex'}">${cancelledAids.has(a.aid)?'gestrichen':'ausgeplant'}</span>`,cancelReasons.get(a.aid)||'')).join('')}</div>`);
+  if(autoCoveredAids.size)html.push(`<div class="chgrp"><h4 data-tab-go="drop">Automatisch gestrichen<span class="mut">${autoCoveredAids.size} Lieferungen – Liste in der Ablage</span></h4></div>`);
+  document.getElementById('changeBody').innerHTML=html.join('')||'<div class="sempty"><h3>Noch keine Änderungen</h3><p>Sobald Kunden verschoben werden, stehen sie hier – gruppiert nach ihrer neuen Tour.</p></div>';
+  document.getElementById('cntChg').textContent=n+op.length;
 }
 function saveDayScroll(){document.querySelectorAll('.daybody[data-day]').forEach(el=>dayScroll[el.dataset.day]=el.scrollTop)}
 function restoreDayScroll(){document.querySelectorAll('.daybody[data-day]').forEach(el=>{el.scrollTop=scrollToNewDay===el.dataset.day?el.scrollHeight:(dayScroll[el.dataset.day]||0)});scrollToNewDay=null}
-function renderAll(){saveDayScroll();renderWeek();renderUnplanned();renderMetrics();renderChanges();bindDnD();bindDayActions();restoreDayScroll()}
+function dragCleanup(){document.body.classList.remove('dragging');document.querySelectorAll('.over,.over-route,.dragsrc').forEach(z=>z.classList.remove('over','over-route','dragsrc'))}
+function renderAll(){dragCleanup();saveDayScroll();renderWeek();renderUnplanned();renderMetrics();renderChanges();bindDnD();bindDayActions();restoreDayScroll()}
+
+/* ---------- Navigation: Seitenleiste, Ansicht, Springen ---------- */
+function setSideTab(t){sideTab=t;document.querySelectorAll('[data-tab]').forEach(b=>{const on=b.dataset.tab===t;b.classList.toggle('active',on);b.setAttribute('aria-selected',String(on))});document.querySelectorAll('[data-pane]').forEach(p=>p.classList.toggle('active',p.dataset.pane===t))}
+function openSide(on){document.getElementById('app').classList.toggle('side-hidden',!on);document.getElementById('sideBtn').setAttribute('aria-pressed',String(!!on));lsSet('side',!!on)}
+function suggOpen(){return document.getElementById('suggestions').classList.contains('show')}
+function suggEmptyHtml(){const d=selectedOutageDays();return `<div class="sempty"><h3>${d.length?'Vorschläge für '+esc(outageDaysLabel(d)):'Vorschläge'}</h3><p>Die offenen Kunden der Ausfalltage werden zu Gruppen zusammengefasst – nach früheren Feiertagen, Tourblöcken, Tourfamilien und Lage. Geändert wird erst mit „Übernehmen“.</p><button class="btn primary" type="button" data-run-sugg>Vorschläge berechnen</button></div>`}
+function showSugg(){document.getElementById('suggestions').classList.add('show');document.getElementById('suggHead').hidden=false;setSideTab('sugg');openSide(true)}
+function hideSugg(){const s=document.getElementById('suggestions');if(!s)return;s.classList.remove('show');clusters=[];document.getElementById('suggHead').hidden=true;const c=document.getElementById('cntSugg');c.textContent='–';c.classList.remove('hot');document.getElementById('suggBody').innerHTML=suggEmptyHtml()}
+function setView(v,render=true){routeViewMode=v;document.querySelectorAll('[data-view]').forEach(x=>x.classList.toggle('active',x.dataset.view===v));if(render)renderAll()}
+function setLayout(v,render=true){layoutMode=v;lsSet('layout',v);document.querySelectorAll('[data-layout]').forEach(x=>x.classList.toggle('active',x.dataset.layout===v));if(render)renderAll()}
+function setCollapse(on,render=true){collapseUnchanged=on;lsSet('collapse',on);routeOpen.clear();document.getElementById('collapseBtn').setAttribute('aria-pressed',String(on));if(render)renderAll()}
+function clearSearch(render=true){document.getElementById('search').value='';searchText='';if(render)renderAll()}
+function toggleRoute(sec){const id=sec.dataset.route,open=!sec.classList.contains('collapsed');routeOpen.set(id,!open);sec.classList.toggle('collapsed',open);sec.querySelector('.rtoggle')?.setAttribute('aria-expanded',String(!open))}
+function flashEl(el){if(!el)return;el.scrollIntoView({block:'center',inline:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),1700)}
+function revealRoute(r){
+  if(layoutMode==='focus'&&!visibleDays().includes(r.day))setLayout('week',false);
+  const cb=document.getElementById('src_'+r.source);if(cb&&!cb.checked)cb.checked=true;
+  routeOpen.set(r.id,true);if(!routeVisibleByMode(r))setView('all',false);
+}
+function focusAid(aid){
+  const r=currentRouteForAid(aid);
+  if(!r){setSideTab('drop');openSide(true);renderAll();const el=document.querySelector(`#side .cust[data-aid="${CSS.escape(aid)}"]`);if(el){const g=el.closest('details');if(g)g.open=true;flashEl(el)}return}
+  revealRoute(r);const a=getAssignment(aid);if(searchText&&a&&!matches(a,r))clearSearch(false);
+  renderAll();flashEl(document.querySelector(`#week .cust[data-aid="${CSS.escape(aid)}"]`));
+}
+function focusRoute(id){const r=getRoute(id);if(!r)return;revealRoute(r);if(searchText)clearSearch(false);renderAll();flashEl(document.querySelector(`#week .route[data-route="${CSS.escape(id)}"]`))}
 
 /* ---------- Drag & Drop ---------- */
 function moveAid(aid,toRouteId,beforeAid=null){
@@ -2904,24 +3302,33 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closeCtx()});
 window.addEventListener('resize',closeCtx);
 function bindDnD(){
   document.querySelectorAll('.cust').forEach(el=>{
-    el.addEventListener('dragstart',e=>{dragAid=el.dataset.aid;el.style.opacity='.45';e.dataTransfer.effectAllowed='move'});
-    el.addEventListener('dragend',()=>{el.style.opacity='';document.querySelectorAll('.over').forEach(z=>z.classList.remove('over'))});
+    el.addEventListener('dragstart',e=>{dragAid=el.dataset.aid;el.classList.add('dragsrc');document.body.classList.add('dragging');e.dataTransfer.effectAllowed='move';try{e.dataTransfer.setData('text/plain',dragAid)}catch(_){}});
+    el.addEventListener('dragend',dragCleanup);
     el.addEventListener('dragover',e=>e.preventDefault());
     el.addEventListener('contextmenu',e=>openCtx(e,el.dataset.aid));
-    el.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();const z=el.closest('.dropzone');if(z&&el.dataset.aid!==dragAid)moveAid(dragAid,z.dataset.route,el.dataset.aid);else if(!z)moveAid(dragAid,'UNPLANNED')});
+    el.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();const z=el.closest('.dropzone');if(z&&el.dataset.aid!==dragAid)moveAid(dragAid,z.dataset.route,el.dataset.aid);else if(!z)moveAid(dragAid,'UNPLANNED');dragCleanup()});
   });
   document.querySelectorAll('[data-remove]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();moveAid(b.dataset.remove,'UNPLANNED')}));
   document.querySelectorAll('.dropzone,.unplanned-drop').forEach(z=>{
     z.addEventListener('dragover',e=>{e.preventDefault();z.classList.add('over')});
-    z.addEventListener('dragleave',()=>z.classList.remove('over'));
-    z.addEventListener('drop',e=>{if(e.target.closest('.cust'))return;e.preventDefault();z.classList.remove('over');moveAid(dragAid,z.dataset.route,null)});
+    z.addEventListener('dragleave',e=>{if(!z.contains(e.relatedTarget))z.classList.remove('over')});
+    z.addEventListener('drop',e=>{if(e.target.closest('.cust'))return;e.preventDefault();z.classList.remove('over');moveAid(dragAid,z.dataset.route,null);dragCleanup()});
+  });
+  /* Tourkopf: Klick klappt auf/zu, Ablegen hängt den Kunden an (Reihenfolge wird neu berechnet) */
+  document.querySelectorAll('.rhead').forEach(h=>{
+    const sec=h.closest('.route');
+    h.addEventListener('dragover',e=>{e.preventDefault();sec.classList.add('over-route')});
+    h.addEventListener('dragleave',e=>{if(!h.contains(e.relatedTarget))sec.classList.remove('over-route')});
+    h.addEventListener('drop',e=>{e.preventDefault();sec.classList.remove('over-route');moveAid(dragAid,h.dataset.routeHead,null);dragCleanup()});
+    h.addEventListener('click',e=>{if(e.target.closest('button:not(.rtoggle)'))return;toggleRoute(sec)});
   });
 }
 function bindDayActions(){
   document.querySelectorAll('[data-add-tour]').forEach(b=>b.addEventListener('click',()=>openNewTour(b.dataset.addTour)));
   document.querySelectorAll('[data-delete-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();deleteNewRoute(b.dataset.deleteRoute)}));
-  document.querySelectorAll('[data-seq-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();const r=getRoute(b.dataset.seqRoute);if(r){optimizeRouteOrder(r);renderAll()}}));
+  document.querySelectorAll('[data-seq-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();const r=getRoute(b.dataset.seqRoute);if(r){optimizeRouteOrder(r);renderAll();showInfo('Neu sortiert',`Tour ${r.tour}: Reihenfolge ab Valluhn neu berechnet.`,'good')}}));
   document.querySelectorAll('[data-google-maps]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();openGoogleMapsRoute(b.dataset.googleMaps)}));
+  document.querySelectorAll('[data-show-empty]').forEach(b=>b.addEventListener('click',()=>{showEmptyOut.add(b.dataset.showEmpty);renderAll()}));
 }
 
 /* ---------- Meldungen ---------- */
@@ -3133,40 +3540,74 @@ function downloadCSV(){
 }
 
 /* ---------- Init ---------- */
+function busy(btn,label,fn){const t=btn.innerHTML;btn.disabled=true;btn.textContent=label;setTimeout(()=>{try{fn()}finally{btn.disabled=false;btn.innerHTML=t}},20)}
+function closeMenus(){document.querySelectorAll('details.moremenu[open]').forEach(d=>d.open=false)}
+function openModal(id){document.getElementById(id).classList.add('show')}
+function closeModal(id){document.getElementById(id).classList.remove('show')}
 function initControls(){
   const $=id=>document.getElementById(id);
-  $('sourceChips').innerHTML=SOURCES.map(s=>`<label class="chip"><input type="checkbox" id="src_${s}" checked> ${esc(srcLabel(s))}</label>`).join('');
+  $('sourceChips').innerHTML=SOURCES.map(s=>`<label class="srcchip" title="Startbereich ${esc(srcLabel(s))} ein-/ausblenden"><input type="checkbox" id="src_${s}" checked>${esc(srcLabel(s))}</label>`).join('');
   SOURCES.forEach(s=>$('src_'+s).addEventListener('change',renderAll));
-  $('search').addEventListener('input',e=>{searchText=e.target.value.trim().toLowerCase();renderAll()});
-  document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>{routeViewMode=b.dataset.view;document.querySelectorAll('[data-view]').forEach(x=>x.classList.toggle('active',x===b));renderAll()}));
-  $('resetBtn').addEventListener('click',()=>{if(confirm('Alle manuellen Änderungen zurücksetzen?'))buildOriginalPlan()});
-  $('csvBtn').addEventListener('click',downloadCSV);$('finishBtn').addEventListener('click',openFinalReport);$('xlsxBtn').addEventListener('click',exportExactExcel);
-  $('closeReportBtn').addEventListener('click',()=>$('reportModal').classList.remove('show'));$('reportDownloadBtn').addEventListener('click',downloadFinalReport);$('reportExcelBtn').addEventListener('click',exportExactExcel);
-  $('closeMapsBtn').addEventListener('click',()=>$('mapsModal').classList.remove('show'));
-  ['reportModal','mapsModal','tourModal','backtestModal'].forEach(id=>$(id).addEventListener('click',e=>{if(e.target.id===id)$(id).classList.remove('show')}));
+  let st=null;$('search').addEventListener('input',e=>{clearTimeout(st);st=setTimeout(()=>{searchText=e.target.value.trim().toLowerCase();renderAll()},140)});
+  $('search').addEventListener('keydown',e=>{if(e.key==='Escape'){clearSearch();e.target.blur()}});
+  document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));
+  document.querySelectorAll('[data-layout]').forEach(b=>b.addEventListener('click',()=>setLayout(b.dataset.layout)));
+  setLayout(layoutMode,false);
+  $('collapseBtn').setAttribute('aria-pressed',String(collapseUnchanged));$('collapseBtn').addEventListener('click',()=>setCollapse(!collapseUnchanged));
+  document.querySelectorAll('[data-issue]').forEach(b=>b.addEventListener('click',()=>setView(routeViewMode==='issues'?'all':'issues')));
+  /* Seitenleiste */
+  document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>setSideTab(b.dataset.tab)));
+  $('sideBtn').addEventListener('click',()=>openSide($('app').classList.contains('side-hidden')));
+  $('sideClose').addEventListener('click',()=>openSide(false));
+  openSide(lsGet('side',false));
+  $('side').addEventListener('click',e=>{
+    const run=e.target.closest('[data-run-sugg]');if(run){busy(run,'Berechne …',computeSuggestions);return}
+    const f=e.target.closest('[data-focus]');if(f){focusAid(f.dataset.focus);return}
+    const fr=e.target.closest('[data-focus-route]');if(fr){focusRoute(fr.dataset.focusRoute);return}
+    const tg=e.target.closest('[data-tab-go]');if(tg)setSideTab(tg.dataset.tabGo);
+  });
+  /* Kopfzeile, Dialoge */
+  $('resetBtn').addEventListener('click',()=>{closeMenus();if(confirm('Alle manuellen Änderungen zurücksetzen?'))buildOriginalPlan()});
+  $('csvBtn').addEventListener('click',()=>{closeMenus();downloadCSV()});
+  $('finishBtn').addEventListener('click',openFinalReport);$('xlsxBtn').addEventListener('click',exportExactExcel);
+  $('closeReportBtn').addEventListener('click',()=>closeModal('reportModal'));$('reportDownloadBtn').addEventListener('click',downloadFinalReport);$('reportExcelBtn').addEventListener('click',exportExactExcel);
+  $('closeMapsBtn').addEventListener('click',()=>closeModal('mapsModal'));
+  $('rulesBtn').addEventListener('click',()=>openModal('rulesModal'));$('closeRulesBtn').addEventListener('click',()=>closeModal('rulesModal'));
+  ['reportModal','mapsModal','tourModal','backtestModal','rulesModal'].forEach(id=>$(id).addEventListener('click',e=>{if(e.target.id===id)closeModal(id)}));
   $('newTourSource').innerHTML=SOURCES.map(s=>`<option value="${s}">${esc(srcLabel(s))}</option>`).join('');
   $('cancelTourBtn').addEventListener('click',closeNewTour);$('createTourBtn').addEventListener('click',createNewTour);
   ['newTourNo','newTourStart'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')createNewTour();if(e.key==='Escape')closeNewTour()}));
+  /* Arbeitsleiste */
   $('toDay').innerHTML='<option value="auto">Vortag + Folgetag</option>'+DAY_ORDER.map(d=>`<option value="${d}">nur ${DAY_LABELS[d]}</option>`).join('');$('toDay').value='auto';
   renderOutageButtons();syncTargetDayOptions();
-  $('toDay').addEventListener('change',()=>{autoResolveCoveredDeliveries(true);if($('suggestions').classList.contains('show'))computeSuggestions()});
-  $('allOnTarget').addEventListener('change',()=>{if(!$('allOnTarget').checked&&!outageDays.size){const t=$('toDay').value;outageDays.add(t==='Sam'?'Fr':'Sam');renderOutageButtons();syncTargetDayOptions()}autoResolveCoveredDeliveries(false);const n=assignments.filter(a=>a.extra).length;if($('allOnTarget').checked)showInfo('Alle Kunden am Zieltag',`${n} Kunden bekommen zusätzlich eine Lieferung am ${targetLabel()} – über „Vorschläge“ oder Autoplan einplanen.`,'good');if($('suggestions').classList.contains('show'))computeSuggestions()});
-  $('suggestBtn').addEventListener('click',computeSuggestions);
+  $('toDay').addEventListener('change',()=>{autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()});
+  $('allOnTarget').addEventListener('change',()=>{if(!$('allOnTarget').checked&&!outageDays.size){const t=$('toDay').value;outageDays.add(t==='Sam'?'Fr':'Sam');renderOutageButtons();syncTargetDayOptions()}autoResolveCoveredDeliveries(false);const n=assignments.filter(a=>a.extra).length;if($('allOnTarget').checked)showInfo('Alle Kunden am Zieltag',`${n} Kunden bekommen zusätzlich eine Lieferung am ${targetLabel()} – über „Vorschläge berechnen“ oder Autoplan einplanen.`,'good');if(suggOpen())computeSuggestions()});
+  $('suggestBtn').addEventListener('click',()=>busy($('suggestBtn'),'Berechne …',computeSuggestions));
   $('applyVeryGoodBtn').addEventListener('click',()=>applyClusters(c=>c.quality==='good'));
   $('applyGoodBtn').addEventListener('click',()=>applyClusters(c=>c.quality==='good'||c.quality==='ok'));
   $('applyAllBtn').addEventListener('click',()=>{if(confirm(`${clusters.length} Gruppen übernehmen – auch grenzwertige?`)){applyClusters(()=>true);clearOutageDays();renderAll()}});
-  $('closeSuggBtn').addEventListener('click',()=>$('suggestions').classList.remove('show'));
-  $('applyRulesBtn').addEventListener('click',()=>{clampMax();parseExcluded();parseLocked();FAM_CACHE.clear();autoResolveCoveredDeliveries(true);if($('suggestions').classList.contains('show'))computeSuggestions()});
+  $('closeSuggBtn').addEventListener('click',hideSugg);
+  /* Regeln */
+  $('applyRulesBtn').addEventListener('click',()=>{clampMax();parseExcluded();parseLocked();FAM_CACHE.clear();closeModal('rulesModal');autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()});
   $('maxCustomers').addEventListener('change',()=>{clampMax();SRC_TYP.clear();renderAll()});
-  ['timeTol','timeHard'].forEach(id=>$(id).addEventListener('change',()=>{readTimeTol();renderAll();if($('suggestions').classList.contains('show'))computeSuggestions()}));
-  ['mergeSmall','mergeKm'].forEach(id=>$(id).addEventListener('change',()=>{MERGE_SMALL=$('mergeSmall').checked;MERGE_KM=Math.max(5,Number($('mergeKm').value)||25);if($('suggestions').classList.contains('show'))computeSuggestions()}));
-  $('blockMode').addEventListener('change',()=>{BLOCK_MODE=$('blockMode').checked;if($('suggestions').classList.contains('show'))computeSuggestions()});
-  $('autoOver').addEventListener('change',()=>{AUTO_OVER=Math.max(0,Number($('autoOver').value)||0);if($('suggestions').classList.contains('show'))computeSuggestions()});
+  ['timeTol','timeHard'].forEach(id=>$(id).addEventListener('change',()=>{readTimeTol();renderAll();if(suggOpen())computeSuggestions()}));
+  ['mergeSmall','mergeKm'].forEach(id=>$(id).addEventListener('change',()=>{MERGE_SMALL=$('mergeSmall').checked;MERGE_KM=Math.max(5,Number($('mergeKm').value)||25);if(suggOpen())computeSuggestions()}));
+  $('blockMode').addEventListener('change',()=>{BLOCK_MODE=$('blockMode').checked;if(suggOpen())computeSuggestions()});
+  $('autoOver').addEventListener('change',()=>{AUTO_OVER=Math.max(0,Number($('autoOver').value)||0);if(suggOpen())computeSuggestions()});
   $('optimizeBtn').addEventListener('click',()=>{$('optimizeBtn').disabled=true;$('optimizeBtn').textContent='Optimiere …';setTimeout(()=>{try{optimizeTargets()}finally{$('optimizeBtn').disabled=false;$('optimizeBtn').textContent='Touren optimieren'}},20)});
   $('undoBtn').addEventListener('click',()=>{if(!UNDO)return;restorePlan(UNDO);UNDO=null;LAST_OPT=null;$('undoBtn').style.display='none';renderAll();showInfo('Rückgängig','Stand vor der Optimierung wiederhergestellt.','ok')});
-  $('netHint').textContent=HAS_MATRIX?`LKW-Straßenmatrix: ${NET.pairs} Verbindungen · sonst Luftlinie × ${ROAD_FACTOR.toFixed(2)} · Ø ${Math.round(AVG_KMH)} km/h`:`ohne Straßenmatrix: Luftlinie × ${ROAD_FACTOR.toFixed(2)} · Ø ${Math.round(AVG_KMH)} km/h`;
-  $('sequenceAllBtn').addEventListener('click',()=>{routes.filter(r=>routeChanged(r)||r.manuallyCreated).forEach(optimizeRouteOrder);renderAll();showInfo('Reihenfolge berechnet','Alle geänderten/neuen Touren ab Valluhn neu sortiert.')});
-  if(HAS_REF){$('backtestBtn').style.display='';$('backtestBtn').addEventListener('click',openBacktest);$('closeBacktestBtn').addEventListener('click',()=>$('backtestModal').classList.remove('show'));$('backtestCurrentBtn').addEventListener('click',renderBacktest);$('backtestAutoBtn').addEventListener('click',()=>{if(runAutoplan())renderBacktest()});$('sweepBtn').addEventListener('click',runSweep)}
+  $('netHint').textContent=HAS_MATRIX?`LKW-Straßenmatrix mit ${NET.pairs} Verbindungen, sonst Luftlinie × ${ROAD_FACTOR.toFixed(2)}, Ø ${Math.round(AVG_KMH)} km/h`:`Ohne Straßenmatrix: Luftlinie × ${ROAD_FACTOR.toFixed(2)}, Ø ${Math.round(AVG_KMH)} km/h`;
+  $('sequenceAllBtn').addEventListener('click',()=>{routes.filter(r=>routeChanged(r)||r.manuallyCreated).forEach(optimizeRouteOrder);renderAll();showInfo('Neu sortiert','Alle geänderten und neuen Touren ab Valluhn neu sortiert.')});
+  if(HAS_REF){$('backtestBtn').style.display='';$('backtestBtn').addEventListener('click',openBacktest);$('closeBacktestBtn').addEventListener('click',()=>closeModal('backtestModal'));$('backtestCurrentBtn').addEventListener('click',renderBacktest);$('backtestAutoBtn').addEventListener('click',()=>{if(runAutoplan())renderBacktest()});$('sweepBtn').addEventListener('click',runSweep)}
+  /* Allgemein */
+  $('drawer').addEventListener('click',()=>{$('drawer').className='drawer'});
+  document.addEventListener('click',e=>document.querySelectorAll('details.moremenu[open]').forEach(d=>{if(!d.contains(e.target))d.open=false}));
+  document.addEventListener('dragend',dragCleanup);
+  document.addEventListener('keydown',e=>{
+    const tag=(e.target?.tagName||'').toLowerCase(),typing=tag==='input'||tag==='textarea'||tag==='select'||e.target?.isContentEditable;
+    if(e.key==='/'&&!typing&&!e.ctrlKey&&!e.metaKey){e.preventDefault();$('search').focus();$('search').select()}
+    if(e.key==='Escape'){document.querySelectorAll('.modalback.show').forEach(m=>m.classList.remove('show'));closeMenus()}
+  });
   parseExcluded();parseLocked();clampMax();readTimeTol();presetFromReference();
 }
 initControls();buildOriginalPlan();
@@ -3202,6 +3643,28 @@ def _no_rerun(st) -> dict:
         return {}
 
 
+def _box(st):
+    """Umrandeter Container (Streamlit ≥ 1.29), sonst ein normaler."""
+    try:
+        return st.container(border=True)
+    except TypeError:
+        return st.container()
+
+
+def _dl(st, label, **kw):
+    """Download-Button, wenn möglich als Primär-Button."""
+    try:
+        return st.download_button(label, type=kw.pop("btn_type", "secondary"), **kw)
+    except TypeError:
+        return st.download_button(label, **kw)
+
+
+def _file_state(name: str, f, required: bool) -> str:
+    if f is not None:
+        return f"✅ **{name}** · {getattr(f, 'name', '')}" if not isinstance(f, list) else f"✅ **{name}** · {len(f)} Datei(en)"
+    return f"⬜ **{name}** fehlt" if required else f"➖ {name} (optional)"
+
+
 def main():
     global ORS_HOST
     import os
@@ -3213,40 +3676,57 @@ def main():
     # sind aber je Browser-Sitzung getrennt – nichts wird zwischen Nutzern auf Streamlit Cloud geteilt.
     mem = ss.setdefault("fwp_mem_cache", {})
 
-    st.set_page_config(page_title="Feiertags-Wochenplaner V29", page_icon="📅", layout="wide")
-    st.title("Feiertags-Wochenplaner V29 – HTML Generator")
-    st.caption(f"**{APP_BUILD}** · Datei: `{Path(__file__).resolve()}`")
-    st.caption(
-        "Excel + Normal_Tourenstart.csv + Kisoft_Kunden.csv → eigenständige Dispo-HTML. "
-        "Optional: Referenzplan (z. B. Tourenplan_KW40.xlsx) für den Backtest."
+    st.set_page_config(page_title="Feiertags-Wochenplaner V30", page_icon="📅", layout="wide")
+    st.markdown(
+        "<style>"
+        ".block-container{padding-top:2.2rem;max-width:1500px}"
+        "h1{font-size:1.9rem!important;margin-bottom:0!important}"
+        "[data-testid='stMetricValue']{font-size:1.55rem}"
+        "[data-testid='stExpander'] summary p{font-weight:600}"
+        "</style>",
+        unsafe_allow_html=True,
     )
+    st.title("Feiertagsplanung – Generator")
+    st.caption("Macht aus Quelldatei, Tourenstarts und Kisoft-Kunden eine eigenständige Dispo-HTML. "
+               f"Geplant wird danach offline im Browser. · {APP_BUILD}")
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        upload = st.file_uploader("Quelldatei (.xlsx)", type=["xlsx"])
-    with c2:
-        starts_upload = st.file_uploader("Normal_Tourenstart.csv", type=["csv"])
-    with c3:
-        info_upload = st.file_uploader("Kisoft_Kunden.csv", type=["csv"])
-    with c4:
-        ref_upload = st.file_uploader("Referenzplan (optional)", type=["xlsx"])
-    hist_uploads = st.file_uploader("Feiertags-Historie (optional, mehrere Pläne – werden ins Planungsgedächtnis der Adressdatei übernommen)",
-                                    type=["xlsx"], accept_multiple_files=True,
-                                    help="Alle Formate (neue Quelldatei, alte 'Direkt 1 - 99', 'Belieferung …'-Listen). "
-                                         "Pläne aus derselben Zeit gemeinsam hochladen (z. B. Karfreitag + Ostermontag) – "
-                                         "sie dienen sich gegenseitig als Normalwoche. Jüngere Jahre zählen stärker.")
+    # ① Dateien ---------------------------------------------------------------------------------
+    with _box(st):
+        st.markdown("#### ① Dateien")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            upload = st.file_uploader("Quelldatei (.xlsx)", type=["xlsx"],
+                                      help="Wochenplan mit den Blättern DIREKT, MK und LADEREIHENFOLGE.")
+        with c2:
+            starts_upload = st.file_uploader("Normal_Tourenstart.csv", type=["csv"],
+                                             help="Ladebeginn je Tour – daraus werden Abfahrt, ETA und Zeitfenster berechnet.")
+        with c3:
+            info_upload = st.file_uploader("Kisoft_Kunden.csv", type=["csv"], help="Lieferinfos und Zeitfenster je Kunde.")
+        st.markdown("**Optional**")
+        o1, o2, o3 = st.columns(3)
+        with o1:
+            addr_upload = st.file_uploader("Kunden_Adressdatei (.xlsx)", type=["xlsx", "csv"],
+                                           help="Gedächtnis zwischen den Läufen: korrigierte Adressen, feste Koordinaten, "
+                                                "Straßenmatrix, Planungsgedächtnis und Ausschlussliste. Nach jedem Lauf die "
+                                                "aktualisierte Version herunterladen und beim nächsten Mal wieder hochladen.")
+        with o2:
+            ref_upload = st.file_uploader("Referenzplan (z. B. Tourenplan_KW40.xlsx)", type=["xlsx"],
+                                          help="Echter Dispo-Plan zum Vergleich: schaltet in der HTML den Backtest frei.")
+        with o3:
+            hist_uploads = st.file_uploader(
+                "Feiertags-Historie (mehrere Pläne)", type=["xlsx"], accept_multiple_files=True,
+                help="Alle Formate (neue Quelldatei, alte 'Direkt 1 - 99', 'Belieferung …'-Listen). "
+                     "Pläne aus derselben Zeit gemeinsam hochladen (z. B. Karfreitag + Ostermontag) – "
+                     "sie dienen sich gegenseitig als Normalwoche. Jüngere Jahre zählen stärker. "
+                     "Wird ins Planungsgedächtnis der Adressdatei übernommen.")
+        st.caption("  ·  ".join([_file_state("Quelldatei", upload, True), _file_state("Tourenstart", starts_upload, True),
+                                 _file_state("Kisoft", info_upload, True), _file_state("Adressdatei", addr_upload, False),
+                                 _file_state("Referenz", ref_upload, False),
+                                 _file_state("Historie", hist_uploads or None, False)]))
 
-    hc1, hc2 = st.columns(2)
-    with hc1:
-        hist_rebuild = st.checkbox("Planungsgedächtnis neu aufbauen (nur aus den hochgeladenen Historien)", value=False,
-                                   help="Ignoriert das Gedächtnis aus der Adressdatei. Nötig nach Änderungen an der Auswertung "
-                                        "(V29: „entfallen“ je Kunde für Sa → Folgewoche) oder an der Gewichtung.")
-    with hc2:
-        hl_label = st.selectbox("Gewichtung jüngerer Pläne", ["verdoppelt je Halbjahr (Standard)", "verdoppelt je Jahr",
-                                                             "verdoppelt je 2 Jahre", "alle gleich"],
-                                help="Halbjahr: der jüngste Plan dominiert fast vollständig. Flacher = ältere Jahre tragen mit. "
-                                     "Wirkt nur beim Auswerten (Neuaufbau bzw. neu hochgeladene Pläne).")
-    half_life = {"verdoppelt je Jahr": 365.0, "verdoppelt je 2 Jahre": 730.0, "alle gleich": 1e9}.get(hl_label, 182.5)
+    res = st.container()      # ② Ergebnis – wird nach den Einstellungen gefüllt
+    st.markdown("#### Einstellungen")
+    set_sum = st.empty()
 
     default_key = os.environ.get("ORS_API_KEY", "")
     try:
@@ -3254,59 +3734,83 @@ def main():
     except Exception:
         pass
 
-    with st.expander("Adressen & LKW-Straßenentfernungen", expanded=True):
-        g1, g2, g3 = st.columns([2, 2, 1.3])
+    providers = ["OpenRouteService", "Photon (OSM, ohne Kontingent)", "Overpass (OSM, ohne Kontingent)",
+                 "Nominatim (OSM, 1 Adresse/Sek.)", "nur Adressdatei / PLZ"]
+    p_sum = ss.get("fwp_provider", providers[0]).split(" (")[0]
+    m_sum = (("LKW-Matrix" if ss.get("fwp_profile", "driving-hgv") == "driving-hgv" else "PKW-Matrix")
+             if ss.get("fwp_use_matrix", True) else "ohne Straßenmatrix")
+    set_sum.caption(f"Verortung über **{p_sum}** · **{m_sum}**"
+                    + (f" mit {ss.get('fwp_k', 20)} Nachbarn je Kunde" if ss.get("fwp_use_matrix", True) else "")
+                    + " · Änderungen wirken sofort, bereits Gefundenes wird nicht erneut abgefragt.")
+    with st.expander("Adressen & Straßenentfernungen", expanded=False):
+        g1, g2 = st.columns([1.15, 1])
         with g1:
             ors_key = st.text_input("OpenRouteService API-Key", value=default_key, type="password",
                                     help="HeiGIT-Account (account.heigit.org). Alternativ Umgebungsvariable ORS_API_KEY.")
-            ors_base = st.text_input("ORS-Server", value=ORS_HOST,
-                                     help="Standard https://api.heigit.org – Adresssuche über /pelias/v1/search/structured, "
-                                          "Matrix über /openrouteservice/v2/matrix/{Profil}. Ein eingefügter Pfad wird ignoriert.")
             provider_label = st.radio(
-                "Adressen verorten über",
-                ["OpenRouteService", "Photon (OSM, ohne Kontingent)", "Overpass (OSM, ohne Kontingent)",
-                 "Nominatim (OSM, 1 Adresse/Sek.)", "nur Adressdatei / PLZ"],
-                horizontal=True,
+                "Adressen verorten über", providers, horizontal=True, key="fwp_provider",
                 help="Photon: schnelle OSM-Adresssuche (komoot) – kein Key, kein Tageskontingent. "
                      "Overpass: sucht Hausnummer bzw. Straße direkt in OpenStreetMap – kein Tageskontingent, kein API-Key. "
                      "Ideal, wenn das ORS-Kontingent aufgebraucht ist oder die Adressen bereits sauber ausgeschrieben sind.",
             )
-        with g2:
-            use_matrix = st.checkbox("Straßenmatrix berechnen", value=True)
-            profile = st.selectbox("Profil", ["driving-hgv", "driving-car"],
-                                   help="driving-hgv = LKW (empfohlen), driving-car = PKW. Eigener Cache je Profil.")
-            k_neighbors = st.slider("Nachbarn je Kunde in der Matrix", 8, 40, 20,
-                                    help="Straßenwerte für Depot↔Kunde und die k nächsten Kunden je Startbereich. "
-                                         "Übrige Paare: Luftlinie × kalibrierter Umwegfaktor.")
             osm_fallback = st.checkbox("Nominatim (OSM) als zweite Quelle", value=True,
                                        help="Adressen, die ORS nicht findet, zusätzlich bei OpenStreetMap suchen (1 Adresse/Sek.) und abgekürzte "
-                 "SAP-Straßennamen gegen die echten Straßen im PLZ-Gebiet abgleichen (Overpass).")
+                                            "SAP-Straßennamen gegen die echten Straßen im PLZ-Gebiet abgleichen (Overpass).")
             retry_failed = st.checkbox("Nicht gefundene Adressen erneut versuchen", value=False)
-            ors_rate = st.number_input("ORS-Adresssuche: Anfragen pro Minute", 10, 1000, 95, step=5,
-                                       help="HeiGIT Standard-Plan: 100/Min. Bei höherem Kontingent entsprechend erhöhen.")
-        with g3:
-            addr_upload = st.file_uploader("Adressdatei (.xlsx)", type=["xlsx", "csv"],
-                                           help="Kunden_Adressdatei.xlsx: korrigierte Adressen + feste Koordinaten + Straßenmatrix. "
-                                                "Nach jedem Lauf die aktualisierte Version herunterladen und beim nächsten Mal wieder hochladen.")
-            use_local = st.checkbox("Zusätzlich lokalen Cache nutzen", value=False,
-                                    help=f"Aus: nichts wird auf dem Rechner gespeichert. Ein: Ordner {CACHE_DIR}")
-        st.caption("Ohne lokalen Cache ist die **Adressdatei** der Speicher: Kunden mit Koordinaten darin werden nicht mehr gesucht, "
-                   "Straßenentfernungen daraus nicht erneut abgefragt. Innerhalb der Sitzung wird nur neu gerechnet, "
-                   "wenn sich Dateien oder Einstellungen ändern – Klicks und Downloads fragen nichts erneut ab.")
+            with st.popover("Server & Kontingent") if hasattr(st, "popover") else st.container():
+                ors_base = st.text_input("ORS-Server", value=ORS_HOST,
+                                         help="Standard https://api.heigit.org – Adresssuche über /pelias/v1/search/structured, "
+                                              "Matrix über /openrouteservice/v2/matrix/{Profil}. Ein eingefügter Pfad wird ignoriert.")
+                ors_rate = st.number_input("ORS-Adresssuche: Anfragen pro Minute", 10, 1000, 95, step=5,
+                                           help="HeiGIT Standard-Plan: 100/Min. Bei höherem Kontingent entsprechend erhöhen.")
+                use_local = st.checkbox("Zusätzlich lokalen Cache nutzen", value=False,
+                                        help=f"Aus: nichts wird auf dem Rechner gespeichert. Ein: Ordner {CACHE_DIR}")
+        with g2:
+            use_matrix = st.checkbox("Straßenmatrix berechnen", value=True, key="fwp_use_matrix")
+            profile = st.selectbox("Profil", ["driving-hgv", "driving-car"], key="fwp_profile",
+                                   format_func=lambda p: "LKW (driving-hgv, empfohlen)" if p == "driving-hgv" else "PKW (driving-car)",
+                                   help="Eigener Cache je Profil.")
+            k_neighbors = st.slider("Nachbarn je Kunde in der Matrix", 8, 40, 20, key="fwp_k",
+                                    help="Straßenwerte für Depot↔Kunde und die k nächsten Kunden je Startbereich. "
+                                         "Übrige Paare: Luftlinie × kalibrierter Umwegfaktor.")
+            st.caption("Ohne lokalen Cache ist die **Adressdatei** der Speicher: Kunden mit Koordinaten darin werden nicht mehr "
+                       "gesucht, Straßenentfernungen daraus nicht erneut abgefragt. Klicks und Downloads fragen nichts neu ab.")
         b1, b2 = st.columns(2)
         with b1:
-            if st.button("Verbindungstest (ORS · Nominatim · Overpass)"):
+            if st.button("Verbindungstest (ORS · Nominatim · Overpass)", use_container_width=True):
                 with st.spinner("Teste Dienste …"):
                     ORS_HOST = _host_from(ors_base)
                     st.dataframe(pd.DataFrame(connection_test(ors_key)), use_container_width=True, hide_index=True)
         with b2:
-            if st.button("Offene Adressen & Strecken jetzt nachladen",
+            if st.button("Offene Adressen & Strecken jetzt nachladen", use_container_width=True,
                          help="Nach einem Abbruch (Kontingent, Serverfehler): fragt nur ab, was noch fehlt. "
                               "Bereits Gefundenes bleibt im Sitzungsspeicher."):
                 ss["fwp_force"] = ss.get("fwp_force", 0) + 1
 
-    if upload is None or starts_upload is None or info_upload is None:
-        st.info("Bitte Quelldatei, Normal_Tourenstart.csv und Kisoft_Kunden.csv hochladen.")
+    with st.expander("Planungsgedächtnis aus früheren Feiertagen", expanded=False):
+        hc1, hc2 = st.columns(2)
+        with hc1:
+            hist_rebuild = st.checkbox("Neu aufbauen (nur aus den hochgeladenen Historien)", value=False,
+                                       help="Ignoriert das Gedächtnis aus der Adressdatei. Nötig nach Änderungen an der Auswertung "
+                                            "(V29: „entfallen“ je Kunde für Sa → Folgewoche) oder an der Gewichtung.")
+        with hc2:
+            hl_label = st.selectbox("Gewichtung jüngerer Pläne", ["verdoppelt je Halbjahr (Standard)", "verdoppelt je Jahr",
+                                                                 "verdoppelt je 2 Jahre", "alle gleich"],
+                                    help="Halbjahr: der jüngste Plan dominiert fast vollständig. Flacher = ältere Jahre tragen mit. "
+                                         "Wirkt nur beim Auswerten (Neuaufbau bzw. neu hochgeladene Pläne).")
+    half_life = {"verdoppelt je Jahr": 365.0, "verdoppelt je 2 Jahre": 730.0, "alle gleich": 1e9}.get(hl_label, 182.5)
+    excl_box = st.expander("SAP-Ausschlussliste", expanded=False)
+    log = st.expander("Protokoll", expanded=False)
+
+    missing = [n for n, f in [("Quelldatei", upload), ("Normal_Tourenstart.csv", starts_upload),
+                              ("Kisoft_Kunden.csv", info_upload)] if f is None]
+    if missing:
+        with excl_box:
+            st.caption("Erscheint, sobald die Pflichtdateien geladen sind – Vorgabe kommt aus der Adressdatei.")
+        with res:
+            with _box(st):
+                st.markdown("#### ② Ergebnis")
+                st.info(f"Noch fehlend: **{', '.join(missing)}**. Danach wird die Dispo-HTML automatisch erstellt.")
         return
 
     global USE_LOCAL_CACHE
@@ -3314,6 +3818,7 @@ def main():
     ORS_HOST = _host_from(ors_base)
     LIM_ORS_GEO.set(ors_rate)
     force = ss.get("fwp_force", 0)
+    notes: list[str] = []
 
     def stage(name: str, key: str, fn):
         """Rechenstufe nur ausführen, wenn sich ihre Eingaben geändert haben – sonst Ergebnis aus der Sitzung."""
@@ -3328,6 +3833,14 @@ def main():
     info_bytes = info_upload.getvalue()
     addr_bytes = addr_upload.getvalue() if addr_upload is not None else b""
     addr_name = addr_upload.name if addr_upload is not None else ""
+
+    with res:
+        rb = _box(st)
+    with rb:
+        st.markdown("#### ② Ergebnis")
+        work = st.container()        # Fortschrittsbalken der Rechenstufen
+        warn_box = st.container()    # Warnungen
+        res_box = st.container()     # Kennzahlen + Downloads
 
     # 1) Einlesen + Adressdatei ------------------------------------------------------------------
     def do_load():
@@ -3352,25 +3865,34 @@ def main():
 
     k_load = _digest(source_bytes, info_bytes, addr_bytes, addr_name)
     try:
-        with st.spinner("Dateien werden zusammengeführt …"):
+        with work, st.spinner("Dateien werden zusammengeführt …"):
             L = stage("load", k_load, do_load)
     except Exception as exc:
-        st.error(f"Fehler: {exc}")
+        with warn_box:
+            st.error(f"Dateien konnten nicht gelesen werden: {exc}")
         return
     meta = L["meta"]
     if L["adr_prev"] is not None:
         mat_txt = " · ".join(f"{n} Straßenentfernungen {'LKW' if p == 'driving-hgv' else 'PKW'}" for p, n in L["n_mat"].items() if n)
-        st.caption(f"Adressdatei: {L['n_adr']} Adressen korrigiert · {L['n_fix']} Kunden mit fester Koordinate · "
-                   + (mat_txt or "keine Straßenentfernungen") + " übernommen.")
+        notes.append(f"Adressdatei: {L['n_adr']} Adressen korrigiert · {L['n_fix']} Kunden mit fester Koordinate · "
+                     + (mat_txt or "keine Straßenentfernungen") + " übernommen.")
         if meta.get("legacy_matrix") and profile != LEGACY_MATRIX_PROFILE:
-            st.caption("Straßenmatrix der Adressdatei ist ohne Profilangabe (alte Version) → als LKW übernommen. "
-                       "Für PKW werden die Strecken neu abgefragt; die LKW-Werte bleiben in der Datei erhalten.")
+            notes.append("Straßenmatrix der Adressdatei ist ohne Profilangabe (alte Version) → als LKW übernommen. "
+                         "Für PKW werden die Strecken neu abgefragt; die LKW-Werte bleiben in der Datei erhalten.")
+
+    # Ausschlussliste (Vorgabe aus der Adressdatei) ------------------------------------------------
+    excl_default = "\n".join(str(s) for s in (meta.get("excluded") or [])) if L["adr_prev"] is not None else ""
+    with excl_box:
+        excl_txt = st.text_area("SAP-Nummern, die nie umgeplant werden (wird in der Adressdatei gespeichert)", value=excl_default,
+                                height=110, help="SAP-Nummern, getrennt durch Zeile, Komma, Semikolon oder Leerzeichen.")
+    excluded = parse_sap_list(excl_txt)
 
     # 2) Adressen verorten -----------------------------------------------------------------------
     provider = {"OpenRouteService": "ors", "Overpass (OSM, ohne Kontingent)": "ovp", "Photon (OSM, ohne Kontingent)": "photon",
                 "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
     if provider == "ors" and not ors_key:
-        st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt.")
+        with warn_box:
+            st.warning("Kein ORS-Key – es werden nur Cache und PLZ-Zentren genutzt. Key unter „Adressen & Straßenentfernungen“ eintragen.")
 
     def do_geo():
         bar = st.progress(0.0, text="Adressen verorten …")
@@ -3383,18 +3905,20 @@ def main():
             bar.empty()
 
     k_geo = _digest(k_load, provider, retry_failed, osm_fallback, ors_key, ORS_HOST, force)
-    geo, gstats = stage("geo", k_geo, do_geo)
+    with work:
+        geo, gstats = stage("geo", k_geo, do_geo)
     n_match = int((geo.get("geo_match", pd.Series(dtype=str)).fillna("") != "").sum())
     if n_match:
-        st.caption(f"Straßenabgleich (SAP-Abkürzungen → OSM-Straßen): {n_match} Kunden aufgelöst.")
+        notes.append(f"Straßenabgleich (SAP-Abkürzungen → OSM-Straßen): {n_match} Kunden aufgelöst.")
     if gstats["neu"] or gstats["fehl"]:
-        st.caption(f"Geocoding: {gstats['neu']} neu gefunden, {gstats['fehl']} nicht gefunden"
-                   + (f", {gstats['verworfen']} verworfen (> {GEO_MAX_DEVIATION_KM:.0f} km vom PLZ-Gebiet)" if gstats.get("verworfen") else ""))
+        notes.append(f"Geocoding: {gstats['neu']} neu gefunden, {gstats['fehl']} nicht gefunden"
+                     + (f", {gstats['verworfen']} verworfen (> {GEO_MAX_DEVIATION_KM:.0f} km vom PLZ-Gebiet)" if gstats.get("verworfen") else ""))
     if ORS_QUOTA.get("geocode"):
-        st.caption(f"ORS-Adresssuche: noch {ORS_QUOTA['geocode'][0]} Anfragen im Kontingent.")
+        notes.append(f"ORS-Adresssuche: noch {ORS_QUOTA['geocode'][0]} Anfragen im Kontingent.")
     if gstats["abbruch"]:
-        st.warning(f"Geocoding abgebrochen: {gstats['abbruch']} – {gstats['offen']} Adressen offen. "
-                   "Später **„Offene Adressen & Strecken jetzt nachladen“** oder beim nächsten Lauf mit der Adressdatei.")
+        with warn_box:
+            st.warning(f"Geocoding abgebrochen: {gstats['abbruch']} – {gstats['offen']} Adressen offen. "
+                       "Später **„Offene Adressen & Strecken jetzt nachladen“** oder beim nächsten Lauf mit der Adressdatei.")
 
     # 3) Straßenmatrix ---------------------------------------------------------------------------
     def do_matrix():
@@ -3413,56 +3937,53 @@ def main():
         return {"geo": g, "nodes": nodes, "pairs": pairs, "matrix": matrix, "net": net, "mstats": mstats}
 
     k_mat = _digest(k_geo, use_matrix, profile, k_neighbors, ors_key if use_matrix else "", force)
-    M = stage("matrix", k_mat, do_matrix)
+    with work:
+        M = stage("matrix", k_mat, do_matrix)
     net, mstats = M["net"], M["mstats"]
     if mstats:
         if mstats["abbruch"]:
-            st.warning(f"Straßenmatrix unvollständig: {mstats['abbruch']} – fehlende Strecken werden per Luftlinie geschätzt. "
-                       "Rest mit **„Offene Adressen & Strecken jetzt nachladen“** (später) oder beim nächsten Lauf mit der "
-                       "aktualisierten Adressdatei.")
+            with warn_box:
+                st.warning(f"Straßenmatrix unvollständig: {mstats['abbruch']} – fehlende Strecken werden per Luftlinie geschätzt. "
+                           "Rest mit **„Offene Adressen & Strecken jetzt nachladen“** (später) oder beim nächsten Lauf mit der "
+                           "aktualisierten Adressdatei.")
         elif mstats["fehlend"] and not ors_key:
-            st.caption(f"{mstats['fehlend']} Verbindungen nicht im Cache – ohne ORS-Key per Luftlinie geschätzt.")
+            notes.append(f"{mstats['fehlend']} Verbindungen nicht im Cache – ohne ORS-Key per Luftlinie geschätzt.")
 
     # 4) Planungsgedächtnis ----------------------------------------------------------------------
     hist_files = [(f.name, f.getvalue()) for f in (hist_uploads or [])]
 
     def do_hist():
         history = dict(meta.get("history") or {}) if L["adr_prev"] is not None and not hist_rebuild else {}
-        log, skipped = None, []
+        hlog, skipped = None, []
         if hist_files:
-            known = {fn for H in history.values() for fn in H.get("files", [])}
+            known = {fn for H_ in history.values() for fn in H_.get("files", [])}
             fresh = [(n_, b_) for n_, b_ in hist_files if n_ not in known]
             skipped = [n_ for n_, _ in hist_files if n_ in known]
             if fresh:
                 with st.spinner("Feiertags-Historie wird ausgewertet …"):
-                    h_new, log = analyze_history(read_source(source_bytes), fresh, half_life)
+                    h_new, hlog = analyze_history(read_source(source_bytes), fresh, half_life)
                     history = merge_history(history, h_new)
-        return {"history": history, "log": log, "skipped": skipped}
+        return {"history": history, "log": hlog, "skipped": skipped}
 
     k_hist = _digest(k_load, hist_rebuild, half_life, [(n_, hashlib.md5(b_).hexdigest()) for n_, b_ in hist_files])
-    H = stage("hist", k_hist, do_hist)
+    with work:
+        H = stage("hist", k_hist, do_hist)
     history = H["history"]
     if hist_rebuild and not hist_files:
-        st.warning("Neuaufbau gewählt, aber keine Historien hochgeladen – das Planungsgedächtnis ist leer.")
+        with warn_box:
+            st.warning("Neuaufbau gewählt, aber keine Historien hochgeladen – das Planungsgedächtnis ist leer.")
     if H["skipped"]:
-        st.caption("Schon im Planungsgedächtnis (nicht doppelt gezählt): " + ", ".join(H["skipped"]))
-    if H["log"]:
-        st.dataframe(pd.DataFrame(H["log"]), use_container_width=True, hide_index=True)
+        notes.append("Schon im Planungsgedächtnis (nicht doppelt gezählt): " + ", ".join(H["skipped"]))
     if history:
-        st.caption("Planungsgedächtnis: " + " · ".join(f"{d}: {len(Hd.get('files', []))} Plan/Pläne, {len(Hd.get('tours', {}))} Touren"
-                                                      for d, Hd in history.items()))
-
-    # 5) Ausschlussliste --------------------------------------------------------------------------
-    excl_default = "\n".join(str(s) for s in (meta.get("excluded") or [])) if L["adr_prev"] is not None else ""
-    excl_txt = st.text_area("SAP-Ausschlussliste (wird nie umgeplant · wird in der Adressdatei gespeichert)", value=excl_default,
-                            height=110, help="SAP-Nummern, getrennt durch Zeile, Komma, Semikolon oder Leerzeichen.")
-    excluded = parse_sap_list(excl_txt)
+        notes.append("Planungsgedächtnis: " + " · ".join(f"{d}: {len(Hd.get('files', []))} Plan/Pläne, {len(Hd.get('tours', {}))} Touren"
+                                                        for d, Hd in history.items()))
     known_sap = set(int(s) for s in geo["SAP"].dropna())
     unknown = [s for s in excluded if s not in known_sap]
-    st.caption(f"{len(excluded)} SAP ausgeschlossen" + (f" · davon {len(unknown)} nicht in der Quelldatei: "
-                                                        + ", ".join(map(str, unknown[:15])) + (" …" if len(unknown) > 15 else "") if unknown else ""))
+    with excl_box:
+        st.caption(f"{len(excluded)} SAP ausgeschlossen" + (f" · davon {len(unknown)} nicht in der Quelldatei: "
+                                                            + ", ".join(map(str, unknown[:15])) + (" …" if len(unknown) > 15 else "") if unknown else ""))
 
-    # 6) HTML + Adressdatei ----------------------------------------------------------------------
+    # 5) HTML + Adressdatei ----------------------------------------------------------------------
     starts_bytes = starts_upload.getvalue()
     ref_bytes = ref_upload.getvalue() if ref_upload is not None else b""
 
@@ -3491,50 +4012,58 @@ def main():
     k_out = _digest(k_mat, k_hist, excluded, ref_bytes, ref_upload.name if ref_upload is not None else "",
                     starts_bytes, upload.name, info_upload.name, starts_upload.name)
     try:
-        with st.spinner("HTML und Adressdatei werden erstellt …"):
+        with work, st.spinner("HTML und Adressdatei werden erstellt …"):
             O = stage("out", k_out, do_out)
     except Exception as exc:
-        st.error(f"Fehler: {exc}")
+        with warn_box:
+            st.error(f"HTML konnte nicht erstellt werden: {exc}")
         return
     geo, matched = O["geo"], O["matched"]
     if O["ref_warn"]:
-        st.warning(f"Referenzplan ignoriert: {O['ref_warn']}")
+        with warn_box:
+            st.warning(f"Referenzplan ignoriert: {O['ref_warn']}")
 
+    # Ergebnis ------------------------------------------------------------------------------------
     deliveries = sum(int(geo[d].notna().sum()) for d in DAY_COLUMNS)
     gq = geo["gq"].fillna("keine")
-    m = st.columns(6)
-    m[0].metric("Kundenstammsätze", f"{len(geo):,}".replace(",", "."))
-    m[1].metric("Wochen-Lieferungen", f"{deliveries:,}".replace(",", "."))
-    m[2].metric("Adressgenau / fest", f"{int(gq.isin(['addr', 'manuell', 'datei']).sum())}/{len(geo)}")
-    m[3].metric("nur Straße / PLZ", f"{int((gq == 'street').sum())} / {int((gq == 'plz').sum())}")
-    m[4].metric("Straßenmatrix", f"{net['pairs']}/{net['needed']}" if net else "–",
-                help=f"Umwegfaktor {net['factor']} · Ø {net['kmh']} km/h" if net else None)
-    m[5].metric("Referenz-Treffer", f"{matched}/{len(geo)}" if matched is not None else "–")
-
-    d1, d2 = st.columns([3, 1])
-    with d1:
-        st.download_button(
-            "Feiertags_Wochenplaner_V29.html herunterladen",
-            data=O["html"], file_name="Feiertags_Wochenplaner_V29.html",
-            mime="text/html", use_container_width=True, **_no_rerun(st),
-        )
-    with d2:
-        st.download_button(
-            "Adressdatei aktualisiert (.xlsx)", data=O["wb"], file_name="Kunden_Adressdatei.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True,
-            help="Enthält alle gefundenen Koordinaten und Straßenentfernungen (LKW und PKW getrennt). Beim nächsten Lauf wieder hochladen.",
-            **_no_rerun(st),
-        )
-    cols_bad = [c for c in ["SAP", "Name", "Strasse", "Plz", "Ort", "gq", "geo_grund"] if c in geo.columns]
-    bad = geo[geo["gq"].isin(["plz"]) | geo["gq"].isna()][cols_bad].drop_duplicates("SAP")
-    if len(bad):
-        with st.expander(f"{len(bad)} Kunden nicht adressgenau verortet"):
-            if "geo_grund" in bad.columns:
-                st.write(bad["geo_grund"].replace("", "nicht abgefragt / keine Straße").value_counts())
-            st.dataframe(bad, use_container_width=True, hide_index=True)
-    if matched is not None:
-        st.caption("Mit Referenzplan: Ausfalltage und Zieltag werden in der HTML automatisch erkannt. "
-                   "Button **Backtest → Autoplan rechnen & vergleichen**.")
+    n_exact = int(gq.isin(["addr", "manuell", "datei"]).sum())
+    fmt_n = lambda n: f"{n:,}".replace(",", ".")
+    with res_box:
+        m = st.columns(6)
+        m[0].metric("Kunden", fmt_n(len(geo)))
+        m[1].metric("Wochen-Lieferungen", fmt_n(deliveries))
+        m[2].metric("Adressgenau", f"{round(100 * n_exact / max(1, len(geo)))} %", help=f"{n_exact} von {len(geo)} Kunden adressgenau oder fest verortet")
+        m[3].metric("Nur Straße / PLZ", f"{int((gq == 'street').sum())} / {int((gq == 'plz').sum())}")
+        m[4].metric("Straßenmatrix", f"{fmt_n(net['pairs'])} / {fmt_n(net['needed'])}" if net else "aus",
+                    help=f"Umwegfaktor {net['factor']} · Ø {net['kmh']} km/h" if net else "Entfernungen per Luftlinie × Umwegfaktor")
+        m[5].metric("Referenz-Treffer", f"{matched}/{len(geo)}" if matched is not None else "–")
+        d1, d2 = st.columns([2, 1])
+        with d1:
+            _dl(st, "⬇  Dispo-HTML herunterladen (Feiertags_Wochenplaner_V30.html)", btn_type="primary",
+                data=O["html"], file_name="Feiertags_Wochenplaner_V30.html",
+                mime="text/html", use_container_width=True, **_no_rerun(st))
+        with d2:
+            _dl(st, "⬇  Adressdatei aktualisiert (.xlsx)", data=O["wb"], file_name="Kunden_Adressdatei.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True,
+                help="Enthält alle gefundenen Koordinaten und Straßenentfernungen (LKW und PKW getrennt). Beim nächsten Lauf wieder hochladen.",
+                **_no_rerun(st))
+        st.caption("Weiter in der HTML: Ausfalltage wählen → Vorschläge berechnen und übernehmen → Prüfbericht → Excel exportieren."
+                   + (" Mit Referenzplan sind Ausfall- und Zieltag schon vorgewählt; der Backtest steht oben rechts." if matched is not None else "")
+                   + " Die Adressdatei beim nächsten Lauf wieder hochladen.")
+        cols_bad = [c for c in ["SAP", "Name", "Strasse", "Plz", "Ort", "gq", "geo_grund"] if c in geo.columns]
+        bad = geo[geo["gq"].isin(["plz"]) | geo["gq"].isna()][cols_bad].drop_duplicates("SAP")
+        if len(bad):
+            with st.expander(f"{len(bad)} Kunden nur ungefähr verortet (PLZ-Zentrum) – Adresse in der Adressdatei korrigieren"):
+                if "geo_grund" in bad.columns:
+                    st.write(bad["geo_grund"].replace("", "nicht abgefragt / keine Straße").value_counts())
+                st.dataframe(bad, use_container_width=True, hide_index=True)
+    with log:
+        for n_ in notes:
+            st.caption(n_)
+        if H["log"]:
+            st.dataframe(pd.DataFrame(H["log"]), use_container_width=True, hide_index=True)
+        if not notes and not H["log"]:
+            st.caption("Keine Meldungen.")
 
 
 if __name__ == "__main__":

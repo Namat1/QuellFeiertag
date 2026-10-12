@@ -1,5 +1,13 @@
 """Feiertags-Wochenplaner V30 – Streamlit-Generator für eine eigenständige Dispo-HTML.
 
+Neu in V30.1:
+- Excel-Export: neu eingetragene Tournummern gelb, Zusatz-Lieferungen („alle Kunden am Zieltag“) orange markiert –
+  nur die Tour-Zelle, Format sonst unverändert
+- Feste Kundengruppen (Vorgabe: Mittwochs-Konstellationen 3003, 3012, 3045): fahren beim Umplanen immer zusammen in der
+  Zieltag-Tour mit den meisten Mitgliedern, Mitglieder aus anderen Zieltag-Touren ziehen mit um, Obergrenze gilt für die
+  Gruppe nicht, Optimierung trennt sie nicht; pflegbar im Generator und im Blatt „Gruppen“ der Adressdatei
+- Bugfix: „alle Kunden am Zieltag“ + „Alle übernehmen“ erzeugt keine neuen Doppelbelieferungen mehr
+
 Neu in V30 (Oberfläche):
 - Dispo-HTML neu gestaltet: Arbeitsleiste in vier Schritten (Ausfall → Ziel → Umplanen → Abschließen) mit
   Fortschritt und Exportstatus; Ausfalltage schraffiert, Zieltage grün markiert
@@ -71,7 +79,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK"]   # HUPA wird nicht geplant
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V30.0 · Build 13.10.26 (neue Oberfläche: Arbeitsleiste, Fokus-Ansicht, Seitenleiste · Logik wie V29.2)"
+APP_BUILD = "V30.1 · Build 13.10.26 (feste Kundengruppen · Excel-Markierung neuer Touren · neue Oberfläche)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -1110,6 +1118,14 @@ def apply_coordinate_overrides(df: pd.DataFrame, file_bytes: bytes) -> tuple[pd.
 # ---------------------------------------------------------------------------
 
 ADDR_SHEET, MATRIX_SHEET, HIST_SHEET, EXCL_SHEET = "Adressen", "Strassenmatrix", "Planungsgedaechtnis", "Ausschluss"
+GROUP_SHEET = "Gruppen"
+# Feste Kundengruppen (Konstellation wie die Mittwochstour): fahren beim Umplanen immer zusammen in EINER Tour.
+# Vorgabe, solange die Adressdatei noch kein Blatt „Gruppen“ hat; danach gilt das Blatt bzw. die Eingabe im Generator.
+FIXED_GROUPS_DEFAULT = {
+    "3003": [211082, 211382, 211808, 210646, 213039, 210460, 211372, 211196, 214412, 218345],
+    "3012": [210572, 210570, 210958, 211170, 214045, 218492, 210568, 211377, 218213, 213129, 213244],
+    "3045": [211014, 210688, 210691, 218291, 210145, 210277, 210583, 210674, 210778, 211085, 211202, 213106],
+}
 ADDR_COLUMNS = ["SAP", "Quelle", "Name", "Strasse_SAP", "Strasse", "Plz", "Ort", "lat", "lon", "Status", "Hinweis"]
 STATUS_LABEL = {"datei": "fest (Datei)", "manuell": "fest (manuell)", "addr": "adressgenau",
                 "street": "Straßenmitte", "plz": "PLZ – bitte prüfen", "geprueft": "Adresse geprüft – wird gesucht"}
@@ -1124,7 +1140,7 @@ def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, 
     Rückgabe: Adresstabelle, Straßenmatrizen je Profil {profil: {coordkey: [km, min]}},
     Zusatz {'history': Planungsgedächtnis, 'excluded': SAP-Ausschlussliste, 'legacy_matrix': Matrix ohne Profilangabe}."""
     matrices: dict = {}
-    meta = {"history": {}, "excluded": [], "legacy_matrix": False}
+    meta = {"history": {}, "excluded": [], "legacy_matrix": False, "groups": None}
     if name.lower().endswith(".csv"):
         adr = pd.read_csv(io.BytesIO(file_bytes), sep=None, engine="python", dtype=str, encoding="utf-8-sig")
     else:
@@ -1142,6 +1158,17 @@ def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, 
                 meta["excluded"] = parse_sap_list(" ".join(ex.iloc[:, 0].fillna("").tolist()))
             except Exception:
                 meta["excluded"] = []
+        if GROUP_SHEET in xl.sheet_names:
+            try:
+                gs = pd.read_excel(xl, sheet_name=GROUP_SHEET, dtype=str).fillna("")
+                groups: dict = {}
+                for lab, sap in zip(gs.iloc[:, 0], gs.iloc[:, 1]):
+                    s = re.findall(r"\d{4,12}", str(sap))
+                    if str(lab).strip() and s:
+                        groups.setdefault(str(lab).strip(), []).append(int(s[0]))
+                meta["groups"] = {k: list(dict.fromkeys(v)) for k, v in groups.items() if len(set(v)) >= 2}
+            except Exception:
+                meta["groups"] = None
         if MATRIX_SHEET in xl.sheet_names:
             m = pd.read_excel(xl, sheet_name=MATRIX_SHEET)
             has_prof = "profil" in [str(c).strip().lower() for c in m.columns]
@@ -1164,6 +1191,24 @@ def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, 
         raise ValueError("Adressdatei braucht eine Spalte SAP")
     adr["SAP"] = pd.to_numeric(adr["SAP"], errors="coerce").astype("Int64")
     return adr.dropna(subset=["SAP"]).drop_duplicates("SAP", keep="last"), matrices, meta
+
+
+def parse_groups(text: str) -> dict:
+    """„Label: SAP, SAP, …“ je Zeile → {Label: [SAP, …]}; Zeilen ohne Label heißen „Gruppe n“; mind. 2 SAP je Gruppe."""
+    groups: dict = {}
+    for line in str(text or "").splitlines():
+        t = line.split("#")[0].strip()
+        if not t:
+            continue
+        label, _, rest = t.partition(":") if ":" in t else ("", "", t)
+        saps = list(dict.fromkeys(int(x) for x in re.findall(r"\d{4,12}", rest)))
+        if len(saps) >= 2:
+            groups[label.strip() or f"Gruppe {len(groups) + 1}"] = saps
+    return groups
+
+
+def groups_to_text(groups: dict | None) -> str:
+    return "\n".join(f"{k}: " + ", ".join(str(s) for s in v) for k, v in (groups or {}).items())
 
 
 def parse_sap_list(text: str) -> list:
@@ -1220,7 +1265,7 @@ def apply_address_file(df: pd.DataFrame, adr: pd.DataFrame, addresses: bool = Tr
 
 def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrices: dict,
                            prev: pd.DataFrame | None = None, history: dict | None = None,
-                           excluded: list | None = None) -> bytes:
+                           excluded: list | None = None, groups: dict | None = None) -> bytes:
     """Aktualisierte Adressdatei: alle Kunden mit bester Koordinate + Straßenmatrix (koordinatenbasiert).
     matrices: {profil: {coordkey: [km, min]}} – jedes Profil in eigenen Zeilen (Spalte 'profil')."""
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -1267,6 +1312,8 @@ def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrices: 
         "driving-car = PKW) – nicht bearbeiten. Enthalten: "
         + (", ".join(f"{p} {n}" for p, n in n_prof.items()) or "keine") + ".",
         "Blatt Ausschluss: SAP-Nummern, die der Planer nie umplant (eine je Zeile). Darf hier direkt gepflegt werden.",
+        "Blatt Gruppen: feste Kundengruppen (Spalte Gruppe = Name, z. B. die Mittwochstour 3003; Spalte SAP = Mitglied, eine Zeile je Kunde). "
+        "Mitglieder fahren beim Umplanen immer zusammen in einer Tour. Darf hier direkt gepflegt werden.",
         f"Erstellt: {datetime.now():%d.%m.%Y %H:%M} · {APP_BUILD}",
     ]})
     buf = io.BytesIO()
@@ -1282,6 +1329,10 @@ def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrices: 
             w, sheet_name=EXCL_SHEET, index=False)
         w.sheets[EXCL_SHEET].column_dimensions["A"].width = 12
         w.sheets[EXCL_SHEET].column_dimensions["B"].width = 40
+        g_rows = [(k, s, names.get(int(s), "")) for k, v in (groups if groups is not None else FIXED_GROUPS_DEFAULT).items() for s in v]
+        pd.DataFrame(g_rows, columns=["Gruppe", "SAP", "Name"]).to_excel(w, sheet_name=GROUP_SHEET, index=False)
+        for col_, wd_ in (("A", 12), ("B", 12), ("C", 40)):
+            w.sheets[GROUP_SHEET].column_dimensions[col_].width = wd_
         if history:
             js = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
             pd.DataFrame({"json": [js[i:i + 30000] for i in range(0, len(js), 30000)]}).to_excel(w, sheet_name=HIST_SHEET, index=False)
@@ -1783,7 +1834,7 @@ def _fill(template: str, mapping: dict[str, str]) -> str:
 
 def build_html(customers, tour_starts, source_name, source_xlsx, day_col_map,
                info_name="", starts_name="", ref_name="", matrix=None, net=None, history=None,
-               excluded=None) -> str:
+               excluded=None, groups=None) -> str:
     aux = " · ".join(x for x in [info_name, starts_name, (f"Referenz: {ref_name}" if ref_name else "")] if x)
     return _fill(HTML_TEMPLATE, {
         "SRC": escape(source_name),
@@ -1800,6 +1851,7 @@ def build_html(customers, tour_starts, source_name, source_xlsx, day_col_map,
         "MATRIX": _js(matrix or {}),
         "HISTORY": _js(history or {}),
         "EXCLUDED_TXT": escape("\n".join(str(s) for s in (excluded or []))),
+        "GROUPS_TXT": escape(groups_to_text(groups if groups is not None else FIXED_GROUPS_DEFAULT)),
         "NET": _js(net or {"factor": DEFAULT_ROAD_FACTOR, "kmh": DEFAULT_KMH, "pairs": 0, "needed": 0}),
     })
 
@@ -2030,6 +2082,7 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
 .fit,.flag{font-size:10.5px;font-weight:600;line-height:16px;padding:0 5px;border-radius:var(--r-tag);white-space:nowrap}
 .fit.good{background:var(--good-bg);color:var(--good)}.fit.ok{background:var(--ok-bg);color:var(--ok)}.fit.warn{background:var(--warn-bg);color:var(--warn)}.fit.bad{background:var(--bad-bg);color:var(--bad)}.fit.unknown{background:var(--panel2);color:var(--muted)}
 .flag{background:var(--accent-soft);color:var(--accent)}
+.flag.grp{background:var(--accent);color:#fff}
 .flag.dupe,.flag.area{background:var(--bad-bg);color:var(--bad)}.flag.time{background:var(--warn-bg);color:var(--warn)}.flag.plz,.flag.ex{background:var(--panel2);color:var(--muted)}.flag.gone{background:#3a4250;color:#fff}
 .remove{display:grid;place-items:center;width:18px;height:18px;border:0;background:transparent;color:#a3aab5;border-radius:4px;padding:0;opacity:0}
 .cust:hover .remove,.remove:focus-visible{opacity:1}
@@ -2075,6 +2128,7 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
 .clumem .nm b{font:600 12.5px var(--f-sign)}
 .clumem .remove{opacity:1}
 .anc{font-size:10.5px;font-weight:600;line-height:16px;border-radius:var(--r-tag);padding:0 5px;white-space:nowrap}
+.anc.fix{background:var(--accent-soft);color:var(--accent)}.anc.pull{background:var(--warn-bg);color:var(--warn)}
 .anc.direct{background:var(--good-bg);color:var(--good)}.anc.peer{background:var(--Mitt-bg);color:var(--Mitt)}.anc.geo{background:var(--panel2);color:var(--muted)}
 
 /* Ablage */
@@ -2302,6 +2356,9 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
     <section class="rsec"><h3>Ausschlussliste</h3>
       <div class="rrow"><label for="excludeSaps">SAP nicht umplanen</label><span></span><textarea id="excludeSaps" placeholder="SAP-Nummern – Zeile, Leerzeichen, Komma oder Semikolon">__EXCLUDED_TXT__</textarea><div class="rhelp" id="excludeMeta">0 SAP ausgeschlossen</div></div>
     </section>
+    <section class="rsec wide"><h3>Feste Kundengruppen</h3>
+      <div class="rrow"><label for="fixedGroups">Fahren beim Umplanen immer zusammen in einer Tour</label><span></span><textarea id="fixedGroups" spellcheck="false" style="height:96px;font-variant-numeric:tabular-nums" placeholder="3003: 211082, 211382, 211808 …">__GROUPS_TXT__</textarea><div class="rhelp">Eine Gruppe je Zeile: Name, Doppelpunkt, SAP-Nummern. Ziel ist die Zieltag-Tour mit den meisten Mitgliedern – Mitglieder aus anderen Touren am Zieltag ziehen mit um, die Obergrenze gilt für die Gruppe nicht, die Optimierung trennt sie nicht. <span id="groupsMeta"></span></div></div>
+    </section>
     <section class="rsec wide"><h3>So wird gerechnet</h3><div class="rnote">Startzeit aus der CSV = Ladebeginn, nach 60 Min. Laden folgt die Abfahrt; Valluhn ist Stopp 0. Die Reihenfolge der Vorlage-Tour bleibt Anker, neue Kunden kommen an die günstigste Stelle, Zeitfenster können die Reihenfolge ändern. Manuell an eine Position gezogene Kunden bleiben dort, bis die Tour neu sortiert wird.</div></section>
   </div>
   <div class="modalactions"><button class="btn" id="sequenceAllBtn" type="button" style="margin-right:auto">Geänderte Touren neu sortieren</button><button class="btn" id="closeRulesBtn" type="button">Schließen</button><button class="btn primary" id="applyRulesBtn" type="button">Regeln anwenden</button></div>
@@ -2335,7 +2392,7 @@ let AUTO_OVER=2;   // neue/erweiterte Touren dürfen um so viele Kunden größer
 const ROAD_FACTOR=Number(NET.factor)||1.28,AVG_KMH=Number(NET.kmh)||62,HAS_MATRIX=(NET.pairs||0)>0;
 DEPOT.node=0;
 const QUALITY_LABEL={good:'passt sehr gut',ok:'passt gut',warn:'grenzwertig',bad:'eher nicht',unknown:'nicht bewertbar'};
-const ANCHOR_LABEL={direct:'fährt dort',peer:'Mitfahrer',geo:'Geo'};
+const ANCHOR_LABEL={direct:'fährt dort',peer:'Mitfahrer',geo:'Geo',fix:'Gruppe',pull:'zieht um'};
 
 /* ---------- Grundfunktionen ---------- */
 function normSap(v){const m=String(v??'').match(/\d+/);return m?String(Number(m[0])):''}
@@ -2377,6 +2434,21 @@ function parseLocked(){LOCKED=new Set(((document.getElementById('lockedTours')?.
 function isLocked(r){return !!r&&LOCKED.has(String(r.tour))}
 function parseExcluded(){const vals=(document.getElementById('excludeSaps').value||'').match(/\d{4,12}/g)||[];excludedSaps=new Set(vals.map(normSap).filter(Boolean));document.getElementById('excludeMeta').textContent=excludedSaps.size+' SAP ausgeschlossen · Liste kommt aus der Adressdatei (Blatt Ausschluss) – dauerhafte Änderungen dort bzw. im Generator eintragen';return excludedSaps}
 function isExcluded(a){return excludedSaps.has(sapOf(a))}
+/* Feste Kundengruppen: „Label: SAP, SAP, …“ je Zeile – Mitglieder fahren beim Umplanen immer zusammen in EINER Tour */
+let GROUPS=[],GROUP_OF=new Map();
+function parseGroups(){
+  GROUPS=[];GROUP_OF=new Map();
+  String(document.getElementById('fixedGroups')?.value||'').split(/\n+/).forEach(line=>{
+    const t=line.replace(/#.*/,'').trim();if(!t)return;
+    const m=t.match(/^([^:]+?)\s*:\s*(.*)$/),label=m?m[1].trim():'Gruppe '+(GROUPS.length+1);
+    const saps=[...new Set(((m?m[2]:t).match(/\d{4,12}/g)||[]).map(normSap))].filter(s=>!GROUP_OF.has(s));
+    if(saps.length<2)return;const g={label,saps:new Set(saps)};GROUPS.push(g);saps.forEach(s=>GROUP_OF.set(s,g));
+  });
+  const known=new Set(CUSTOMERS.map(sapOf)),miss=GROUPS.flatMap(g=>[...g.saps].filter(s=>!known.has(s)));
+  const meta=document.getElementById('groupsMeta');
+  if(meta)meta.textContent=`${GROUPS.length} Gruppe${GROUPS.length===1?'':'n'} mit ${GROUPS.reduce((n,g)=>n+g.saps.size,0)} Kunden`+(miss.length?` · ${miss.length} SAP nicht in dieser Quelldatei: ${miss.slice(0,8).join(', ')}${miss.length>8?' …':''}`:'')+' · dauerhaft pflegen im Generator bzw. Blatt „Gruppen“ der Adressdatei';
+  return GROUPS;
+}
 function clampMax(){let n=Number(document.getElementById('maxCustomers').value||12);if(!Number.isFinite(n))n=12;n=Math.max(1,Math.min(30,Math.round(n)));maxCustomers=n;document.getElementById('maxCustomers').value=String(n);return n}
 
 /* ---------- Zeit ---------- */
@@ -2418,7 +2490,7 @@ function referenceTourSize(day,source){const vals=routes.filter(r=>r.source===so
 const SRC_TYP=new Map();
 function srcTypical(source){if(!SRC_TYP.has(source))SRC_TYP.set(source,referenceTourSize('',source).typical);return SRC_TYP.get(source)}
 function srcCap(source){return maxCustomers}
-function capOf(r){if(!r)return maxCustomers;return Math.max(maxCustomers,r.originalCount||0)}
+function capOf(r){if(!r)return maxCustomers;return Math.max(maxCustomers,r.originalCount||0,r.capFixed||0)}
 function routeSoftLimit(r){const fam=r.familyTypical||referenceTourSize(r.day,r.source).typical;return Math.min(capOf(r),Math.max(r.originalCount||0,fam)+AUTO_OVER)}
 function capacityFull(r,a=null){const already=a&&r.items.some(x=>x.aid===a.aid);return !already&&r.items.length>=capOf(r)}
 
@@ -2599,6 +2671,11 @@ function sideMap(){
     }
     ch.forEach(x=>{m.set(x.a.aid,x.c);x.a.sideWhy=x.c.why});
   });
+  if(tds.length>1)GROUPS.forEach(g=>{
+    const xs=[...m.entries()].map(([aid,c])=>({a:getAssignment(aid),c})).filter(x=>x.a&&g.saps.has(sapOf(x.a)));if(!xs.length)return;
+    const cnt={};xs.forEach(x=>{if(x.c.day)cnt[x.c.day]=(cnt[x.c.day]||0)+1});const best=Object.entries(cnt).sort((p,q)=>q[1]-p[1])[0];
+    if(best)xs.forEach(x=>{if(x.c.day!==best[0]){const c={day:best[0],why:'feste Gruppe '+g.label};m.set(x.a.aid,c);x.a.sideWhy=c.why}});
+  });
   return m;
 }
 function historyVotes(a,toDay){
@@ -2727,7 +2804,7 @@ function newTourName(rep,toDay,source,used,members,forced){
 }
 function templateOrder(f,members){const ms=new Set(members.map(x=>sapOf(x.a)));return [...f.routes].map(r=>{let o=0;r.origSaps.forEach(s=>{if(ms.has(s))o++});return {r,o}}).sort((a,b)=>b.o-a.o).map(x=>x.r)}
 function makeCluster(o){
-  const c={id:'c'+(++CLU_SEQ),kind:o.kind,source:o.source,toDay:o.toDay,target:o.target||null,family:o.family||null,members:o.members,note:o.note||'',memory:!!o.memory,block:!!o.block};
+  const c={id:'c'+(++CLU_SEQ),kind:o.kind,source:o.source,toDay:o.toDay,target:o.target||null,family:o.family||null,members:o.members,note:o.note||'',memory:!!o.memory,block:!!o.block,fixed:o.fixed||null};
   const tpl=c.family?templateOrder(c.family,c.members):[];
   c.templateIds=tpl.map(r=>r.id);
   if(c.kind==='new'){c.rep=tpl[0]||null;c.name=newTourName(c.rep,c.toDay,c.source,o.used,c.members,o.forcedName);{const oc={};c.members.forEach(x=>{const r=getRoute(x.a.originalRouteId),t=r&&hasRouteStart(r)?routeStartRaw(r):'';if(t)oc[t]=(oc[t]||0)+1});const o=Object.entries(oc).sort((p,q)=>q[1]-p[1])[0]?.[0];c.normalStart=o||startLabel(c.name)||c.rep?.normalStart||''}/* neue Tour übernimmt das Zeitfenster der Herkunftstour */}
@@ -2752,11 +2829,28 @@ function buildClusters(fromDays,toDay,accept=null){
   const reserve=new Map(),used=new Set(routes.filter(r=>r.day===toDay).map(r=>r.source+'::'+r.tour)),out=[];
   const roomOf=r=>Math.min(routeSoftLimit(r),capOf(r))-r.items.length-(reserve.get(r.id)||0);
   const hardRoom=r=>capOf(r)-r.items.length-(reserve.get(r.id)||0);
+  // −1) Feste Kundengruppen: alle Mitglieder in EINE Zieltag-Tour – die mit den meisten Mitgliedern (Gleichstand: Endnummer der Gruppe);
+  //     Mitglieder aus anderen Zieltag-Touren ziehen mit um. Ohne Mitglied am Zieltag → neue Tour mit der Endnummer der Gruppe.
+  if(GROUPS.length){const gTaken=new Set();GROUPS.forEach(g=>{
+    const ms=pool.filter(x=>!x.skip&&g.saps.has(sapOf(x.a)));if(!ms.length)return;
+    [...new Set(ms.map(x=>x.a.Quelle))].forEach(src=>{
+      const need=ms.filter(x=>x.a.Quelle===src);need.forEach(x=>{x.skip=true;x.anchor='fix'});
+      const want=/^\d{4,5}$/.test(g.label)?DAY_DIGIT[toDay]+g.label.slice(1):null,note="";
+      const cnt=new Map();routes.forEach(r=>{if(r.day!==toDay||r.source!==src||isLocked(r)||gTaken.has(r.id))return;const n=r.items.filter(a=>g.saps.has(sapOf(a))&&!isExcluded(a)).length;if(n)cnt.set(r,n)});
+      const t=[...cnt.entries()].sort((p,q)=>q[1]-p[1]||(String(q[0].tour)===want)-(String(p[0].tour)===want)||String(p[0].tour).localeCompare(String(q[0].tour)))[0]?.[0]||null;
+      if(t){
+        gTaken.add(t.id);
+        const pulls=routes.filter(r=>r.day===toDay&&r.source===src&&r.id!==t.id&&!isLocked(r)).flatMap(r=>r.items.filter(a=>g.saps.has(sapOf(a))&&!isExcluded(a)).map(a=>({aid:a.aid,a,from:r,pull:true,anchor:'pull'})));
+        reserve.set(t.id,(reserve.get(t.id)||0)+need.length+pulls.length);
+        out.push(makeCluster({kind:'insert',source:src,target:t,members:[...need,...pulls],toDay,note,fixed:g.label}));
+      }else out.push(makeCluster({kind:'new',source:src,members:need,toDay,used,forcedName:want||undefined,note,fixed:g.label}));
+    });
+  })}
   // 0) Planungsgedächtnis: wohin ging diese Tour bei früheren Feiertagen? (nur wenn die Zieltour nicht gesperrt ist)
   const memGroups=new Map();
   if(BLOCK_MODE){
     // Tour bleibt zusammen: Ziel = Mehrheit der früheren Ziele aller Kunden dieser Ausfalltour (jüngste Pläne zählen am meisten)
-    const byFrom=new Map();pool.forEach(x=>{if(!x.a.extra&&!targetDayAlreadyHas(x.a,toDay))pushMap(byFrom,x.from.id,x)});
+    const byFrom=new Map();pool.forEach(x=>{if(!x.skip&&!x.a.extra&&!targetDayAlreadyHas(x.a,toDay))pushMap(byFrom,x.from.id,x)});
     byFrom.forEach(ms=>{
       const votes={};let withHist=0;
       ms.forEach(x=>{const v=historyVotes(x.a,toDay);if(Object.keys(v).length)withHist++;Object.entries(v).forEach(([t,w])=>{if(!LOCKED.has(t))votes[t]=(votes[t]||0)+w})});
@@ -2764,7 +2858,7 @@ function buildClusters(fromDays,toDay,accept=null){
       if(!best||withHist<Math.max(1,ms.length/2))return;
       ms.forEach(x=>pushMap(memGroups,x.a.Quelle+'::'+best[0],x));
     });
-  }else pool.forEach(x=>{if(x.a.extra||targetDayAlreadyHas(x.a,toDay))return;const h=historyTargetTour(x.a,toDay);if(!h||LOCKED.has(String(h.tour)))return;pushMap(memGroups,x.a.Quelle+'::'+h.tour,x)});
+  }else pool.forEach(x=>{if(x.skip||x.a.extra||targetDayAlreadyHas(x.a,toDay))return;const h=historyTargetTour(x.a,toDay);if(!h||LOCKED.has(String(h.tour)))return;pushMap(memGroups,x.a.Quelle+'::'+h.tour,x)});
   memGroups.forEach((ms,key)=>{
     const [src,tour]=key.split('::'),r=getRoute(routeId(toDay,src,tour));
     if(r&&!isLocked(r)){const room=Math.max(0,hardRoom(r));const take=ms.slice(0,room);if(!take.length)return;reserve.set(r.id,(reserve.get(r.id)||0)+take.length);take.forEach(x=>x.mem=true);
@@ -2775,7 +2869,7 @@ function buildClusters(fromDays,toDay,accept=null){
   const matesBy=new Map();pool.forEach(x=>pushMap(matesBy,x.from.id,x));
   // 1) Anker je Kunde: eigene Wochen-Tour (direkt) > Mitfahrer der Ausfalltour (DNA) > Geo
   pool.forEach(x=>{
-    if(x.mem||targetDayAlreadyHas(x.a,toDay)){x.skip=true;return}
+    if(x.skip||x.mem||targetDayAlreadyHas(x.a,toDay)){x.skip=true;return}
     const s=sapOf(x.a),mates=(matesBy.get(x.from.id)||[]).filter(y=>y.aid!==x.aid);let best=null;
     model.fams.forEach(f=>{
       if(f.source!==x.a.Quelle)return;
@@ -2912,6 +3006,7 @@ function evaluateCluster(c){
   else if(c.family){const share=(c.direct+c.peer*.6)/Math.max(1,n);q=share>=.6?'good':share>=.3?'ok':'warn'}else q=geoKey==='unknown'?'warn':geoKey;
   if(geoKey==='bad')q=q==='good'?'warn':'bad';else if(geoKey==='warn'&&q==='good')q='ok';
   if(c.timeViol)q=downgrade(q);
+  if(c.fixed)q='good';   // feste Gruppe = Regel, keine Abwägung
   c.quality=q;
 }
 function buildAllClusters(fromDays){
@@ -2931,7 +3026,8 @@ function clusterHtml(c){
   let title,sub;const meta=[esc(srcLabel(c.source))+', aus '+esc(origins)];
   if(c.kind==='insert'){title=`${DAY_SHORT[c.toDay]} · Tour ${esc(c.target.tour)}`;sub=`${c.target.items.length} → ${c.target.items.length+c.members.length} Kunden`;const clk=routeClockInfo(c.target);if(clk)meta.push(esc(clk))}
   else{title=`${DAY_SHORT[c.toDay]} · neue Tour ${esc(c.name)}`;sub=`${c.members.length} Kunden`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(esc(clk));if(c.compact)meta.push('Gebiet '+esc(c.compact.label)+(Number.isFinite(c.compact.avg)?', Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
-  const why=c.memory?'<b>Planungsgedächtnis</b>: so bei früheren Feiertagen geplant':c.block?'<b>Tourblock</b>: die Ausfalltour bleibt zusammen':c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?`, Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''}: ${c.direct} fahren dort schon, ${c.peer} über Mitfahrer`:'Keine Tourfamilie – Zuordnung nach Lage';
+  const why=c.fixed?`<b>Feste Gruppe ${esc(c.fixed)}</b>: diese Kunden fahren immer zusammen`:c.memory?'<b>Planungsgedächtnis</b>: so bei früheren Feiertagen geplant':c.block?'<b>Tourblock</b>: die Ausfalltour bleibt zusammen':c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?`, Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''}: ${c.direct} fahren dort schon, ${c.peer} über Mitfahrer`:'Keine Tourfamilie – Zuordnung nach Lage';
+  {const pl=c.members.filter(x=>x.pull).length;if(pl)meta.push(`${pl} Mitglied${pl>1?'er ziehen':' zieht'} aus anderen ${DAY_LABELS[c.toDay]}-Touren um`)}
   if(Number.isFinite(c.km))meta.push('ca. '+Math.round(c.km)+' km Rundlauf'+(HAS_MATRIX?' (Straße)':' (geschätzt)'));
   const mem=c.members.map(x=>{const a=x.a,f=x.fit;return `<div class="clumem"><span class="anc ${x.anchor}">${ANCHOR_LABEL[x.anchor]}</span><span class="nm" data-focus="${esc(x.aid)}" title="Auf der Tafel zeigen"><b>${esc(a.SAP)}</b> ${esc(a.Name)}, ${esc(a.Ort)}</span><span>${f?`<span class="fit ${f.key}" title="${esc(f.label)}${Number.isFinite(f.nearest)?' · '+fmt(f.nearest)+' km zum nächsten Kunden':''}">${Number.isFinite(f.nearest)?fmt(f.nearest)+' km':esc(FIT_SHORT[f.key]||f.label)}</span>`:''}${a.Zeitkritisch?` <span class="flag time" title="${esc(timeInfo(a))}">Zeit</span>`:''}</span><button class="remove" type="button" title="Aus dem Vorschlag nehmen" aria-label="Aus dem Vorschlag nehmen" data-drop-member="${c.id}|${esc(x.aid)}">${ICON.x}</button></div>`}).join('');
   return `<article class="clu q-${c.quality}"><div class="cluhead"><div class="clut"><div class="t1"><b>${title}</b><span class="mut">${sub}</span><span class="fit ${c.quality}">${QUALITY_LABEL[c.quality]}</span></div><div class="cluwhy">${why}</div><div class="clumeta"><span>${meta.join('</span><span>')}</span>${c.timeViol?`<span class="bad">${c.timeViol} Zeitkonflikt${c.timeViol>1?'e':''}</span>`:''}${c.note?`<span>${esc(c.note)}</span>`:''}</div></div><button class="btn sm primary" type="button" data-apply-cluster="${c.id}">Übernehmen</button></div>${mem}</article>`;
@@ -2974,16 +3070,20 @@ function applyCluster(id,silent=false){
     routes.push(target);
   }
   target.templateIds=[...new Set([...(target.templateIds||[]),...c.templateIds])];
+  if(c.fixed)target.capFixed=Math.max(target.capFixed||0,target.items.length+c.members.length);
   if(c.family&&!target.familyLabel)target.familyLabel=c.family.label;
   let moved=0,blocked=0;
   c.members.forEach(x=>{
     const a=getAssignment(x.aid),cur=currentRouteForAid(x.aid);
-    if(!a||(a.extra?cur:(!cur||!outageDays.has(cur.day))))return;
+    if(!a)return;
+    if(x.pull){if(!cur||cur.day!==target.day||cur.id===target.id||isLocked(cur))return}
+    else if(a.extra?cur:(!cur||!outageDays.has(cur.day)))return;
     if(isExcluded(a)||duplicateOnDay(a,target.day)||target.items.length>=capOf(target)){blocked++;return}
     const f=removeFromCurrent(x.aid);if(!f)return;
-    target.items.push(f.a);f.a.currentDay=target.day;f.a.currentTour=target.tour;f.a.planNote=c.family?'Familie '+c.family.label:'Geo';moved++;
+    target.items.push(f.a);f.a.currentDay=target.day;f.a.currentTour=target.tour;f.a.planNote=c.fixed?'Feste Gruppe '+c.fixed:c.family?'Familie '+c.family.label:'Geo';if(c.fixed)f.a.fixedGroup=c.fixed;moved++;
     if(f.from)evaluateRoute(f.from);
   });
+  if(c.fixed)target.capFixed=target.items.length>maxCustomers?target.items.length:0;
   if(c.kind==='new'&&!target.items.length)routes=routes.filter(r=>r!==target);else optimizeRouteOrder(target);
   routes.sort(daySort);clusters=clusters.filter(x=>x!==c);
   if(!silent){resolveMergedDuplicates();renderAll();renderSuggestions();if(blocked)showBlocked(`${blocked} Kunde(n) nicht übernommen (Doppelung, Maximum oder Ausschluss).`)}
@@ -3013,7 +3113,7 @@ function optimizeDay(day,silent=false){
   if(!cand.some(r=>r.manuallyCreated||routeChanged(r))){if(!silent)showInfo('Nichts zu optimieren',`Am ${DAY_LABELS[day]} gibt es keine geänderten oder neuen Touren.`,'warn');return null}
   if(!silent)UNDO=snapshotPlan();
   const kmBefore=dayKm(day),t0=performance.now();
-  const movable=(a,R)=>!isExcluded(a)&&(W.regular?(R.manuallyCreated||routeChanged(R)||a.originalRouteId!==R.id):a.originalRouteId!==R.id);
+  const movable=(a,R)=>!isExcluded(a)&&!GROUP_OF.has(sapOf(a))&&(W.regular?(R.manuallyCreated||routeChanged(R)||a.originalRouteId!==R.id):a.originalRouteId!==R.id);
   // 1) Reihenfolge je geänderter Tour (manuell fixierte bleiben)
   cand.filter(r=>(r.manuallyCreated||routeChanged(r))&&!r.manualOrder).forEach(r=>{const o=improveSequence(orderByTemplate(r.items,r),r);r.items=o.items});
   const cost=new Map();cand.forEach(r=>cost.set(r,routeTotal(r.items,r,W)));
@@ -3110,7 +3210,7 @@ function cardHtml(a,r,pos){
   const moved=a.originalRouteId!==r.id,fit=moved?fitFor(a,r):null,ex=isExcluded(a);let tags='';
   if(moved){
     const km=Number.isFinite(fit.nearest)?' · '+fmt(fit.nearest)+' km':'';
-    tags=`<div class="ctags"><span class="otag d-${a.originalDay}" title="Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${esc(a.originalTour)}">${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span><span class="fit ${fit.key}" title="${esc(fit.label)}${fit.nearName?' · nächster Kunde '+esc(fit.nearName):''}">${km?`<span class="fl">${esc(FIT_SHORT[fit.key]||fit.label)} · </span>${km.slice(3)}`:esc(FIT_SHORT[fit.key]||fit.label)}</span>${fit.peers>=2?`<span class="flag dna" title="${fit.peers} Kunden dieser Tour fahren sonst mit ihm zusammen">DNA ${fit.peers}</span>`:''}${fit.dupe?'<span class="flag dupe">Doppellieferung</span>':''}${fit.timeRisk||a._timeViolation?'<span class="flag time">Zeit prüfen</span>':''}${fit.startMismatch?'<span class="flag area">Startbereich!</span>':''}${a.gq==='plz'?'<span class="flag plz" title="Nur PLZ-genau verortet">nur PLZ</span>':''}${a.extra?'<span class="flag">Zusatz</span>':''}</div>`;
+    tags=`<div class="ctags"><span class="otag d-${a.originalDay}" title="Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${esc(a.originalTour)}">${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span><span class="fit ${fit.key}" title="${esc(fit.label)}${fit.nearName?' · nächster Kunde '+esc(fit.nearName):''}">${km?`<span class="fl">${esc(FIT_SHORT[fit.key]||fit.label)} · </span>${km.slice(3)}`:esc(FIT_SHORT[fit.key]||fit.label)}</span>${fit.peers>=2?`<span class="flag dna" title="${fit.peers} Kunden dieser Tour fahren sonst mit ihm zusammen">DNA ${fit.peers}</span>`:''}${fit.dupe?'<span class="flag dupe">Doppellieferung</span>':''}${fit.timeRisk||a._timeViolation?'<span class="flag time">Zeit prüfen</span>':''}${fit.startMismatch?'<span class="flag area">Startbereich!</span>':''}${a.gq==='plz'?'<span class="flag plz" title="Nur PLZ-genau verortet">nur PLZ</span>':''}${a.extra?'<span class="flag">Zusatz</span>':''}${a.fixedGroup?`<span class="flag grp" title="Feste Kundengruppe ${esc(a.fixedGroup)}">Gruppe ${esc(a.fixedGroup)}</span>`:''}</div>`;
   }else if(ex||a._timeViolation){tags=`<div class="ctags">${ex?'<span class="flag ex">Ausschlussliste</span>':''}${a._timeViolation?'<span class="flag time">Zeitkonflikt</span>':''}</div>`}
   const tip=`Ladefolge ${pos} · Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${a.originalTour}${Number.isFinite(a._eta)?' · ETA '+formatMin(a._eta):''}${a.Zeitkritisch?' · '+timeInfo(a):''}${ex?' · Ausschlussliste':''}\nZiehen zum Verschieben · Rechtsklick: zu Tour …`;
   return `<div class="cust ${moved?'moved d-'+a.originalDay:''} ${fit?.key==='bad'?'badmove':''} ${ex?'excluded':''}" draggable="true" data-aid="${esc(a.aid)}" title="${esc(tip)}"><span class="seq">${pos}</span><div class="cmain"><div class="cl1"><span class="sap">${esc(a.SAP)}</span><span class="cname">${esc(a.Name)}</span>${a.Zeitkritisch?ICON.clock:''}</div><div class="cl2"><span class="ort">${esc(a.Ort||'')}</span><span class="str">${esc(a.Strasse||'')}</span></div>${tags}</div><button class="remove" type="button" title="In die Ablage (ausplanen)" aria-label="Ausplanen" data-remove="${esc(a.aid)}">${ICON.x}</button></div>`;
@@ -3458,6 +3558,7 @@ function clearOutageDays(){
   unplanned.slice().forEach(a=>{if(cancelReasons.get(a.aid)==='Zieltag bereits vorhanden')return;if(a.extra||cancelledAids.has(a.aid)||outageDays.has(a.originalDay)){unplanned.splice(unplanned.indexOf(a),1);pool.push(a)}});
   const touched=new Set();
   pool.forEach(a=>{
+    if(duplicateOnDay(a,T)){cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);cancelReasons.set(a.aid,'Zieltag bereits vorhanden');unplanned.push(a);return}
     const rs=routes.filter(r=>r.day===T&&String(r.source)===String(a.Quelle));
     let best=null,bd=Infinity;
     rs.forEach(r=>{let d=Infinity;r.items.forEach(x=>{const k=dist(a,x);if(Number.isFinite(k)&&k<d)d=k});if(d===Infinity)d=1e6+r.items.length;if(d<bd){bd=d;best=r}});
@@ -3515,8 +3616,27 @@ function getOrCreateRow(doc,rowNum){const data=doc.getElementsByTagNameNS('*','s
 function setCellValue(doc,rowNum,col,val){
   const ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main',ref=col+rowNum,row=getOrCreateRow(doc,rowNum);let cell=[...row.children].find(x=>x.localName==='c'&&x.getAttribute('r')===ref);
   if(!cell){cell=doc.createElementNS(ns,'c');cell.setAttribute('r',ref);const ci=excelColIndex(col),next=[...row.children].find(x=>x.localName==='c'&&excelColIndex((x.getAttribute('r')||'').replace(/\d/g,''))>ci);if(next)row.insertBefore(cell,next);else row.appendChild(cell)}
-  [...cell.children].forEach(ch=>cell.removeChild(ch));cell.removeAttribute('t');if(val==null||String(val).trim()==='')return;
+  [...cell.children].forEach(ch=>cell.removeChild(ch));cell.removeAttribute('t');if(val==null||String(val).trim()==='')return cell;
   const sv=String(val).trim();if(/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(sv)){const v=doc.createElementNS(ns,'v');v.textContent=sv;cell.appendChild(v)}else{cell.setAttribute('t','inlineStr');const is=doc.createElementNS(ns,'is'),t=doc.createElementNS(ns,'t');t.textContent=sv;is.appendChild(t);cell.appendChild(is)}
+  return cell;
+}
+/* Markierung im Export: neue Tournummer = gelb, Zusatz-Lieferung („alle Kunden am Zieltag“) = orange.
+   Je vorhandenem Zellformat wird eine Kopie mit Füllfarbe angelegt – Schrift, Rahmen, Zahlenformat bleiben. */
+const MARK_RGB={add:'FFFFFF00',extra:'FFFFC000'};
+function cellMarker(sdoc){
+  const ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main',root=sdoc?.documentElement;if(!root)return null;
+  const kid=(el,n)=>[...el.children].find(x=>x.localName===n),list=(el,n)=>[...el.children].filter(x=>x.localName===n);
+  const fills=kid(root,'fills'),xfsEl=kid(root,'cellXfs');if(!fills||!xfsEl)return null;
+  const fillId={};Object.entries(MARK_RGB).forEach(([k,rgb])=>{const f=sdoc.createElementNS(ns,'fill'),p=sdoc.createElementNS(ns,'patternFill'),fg=sdoc.createElementNS(ns,'fgColor'),bg=sdoc.createElementNS(ns,'bgColor');p.setAttribute('patternType','solid');fg.setAttribute('rgb',rgb);bg.setAttribute('indexed','64');p.appendChild(fg);p.appendChild(bg);f.appendChild(p);fills.appendChild(f);fillId[k]=list(fills,'fill').length-1});
+  fills.setAttribute('count',String(list(fills,'fill').length));
+  const cache=new Map();
+  return (cell,kind)=>{
+    const s=Number(cell.getAttribute('s')||0),key=s+'|'+kind;
+    if(!cache.has(key)){const xs=list(xfsEl,'xf'),base=xs[s]||xs[0],nx=base?base.cloneNode(true):sdoc.createElementNS(ns,'xf');
+      ['numFmtId','fontId','borderId','xfId'].forEach(a=>{if(!nx.hasAttribute(a))nx.setAttribute(a,'0')});nx.setAttribute('fillId',String(fillId[kind]));nx.setAttribute('applyFill','1');
+      xfsEl.appendChild(nx);const n=list(xfsEl,'xf').length;xfsEl.setAttribute('count',String(n));cache.set(key,n-1)}
+    cell.setAttribute('s',String(cache.get(key)));
+  };
 }
 function currentExcelPlan(){const p={};CUSTOMERS.forEach(c=>{p[c.uid]={};DAY_ORDER.forEach(d=>p[c.uid][d]='')});routes.forEach(r=>r.items.forEach(a=>{if(p[a.uid])p[a.uid][r.day]=String(r.tour)}));return p}
 async function exportExactExcel(){
@@ -3524,7 +3644,10 @@ async function exportExactExcel(){
   try{
     const zip=await JSZip.loadAsync(b64ToUint8(ORIGINAL_XLSX_B64)),parser=new DOMParser(),ser=new XMLSerializer();
     const wb=parser.parseFromString(await zip.file('xl/workbook.xml').async('string'),'application/xml'),rel=parser.parseFromString(await zip.file('xl/_rels/workbook.xml.rels').async('string'),'application/xml'),paths=sheetPathMap(wb,rel),plan=currentExcelPlan();
-    for(const source of SOURCES){const path=paths[source];if(!path||!zip.file(path))continue;const doc=parser.parseFromString(await zip.file(path).async('string'),'application/xml');CUSTOMERS.forEach(c=>{if(c.Quelle!==source||!c.excel_row)return;DAY_ORDER.forEach(day=>{const col=DAY_CELL_COLUMNS?.[source]?.[day];if(!col)return;const origVal=c[day]==null?'':String(c[day]),newVal=plan[c.uid]?.[day]||'';if(origVal!==newVal)setCellValue(doc,Number(c.excel_row),col,newVal)})});zip.file(path,ser.serializeToString(doc))}
+    const stylePath='xl/styles.xml',sdoc=zip.file(stylePath)?parser.parseFromString(await zip.file(stylePath).async('string'),'application/xml'):null,mark=cellMarker(sdoc);
+    const extraAt=new Set();routes.forEach(r=>r.items.forEach(a=>{if(a.extra)extraAt.add(a.uid+'|'+r.day)}));let nMark=0;
+    for(const source of SOURCES){const path=paths[source];if(!path||!zip.file(path))continue;const doc=parser.parseFromString(await zip.file(path).async('string'),'application/xml');CUSTOMERS.forEach(c=>{if(c.Quelle!==source||!c.excel_row)return;DAY_ORDER.forEach(day=>{const col=DAY_CELL_COLUMNS?.[source]?.[day];if(!col)return;const origVal=c[day]==null?'':String(c[day]),newVal=plan[c.uid]?.[day]||'';if(origVal!==newVal){const cell=setCellValue(doc,Number(c.excel_row),col,newVal);if(newVal&&mark&&cell){mark(cell,extraAt.has(c.uid+'|'+day)?'extra':'add');nMark++}}})});zip.file(path,ser.serializeToString(doc))}
+    if(mark&&nMark)zip.file(stylePath,ser.serializeToString(sdoc));
     const lp=paths['LADEREIHENFOLGE'];
     if(lp&&zip.file(lp)){const doc=parser.parseFromString(await zip.file(lp).async('string'),'application/xml');routes.filter(r=>routeChanged(r)||r.manuallyCreated).forEach(r=>r.items.forEach((a,i)=>{if(a.loadOrderRow){setCellValue(doc,Number(a.loadOrderRow),'A',r.tour);setCellValue(doc,Number(a.loadOrderRow),'B',i+1);setCellValue(doc,Number(a.loadOrderRow),'C',a.SAP)}}));unplanned.forEach(a=>{if(a.loadOrderRow)['A','B','C'].forEach(c=>setCellValue(doc,Number(a.loadOrderRow),c,''))});zip.file(lp,ser.serializeToString(doc))}
     const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
@@ -3588,7 +3711,8 @@ function initControls(){
   $('applyAllBtn').addEventListener('click',()=>{if(confirm(`${clusters.length} Gruppen übernehmen – auch grenzwertige?`)){applyClusters(()=>true);clearOutageDays();renderAll()}});
   $('closeSuggBtn').addEventListener('click',hideSugg);
   /* Regeln */
-  $('applyRulesBtn').addEventListener('click',()=>{clampMax();parseExcluded();parseLocked();FAM_CACHE.clear();closeModal('rulesModal');autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()});
+  $('fixedGroups').addEventListener('change',()=>{parseGroups();if(suggOpen())computeSuggestions()});
+  $('applyRulesBtn').addEventListener('click',()=>{clampMax();parseExcluded();parseLocked();parseGroups();FAM_CACHE.clear();closeModal('rulesModal');autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()});
   $('maxCustomers').addEventListener('change',()=>{clampMax();SRC_TYP.clear();renderAll()});
   ['timeTol','timeHard'].forEach(id=>$(id).addEventListener('change',()=>{readTimeTol();renderAll();if(suggOpen())computeSuggestions()}));
   ['mergeSmall','mergeKm'].forEach(id=>$(id).addEventListener('change',()=>{MERGE_SMALL=$('mergeSmall').checked;MERGE_KM=Math.max(5,Number($('mergeKm').value)||25);if(suggOpen())computeSuggestions()}));
@@ -3608,7 +3732,7 @@ function initControls(){
     if(e.key==='/'&&!typing&&!e.ctrlKey&&!e.metaKey){e.preventDefault();$('search').focus();$('search').select()}
     if(e.key==='Escape'){document.querySelectorAll('.modalback.show').forEach(m=>m.classList.remove('show'));closeMenus()}
   });
-  parseExcluded();parseLocked();clampMax();readTimeTol();presetFromReference();
+  parseExcluded();parseLocked();parseGroups();clampMax();readTimeTol();presetFromReference();
 }
 initControls();buildOriginalPlan();
 </script>
@@ -3800,6 +3924,7 @@ def main():
                                          "Wirkt nur beim Auswerten (Neuaufbau bzw. neu hochgeladene Pläne).")
     half_life = {"verdoppelt je Jahr": 365.0, "verdoppelt je 2 Jahre": 730.0, "alle gleich": 1e9}.get(hl_label, 182.5)
     excl_box = st.expander("SAP-Ausschlussliste", expanded=False)
+    grp_box = st.expander("Feste Kundengruppen", expanded=False)
     log = st.expander("Protokoll", expanded=False)
 
     missing = [n for n, f in [("Quelldatei", upload), ("Normal_Tourenstart.csv", starts_upload),
@@ -3807,6 +3932,8 @@ def main():
     if missing:
         with excl_box:
             st.caption("Erscheint, sobald die Pflichtdateien geladen sind – Vorgabe kommt aus der Adressdatei.")
+        with grp_box:
+            st.caption("Erscheint, sobald die Pflichtdateien geladen sind – Vorgabe kommt aus der Adressdatei (Blatt „Gruppen“).")
         with res:
             with _box(st):
                 st.markdown("#### ② Ergebnis")
@@ -3886,6 +4013,13 @@ def main():
         excl_txt = st.text_area("SAP-Nummern, die nie umgeplant werden (wird in der Adressdatei gespeichert)", value=excl_default,
                                 height=110, help="SAP-Nummern, getrennt durch Zeile, Komma, Semikolon oder Leerzeichen.")
     excluded = parse_sap_list(excl_txt)
+    grp_default = meta.get("groups") if L["adr_prev"] is not None and meta.get("groups") is not None else FIXED_GROUPS_DEFAULT
+    with grp_box:
+        grp_txt = st.text_area("Eine Gruppe je Zeile: Name, Doppelpunkt, SAP-Nummern (wird in der Adressdatei gespeichert)",
+                               value=groups_to_text(grp_default), height=130,
+                               help="Mitglieder fahren beim Umplanen immer zusammen in einer Tour – in der Zieltag-Tour mit den "
+                                    "meisten Mitgliedern; Mitglieder aus anderen Touren am Zieltag ziehen mit um.")
+    groups = parse_groups(grp_txt)
 
     # 2) Adressen verorten -----------------------------------------------------------------------
     provider = {"OpenRouteService": "ors", "Overpass (OSM, ohne Kontingent)": "ovp", "Photon (OSM, ohne Kontingent)": "photon",
@@ -3979,6 +4113,10 @@ def main():
                                                         for d, Hd in history.items()))
     known_sap = set(int(s) for s in geo["SAP"].dropna())
     unknown = [s for s in excluded if s not in known_sap]
+    g_unknown = [s for v in groups.values() for s in v if s not in known_sap]
+    with grp_box:
+        st.caption(f"{len(groups)} Gruppen mit {sum(len(v) for v in groups.values())} Kunden"
+                   + (f" · {len(g_unknown)} SAP nicht in der Quelldatei: " + ", ".join(map(str, g_unknown[:15])) if g_unknown else ""))
     with excl_box:
         st.caption(f"{len(excluded)} SAP ausgeschlossen" + (f" · davon {len(unknown)} nicht in der Quelldatei: "
                                                             + ", ".join(map(str, unknown[:15])) + (" …" if len(unknown) > 15 else "") if unknown else ""))
@@ -3998,7 +4136,7 @@ def main():
         html = build_html(
             make_payload(g), read_tour_starts(starts_bytes), upload.name, source_bytes,
             get_day_column_map(source_bytes), info_upload.name, starts_upload.name, ref_name, M["matrix"], net, history,
-            excluded,
+            excluded, groups,
         )
         # Adressdatei: alle Profile aus dem Sitzungsspeicher. Mit berechneter Matrix nur die Paare der aktuellen Kunden,
         # ohne Berechnung alles unverändert – sonst ginge die gespeicherte Matrix verloren.
@@ -4006,10 +4144,10 @@ def main():
         if use_matrix and M["pairs"]:
             keep = {_ckey(M["nodes"], i, j) for i, j in M["pairs"]}
             mats = {p: {k_: v_ for k_, v_ in c.items() if k_ in keep} for p, c in mats.items()}
-        wb = build_address_workbook(g, L["original_addr"], mats, L["adr_prev"], history, excluded)
+        wb = build_address_workbook(g, L["original_addr"], mats, L["adr_prev"], history, excluded, groups)
         return {"html": html.encode("utf-8"), "wb": wb, "geo": g, "matched": matched, "ref_warn": ref_warn}
 
-    k_out = _digest(k_mat, k_hist, excluded, ref_bytes, ref_upload.name if ref_upload is not None else "",
+    k_out = _digest(k_mat, k_hist, excluded, groups, ref_bytes, ref_upload.name if ref_upload is not None else "",
                     starts_bytes, upload.name, info_upload.name, starts_upload.name)
     try:
         with work, st.spinner("HTML und Adressdatei werden erstellt …"):

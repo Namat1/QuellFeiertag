@@ -15,6 +15,8 @@ Neu in V30.1:
   Abweichungen werden gemeldet und im Prüfbericht als Hinweis geführt, der Export fragt nur nach; die Optimierung
   verschiebt von Hand gesetzte Kunden nicht mehr
 - Tournummern umbenennen (Stift im Tourkopf / Doppelklick auf die Nummer); vorhandene Nummer am selben Tag → Touren zusammenlegen
+- Neue Touren behalten standardmäßig ihre Originalnummer (Ausfalltour bzw. bei „alle Kunden am Zieltag“ die Heimattour
+  wird am Zieltag wieder angelegt, Reihenfolge und Ladezeit wie dort); alternativ Zieltag-Ziffer (6044 → 5044) in den Regeln
 
 Neu in V30 (Oberfläche):
 - Dispo-HTML neu gestaltet: Arbeitsleiste in vier Schritten (Ausfall → Ziel → Umplanen → Abschließen) mit
@@ -2421,6 +2423,7 @@ body.df-open{overflow:hidden}
     <section class="rsec"><h3>Umplanung</h3>
       <div class="rrow"><label class="chk" for="blockMode" title="Die offenen Kunden einer Ausfalltour bleiben zusammen: große Blöcke bekommen eine eigene Tour (nächste freie Nummer), kleine gehen in die passendste bestehende Zieltag-Tour."><input type="checkbox" id="blockMode" checked> Ausfalltouren als Block umplanen</label><span></span><div class="rhelp">Große Blöcke bekommen eine eigene Tour, kleine gehen in die passendste Zieltag-Tour.</div></div>
       <div class="rrow"><label class="chk" for="mergeSmall" title="Neue Touren unter Normalgröße werden mit einer nahen neuen Tour zusammengelegt oder an eine nahe Tour mit Platz angehängt. Touren aus dem Planungsgedächtnis nur bis 12 km."><input type="checkbox" id="mergeSmall" checked> Kleine neue Touren zusammenlegen</label><span class="inl">bis <input type="number" id="mergeKm" min="5" max="60" step="5" value="25"> km</span></div>
+      <div class="rrow"><label for="tourNaming">Nummer neuer Touren</label><select id="tourNaming"><option value="keep" selected>Originalnummer – Tour wieder anlegen</option><option value="day">Ziffer des Zieltags (6044 → 5044)</option></select><div class="rhelp">„Originalnummer“: Die Samstagstour 6044 wird am Freitag als 6044 wieder angelegt, bei „Alle Kunden am Zieltag“ ebenso die Touren der anderen Tage – gleiche Nummer, gleiche Reihenfolge, gleiche Ladezeit. Feste Gruppen bekommen ihren Gruppennamen als Tour.</div></div>
       <div class="rrow"><label for="timeTol" title="Abweichung der Abfahrt gegenüber der Herkunftstour. Malus: Tour bleibt möglich, Bewertung sinkt. Sperre: Tour ist ausgeschlossen.">Zeitfenster-Toleranz</label><span class="inl"><input type="number" id="timeTol" min="0" max="24" step="0.5" value="2"> h als <select id="timeHard"><option value="soft" selected>Malus</option><option value="hard">Sperre</option></select></span><div class="rhelp">Abweichung der Abfahrt gegenüber der Herkunftstour. Malus senkt die Bewertung, Sperre schließt die Tour aus.</div></div>
     </section>
     <section class="rsec"><h3>Optimierung</h3>
@@ -2644,6 +2647,7 @@ function familyModel(exclDays){
 
 /* ---------- Plan aufbauen ---------- */
 function getRoute(id){return routes.find(r=>r.id===id)}
+function namingKeep(){return (document.getElementById('tourNaming')?.value||'keep')!=='day'}
 function routeByTour(day,source,tour){return routes.find(r=>r.day===day&&String(r.source)===String(source)&&String(r.tour)===String(tour))}
 function uniqueRouteId(day,source,tour){const base=routeId(day,source,tour);let id=base,n=2;while(getRoute(id))id=base+'#'+(n++);return id}
 function getAssignment(aid){return assignments.find(a=>a.aid===aid)}
@@ -2871,13 +2875,13 @@ function newTourName(rep,toDay,source,used,members,forced){
   const cnt={};(members||[]).forEach(x=>{const t=String(x.from?.tour||x.a?.originalTour||'');if(/^[1-6]\d{3,4}$/.test(t))cnt[t]=(cnt[t]||0)+1});
   const origin=Object.entries(cnt).sort((a,b)=>b[1]-a[1])[0]?.[0];
   if(forced)base=String(forced);
-  else if(origin)base=DAY_DIGIT[toDay]+origin.slice(1);          // wie in den Historien: 5045 → 6045
+  else if(origin)base=namingKeep()?origin:DAY_DIGIT[toDay]+origin.slice(1);   // Original-Tour wieder anlegen bzw. 6045 → 5045          // wie in den Historien: 5045 → 6045
   else if(rep&&/^[1-6]\d{3,5}$/.test(String(rep.tour)))base=DAY_DIGIT[toDay]+String(rep.tour).slice(1);
   else if(rep)base='FT-'+rep.tour;else base='REST-'+(members[0]?.from?.tour||'X');
   let name=base;
   if(used.has(source+'::'+name)||LOCKED.has(name)){
     // wie die Disponenten: nächste freie Tournummer (4006 belegt → 4007), sonst Zusatz -2
-    let alt=null;if(/^\d{4,5}$/.test(base)){const n0=Number(base);for(let k=1;k<=15&&!alt;k++){const c=String(n0+k);if(c[0]===base[0]&&!used.has(source+'::'+c)&&!LOCKED.has(c))alt=c}}
+    let alt=null;if(/^\d{4,5}$/.test(base)&&!namingKeep()){const n0=Number(base);for(let k=1;k<=15&&!alt;k++){const c=String(n0+k);if(c[0]===base[0]&&!used.has(source+'::'+c)&&!LOCKED.has(c))alt=c}}
     if(alt)name=alt;else{let n=2;while(used.has(source+'::'+base+'-'+n))n++;name=base+'-'+n}
   }
   used.add(source+'::'+name);return name;
@@ -2886,7 +2890,7 @@ function templateOrder(f,members){const ms=new Set(members.map(x=>sapOf(x.a)));r
 function makeCluster(o){
   const c={id:'c'+(++CLU_SEQ),kind:o.kind,source:o.source,toDay:o.toDay,target:o.target||null,family:o.family||null,members:o.members,note:o.note||'',memory:!!o.memory,block:!!o.block,fixed:o.fixed||null};
   const tpl=c.family?templateOrder(c.family,c.members):[];
-  c.templateIds=tpl.map(r=>r.id);
+  c.templateIds=o.tpl||tpl.map(r=>r.id);
   if(c.kind==='new'){c.rep=tpl[0]||null;c.name=newTourName(c.rep,c.toDay,c.source,o.used,c.members,o.forcedName);{const oc={};c.members.forEach(x=>{const r=getRoute(x.a.originalRouteId),t=r&&hasRouteStart(r)?routeStartRaw(r):'';if(t)oc[t]=(oc[t]||0)+1});const o=Object.entries(oc).sort((p,q)=>q[1]-p[1])[0]?.[0];c.normalStart=o||startLabel(c.name)||c.rep?.normalStart||''}/* neue Tour übernimmt das Zeitfenster der Herkunftstour */}
   return c;
 }
@@ -2915,15 +2919,19 @@ function buildClusters(fromDays,toDay,accept=null){
     const ms=pool.filter(x=>!x.skip&&g.saps.has(sapOf(x.a)));if(!ms.length)return;
     [...new Set(ms.map(x=>x.a.Quelle))].forEach(src=>{
       const need=ms.filter(x=>x.a.Quelle===src);need.forEach(x=>{x.skip=true;x.anchor='fix'});
-      const want=/^\d{4,5}$/.test(g.label)?DAY_DIGIT[toDay]+g.label.slice(1):null,note="";
+      const keep=namingKeep(),want=/^\d{4,5}$/.test(g.label)?(keep?g.label:DAY_DIGIT[toDay]+g.label.slice(1)):null,note="";
       const cnt=new Map();routes.forEach(r=>{if(r.day!==toDay||r.source!==src||isLocked(r)||gTaken.has(r.id))return;const n=r.items.filter(a=>g.saps.has(sapOf(a))&&!isExcluded(a)).length;if(n)cnt.set(r,n)});
-      const t=[...cnt.entries()].sort((p,q)=>q[1]-p[1]||(String(q[0].tour)===want)-(String(p[0].tour)===want)||String(p[0].tour).localeCompare(String(q[0].tour)))[0]?.[0]||null;
+      const own=keep&&want?routeByTour(toDay,src,want):null;
+      const t=keep?(own&&!isLocked(own)&&!gTaken.has(own.id)?own:null):[...cnt.entries()].sort((p,q)=>q[1]-p[1]||(String(q[0].tour)===want)-(String(p[0].tour)===want)||String(p[0].tour).localeCompare(String(q[0].tour)))[0]?.[0]||null;
       if(t){
         gTaken.add(t.id);
         const pulls=routes.filter(r=>r.day===toDay&&r.source===src&&r.id!==t.id&&!isLocked(r)).flatMap(r=>r.items.filter(a=>g.saps.has(sapOf(a))&&!isExcluded(a)).map(a=>({aid:a.aid,a,from:r,pull:true,anchor:'pull'})));
         reserve.set(t.id,(reserve.get(t.id)||0)+need.length+pulls.length);
         out.push(makeCluster({kind:'insert',source:src,target:t,members:[...need,...pulls],toDay,note,fixed:g.label}));
-      }else out.push(makeCluster({kind:'new',source:src,members:need,toDay,used,forcedName:want||undefined,note,fixed:g.label}));
+      }else{
+        const pulls=keep?routes.filter(r=>r.day===toDay&&r.source===src&&!isLocked(r)).flatMap(r=>r.items.filter(a=>g.saps.has(sapOf(a))&&!isExcluded(a)).map(a=>({aid:a.aid,a,from:r,pull:true,anchor:'pull'}))):[];
+        out.push(makeCluster({kind:'new',source:src,members:[...need,...pulls],toDay,used,forcedName:want||undefined,note,fixed:g.label}));
+      }
     });
   })}
   // 0) Planungsgedächtnis: wohin ging diese Tour bei früheren Feiertagen? (nur wenn die Zieltour nicht gesperrt ist)
@@ -2992,7 +3000,7 @@ function buildClusters(fromDays,toDay,accept=null){
         const take=fit.slice(0,Math.max(0,hardRoom(t)));rest=[...fit.slice(take.length),...off];
         if(take.length){blockTaken.add(t.id);reserve.set(t.id,(reserve.get(t.id)||0)+take.length);out.push(makeCluster({kind:'insert',source:src,target:t,family:null,members:take,toDay,note:`Tourblock ${DAY_SHORT[from.day]} ${from.tour}`+(rest.length?' (Rest als eigene Tour'+(off.length?`, ${off.length} wegen Zeitfenster`:'')+')':' geschlossen'),block:true}))}
       }
-      if(rest.length)chunkGeo(rest,srcCap(src)).forEach(ch=>out.push(makeCluster({kind:'new',source:src,family:null,members:ch,toDay,used,note:`Tourblock ${DAY_SHORT[from.day]} ${from.tour}`,block:true})));
+      if(rest.length)chunkGeo(rest,srcCap(src)).forEach(ch=>out.push(makeCluster({kind:'new',source:src,family:null,members:ch,toDay,used,note:`Tourblock ${DAY_SHORT[from.day]} ${from.tour}`,block:true,tpl:[from.extra?from.id.slice(3):from.id]})));
     });
   }
   const live=pool.filter(x=>!x.skip);
@@ -3021,7 +3029,7 @@ function buildClusters(fromDays,toDay,accept=null){
   const byT=new Map();noFam.filter(x=>x.geoTarget).forEach(x=>pushMap(byT,x.geoTarget.id,x));
   byT.forEach(ms=>out.push(makeCluster({kind:'insert',source:ms[0].a.Quelle,target:ms[0].geoTarget,family:null,members:ms,toDay})));
   const byOrig=new Map();newPool.forEach(x=>pushMap(byOrig,x.from.id,x));
-  byOrig.forEach(ms=>chunkGeo(ms,referenceTourSize(toDay,ms[0].a.Quelle).soft).forEach(ch=>out.push(makeCluster({kind:'new',source:ms[0].a.Quelle,family:null,members:ch,toDay,used}))));
+  byOrig.forEach(ms=>chunkGeo(ms,referenceTourSize(toDay,ms[0].a.Quelle).soft).forEach(ch=>out.push(makeCluster({kind:'new',source:ms[0].a.Quelle,family:null,members:ch,toDay,used,tpl:[ms[0].from.extra?ms[0].from.id.slice(3):ms[0].from.id]}))));
   // 4) Kleingruppen (≤2) an passende Tour hängen oder mit naher neuer Tour zusammenführen
   out.filter(c=>c.kind==='new'&&c.members.length<=2).forEach(c=>{
     if(!out.includes(c))return;
@@ -3105,7 +3113,7 @@ function clusterHtml(c){
   const origins=[...new Set(c.members.map(x=>DAY_SHORT[x.a.originalDay]+' '+x.from.tour))].join(', ');
   let title,sub;const meta=[esc(srcLabel(c.source))+', aus '+esc(origins)];
   if(c.kind==='insert'){title=`${DAY_SHORT[c.toDay]} · Tour ${esc(c.target.tour)}`;sub=`${c.target.items.length} → ${c.target.items.length+c.members.length} Kunden`;const clk=routeClockInfo(c.target);if(clk)meta.push(esc(clk))}
-  else{title=`${DAY_SHORT[c.toDay]} · neue Tour ${esc(c.name)}`;sub=`${c.members.length} Kunden`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(esc(clk));if(c.compact)meta.push('Gebiet '+esc(c.compact.label)+(Number.isFinite(c.compact.avg)?', Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
+  else{title=c.members.some(x=>String(x.from?.tour)===String(c.name))?`${DAY_SHORT[c.toDay]} · Tour ${esc(c.name)} wieder anlegen`:`${DAY_SHORT[c.toDay]} · neue Tour ${esc(c.name)}`;sub=`${c.members.length} Kunden`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(esc(clk));if(c.compact)meta.push('Gebiet '+esc(c.compact.label)+(Number.isFinite(c.compact.avg)?', Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
   const why=c.fixed?`<b>Feste Gruppe ${esc(c.fixed)}</b>: diese Kunden fahren immer zusammen`:c.memory?'<b>Planungsgedächtnis</b>: so bei früheren Feiertagen geplant':c.block?'<b>Tourblock</b>: die Ausfalltour bleibt zusammen':c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?`, Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''}: ${c.direct} fahren dort schon, ${c.peer} über Mitfahrer`:'Keine Tourfamilie – Zuordnung nach Lage';
   {const pl=c.members.filter(x=>x.pull).length;if(pl)meta.push(`${pl} Mitglied${pl>1?'er ziehen':' zieht'} aus anderen ${DAY_LABELS[c.toDay]}-Touren um`)}
   if(Number.isFinite(c.km))meta.push('ca. '+Math.round(c.km)+' km Rundlauf'+(HAS_MATRIX?' (Straße)':' (geschätzt)'));
@@ -3734,6 +3742,11 @@ function clearOutageDays(){
   const touched=new Set();
   pool.forEach(a=>{
     if(duplicateOnDay(a,T)){cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);cancelReasons.set(a.aid,'Zieltag bereits vorhanden');unplanned.push(a);return}
+    if(namingKeep()){   // Original-/Heimattour am Zieltag wieder anlegen (Reihenfolge wie dort)
+      let r=routeByTour(T,a.Quelle,a.originalTour);
+      if(!r){const o=getRoute(a.originalRouteId);r={id:uniqueRouteId(T,a.Quelle,a.originalTour),day:T,source:a.Quelle,tour:String(a.originalTour),items:[],originalCount:0,manuallyCreated:true,normalStart:o?.normalStart||startLabel(a.originalTour)||'',templateIds:[a.originalRouteId]};routes.push(r);routes.sort(daySort)}
+      r.items.push(a);a.currentDay=r.day;a.currentTour=r.tour;a.planNote='Alle Kunden am Zieltag';cancelledAids.delete(a.aid);autoCoveredAids.delete(a.aid);cancelReasons.delete(a.aid);touched.add(r);return;
+    }
     const rs=routes.filter(r=>r.day===T&&String(r.source)===String(a.Quelle));
     let best=null,bd=Infinity;
     rs.forEach(r=>{let d=Infinity;r.items.forEach(x=>{const k=dist(a,x);if(Number.isFinite(k)&&k<d)d=k});if(d===Infinity)d=1e6+r.items.length;if(d<bd){bd=d;best=r}});
@@ -3891,6 +3904,7 @@ function initControls(){
   $('maxCustomers').addEventListener('change',()=>{clampMax();SRC_TYP.clear();renderAll()});
   ['timeTol','timeHard'].forEach(id=>$(id).addEventListener('change',()=>{readTimeTol();renderAll();if(suggOpen())computeSuggestions()}));
   ['mergeSmall','mergeKm'].forEach(id=>$(id).addEventListener('change',()=>{MERGE_SMALL=$('mergeSmall').checked;MERGE_KM=Math.max(5,Number($('mergeKm').value)||25);if(suggOpen())computeSuggestions()}));
+  $('tourNaming').addEventListener('change',()=>{if(suggOpen())computeSuggestions()});
   $('blockMode').addEventListener('change',()=>{BLOCK_MODE=$('blockMode').checked;if(suggOpen())computeSuggestions()});
   $('autoOver').addEventListener('change',()=>{AUTO_OVER=Math.max(0,Number($('autoOver').value)||0);if(suggOpen())computeSuggestions()});
   $('optimizeBtn').addEventListener('click',()=>{$('optimizeBtn').disabled=true;$('optimizeBtn').textContent='Optimiere …';setTimeout(()=>{try{optimizeTargets()}finally{$('optimizeBtn').disabled=false;$('optimizeBtn').textContent='Touren optimieren'}},20)});
@@ -3928,7 +3942,7 @@ const PLAN_STAMP='__GENERATED__';
 const PLAN_KEY='fwp30_state_'+(s=>{let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))>>>0;return h.toString(36)})(ORIGINAL_XLSX_NAME+'|'+PLAN_STAMP+'|'+CUSTOMERS.length+'|'+CUSTOMERS.slice(0,5).map(c=>c.uid).join(','));
 const SAVED_EMBED=(()=>{try{const e=document.getElementById('savedState');return e?JSON.parse(e.textContent):null}catch(e){return null}})();
 let AUTOSAVE_ON=false,AS_T=null,LAST_SIG='',FILE_SIG='',LS_FAIL=false,PENDING_LOCAL=null;
-const STATE_INPUTS=['maxCustomers','excludeSaps','lockedTours','mergeKm','timeTol','timeHard','dnaWeight','tourFixed','autoOver','fixedGroups'],STATE_CHECKS=['allOnTarget','blockMode','mergeSmall','optRegular'];
+const STATE_INPUTS=['tourNaming','maxCustomers','excludeSaps','lockedTours','mergeKm','timeTol','timeHard','dnaWeight','tourFixed','autoOver','fixedGroups'],STATE_CHECKS=['allOnTarget','blockMode','mergeSmall','optRegular'];
 function fmtTs(t){try{return new Date(t).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}
 function planState(){
   const $=id=>document.getElementById(id),inputs={},checks={},sources={},notes={};

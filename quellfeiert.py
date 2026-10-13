@@ -9,6 +9,12 @@ Neu in V30.1:
 - Bugfix: „alle Kunden am Zieltag“ + „Alle übernehmen“ erzeugt keine neuen Doppelbelieferungen mehr
 - Zieltag ist immer genau ein Tag – „Vortag + Folgetag“ entfällt; Vorgabe nach früheren Feiertagen bzw. Standardrichtung
 - Tag im Vollbild: alle Touren eines Tages über den ganzen Bildschirm, rechts „noch offen“ und Ablage
+- Speichern & Weiterarbeiten: automatische Sicherung im Browser mit Wiederherstellen beim Öffnen; „Speichern“ (Strg+S)
+  lädt eine HTML mit eingebautem Planungsstand herunter; Stand zusätzlich als .json speichern/laden
+- Von Hand verschieben ist immer erlaubt (auch gesperrte Touren, Ausschluss, anderer Startbereich, Doppelung, über Maximum):
+  Abweichungen werden gemeldet und im Prüfbericht als Hinweis geführt, der Export fragt nur nach; die Optimierung
+  verschiebt von Hand gesetzte Kunden nicht mehr
+- Tournummern umbenennen (Stift im Tourkopf / Doppelklick auf die Nummer); vorhandene Nummer am selben Tag → Touren zusammenlegen
 
 Neu in V30 (Oberfläche):
 - Dispo-HTML neu gestaltet: Arbeitsleiste in vier Schritten (Ausfall → Ziel → Umplanen → Abschließen) mit
@@ -1923,9 +1929,15 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .ctx{display:flex;align-items:baseline;gap:10px;min-width:0;color:var(--muted);font-size:12px;overflow:hidden;white-space:nowrap}
 .ctx b{color:var(--ink2);font-weight:600;overflow:hidden;text-overflow:ellipsis}
 .hdr-r{margin-left:auto;display:flex;align-items:center;gap:4px}
+.savestate{font-size:12px;color:var(--muted);margin-right:6px;white-space:nowrap}
+.savestate.ok::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);margin-right:6px;vertical-align:1px}
+.savestate.warn{color:var(--warn);font-weight:600}
+.restorebar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--accent-soft);border-bottom:1px solid #c9d8ec;color:var(--ink);font-weight:600;font-size:13px}
+.restorebar svg{color:var(--accent)}
+.restorebar span{flex:0 1 auto}
 .moremenu{position:relative}
 .moremenu>summary{width:34px;justify-content:center;padding:0}
-.menupop{position:absolute;right:0;top:38px;z-index:300;width:230px;padding:5px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 12px 32px rgba(20,30,45,.16)}
+.menupop{position:absolute;right:0;top:38px;z-index:300;width:300px;padding:5px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 12px 32px rgba(20,30,45,.16)}
 .mi{display:block;width:100%;text-align:left;border:0;background:transparent;padding:8px 10px;border-radius:5px}
 .mi:hover{background:var(--panel2)}.mi.danger{color:var(--bad)}
 .menupop hr{border:0;border-top:1px solid var(--line2);margin:4px 2px}
@@ -1957,7 +1969,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .progsub{font-size:11.5px;color:var(--muted)}
 .progsub b{color:var(--good);font-weight:600}
 .ready{font-weight:600;font-size:12px;padding:1px 7px;border-radius:var(--r-tag)}
-.ready.ok{background:var(--good-bg);color:var(--good)}.ready.bad{background:var(--bad-bg);color:var(--bad)}.ready.wait{background:var(--panel2);color:var(--muted)}
+.ready.ok{background:var(--good-bg);color:var(--good)}.ready.warn{background:var(--warn-bg);color:var(--warn)}.ready.bad{background:var(--bad-bg);color:var(--bad)}.ready.wait{background:var(--panel2);color:var(--muted)}
 #xlsxBtn.armed{box-shadow:0 0 0 3px var(--accent-soft)}
 
 /* ---------- Werkzeugzeile ---------- */
@@ -2033,11 +2045,13 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .route.collapsed .rtoggle svg{transform:rotate(-90deg)}
 .rtop{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden}
 .rtop>*{flex:none}
-.rno{font:600 16px/1 var(--f-sign);letter-spacing:.01em;font-variant-numeric:tabular-nums}
+.rno{font:600 16px/1 var(--f-sign);letter-spacing:.01em;font-variant-numeric:tabular-nums;cursor:text}
 .src{font-size:10.5px;font-weight:700;color:var(--muted);letter-spacing:.02em}
 .tag{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:1px 5px;border-radius:var(--r-tag);white-space:nowrap}
 .tag.new{background:var(--accent);color:#fff}
 .tag.lock{background:#3a4250;color:#fff}
+.tag.ren{background:var(--warn-bg);color:var(--warn);font-weight:600}
+.rnoedit{width:92px;height:26px;padding:0 7px;border:1.5px solid var(--focus)!important;border-radius:5px;font:600 16px/1 var(--f-sign)!important;box-shadow:0 0 0 3px var(--accent-soft)}
 .tag.fam{background:var(--accent-soft);color:var(--accent);font-weight:600;max-width:110px;overflow:hidden;text-overflow:ellipsis}
 .delta{font:600 12px/1 var(--f-sign);padding:2px 5px;border-radius:var(--r-tag);background:var(--accent-soft);color:var(--accent)}
 .delta.neg{background:var(--panel2);color:var(--muted)}
@@ -2175,7 +2189,7 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
 .ctxmenu .ctxsec{padding:8px 9px 3px;color:var(--muted);font-size:11.5px;font-weight:600}
 .ctxmenu .ctxitem{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 9px;border-radius:5px;cursor:pointer}
 .ctxmenu .ctxitem:hover{background:var(--accent-soft)}
-.ctxmenu .ctxitem.dis{opacity:.45;cursor:not-allowed}
+.ctxmenu .ctxitem.ovr small{color:var(--warn)}
 .ctxmenu .ctxitem small{color:var(--muted);font-size:11px}
 .ctxmenu .ctxhint{padding:0 9px 6px;color:var(--muted);font-size:11px}
 
@@ -2304,12 +2318,16 @@ body.df-open{overflow:hidden}
   <div class="brand"><svg class="mark" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="2" width="20" height="18" rx="3" fill="#1c232e"/><rect x="4" y="6" width="4" height="11" rx="1" fill="#fff"/><rect x="9" y="6" width="4" height="7" rx="1" fill="#fff"/><rect x="14" y="6" width="4" height="9" rx="1" fill="#c8102e"/></svg><span class="ttl">Feiertagsplanung</span></div>
   <div class="ctx" title="__SRC____AUX__ · erstellt __GENERATED__"><b>__SRC__</b><span>erstellt __GENERATED__</span></div>
   <div class="hdr-r">
+    <span class="savestate" id="saveState" title="Jede Änderung wird automatisch in diesem Browser gesichert und beim nächsten Öffnen angeboten."></span>
+    <button class="btn" id="saveBtn" type="button" title="Planungsstand als HTML-Datei speichern – zum Weiterarbeiten einfach diese Datei öffnen (Strg+S)"><svg class="i" viewBox="0 0 16 16"><path d="M3 2.5h8l2.5 2.5v8.5H3z"/><path d="M5.5 2.5v3h5v-3M5.5 13.5V9.5h5v4"/></svg>Speichern</button>
     <button class="btn ghost" id="rulesBtn" type="button"><svg class="i" viewBox="0 0 16 16"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/><circle cx="6" cy="4" r="1.7" fill="#fff"/><circle cx="10.5" cy="8" r="1.7" fill="#fff"/><circle cx="5" cy="12" r="1.7" fill="#fff"/></svg>Regeln</button>
     <button class="btn ghost" id="backtestBtn" type="button" style="display:none">Backtest</button>
     <details class="moremenu"><summary class="btn ghost" aria-label="Weitere Aktionen" title="Weitere Aktionen"><svg class="i" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".9" fill="currentColor"/><circle cx="8" cy="8" r=".9" fill="currentColor"/><circle cx="12.5" cy="8" r=".9" fill="currentColor"/></svg></summary>
-      <div class="menupop"><button class="mi" id="csvBtn" type="button">Änderungen als CSV</button><button class="mi" type="button" onclick="window.print()">Drucken</button><hr><button class="mi danger" id="resetBtn" type="button">Alle Änderungen zurücksetzen</button></div></details>
+      <div class="menupop"><button class="mi" id="saveJsonBtn" type="button">Stand als .json speichern</button><button class="mi" id="loadBtn" type="button">Stand laden … (.json oder gespeicherte HTML)</button><hr><button class="mi" id="csvBtn" type="button">Änderungen als CSV</button><button class="mi" type="button" onclick="window.print()">Drucken</button><hr><button class="mi danger" id="resetBtn" type="button">Alle Änderungen zurücksetzen</button></div></details>
   </div>
 </header>
+<div class="restorebar" id="restoreBar" hidden><svg class="i" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6"/></svg><span id="restoreText"></span><button class="btn sm primary" id="restoreYes" type="button">Wiederherstellen</button><button class="btn sm" id="restoreNo" type="button">Verwerfen, neu beginnen</button></div>
+<input type="file" id="loadFile" accept=".json,.html,.htm,application/json,text/html" hidden>
 
 <section class="flow" aria-label="Arbeitsablauf">
   <div class="step" id="step1"><div class="sh"><span class="sn">1</span>Welche Tage fallen aus?</div><div class="sc"><div class="days" id="outageDays"></div></div></div>
@@ -2335,8 +2353,8 @@ body.df-open{overflow:hidden}
   <button class="btn tgl box" id="collapseBtn" type="button" aria-pressed="true" title="Touren ohne Änderung nur als Kopfzeile zeigen – Klick auf einen Tourkopf klappt einzeln auf">Unveränderte zuklappen</button>
   <div class="spacer"></div>
   <div class="issues"><span class="lbl">Prüfung</span>
-    <button class="ichip" id="chipDup" type="button" data-issue title="Neue Doppelbelieferungen – blockieren den Export"><b id="mDup">0</b>Doppelungen</button>
-    <button class="ichip" id="chipCap" type="button" data-issue title="Touren über der Obergrenze – blockieren den Export"><b id="mCap">0</b>über Maximum</button>
+    <button class="ichip" id="chipDup" type="button" data-issue title="Neue Doppelbelieferungen – Hinweis, der Export fragt vorher nach"><b id="mDup">0</b>Doppelungen</button>
+    <button class="ichip" id="chipCap" type="button" data-issue title="Touren über der Obergrenze – Hinweis, der Export fragt vorher nach"><b id="mCap">0</b>über Maximum</button>
     <button class="ichip" id="chipTime" type="button" data-issue title="Voraussichtlich verletzte Anlieferzeiten"><b id="mTime">0</b>Zeitkonflikte</button>
   </div>
   <button class="btn" id="sideBtn" type="button" aria-pressed="false" title="Seitenleiste: Vorschläge, Ablage, Änderungen"><svg class="i" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M10 3v10"/></svg><span id="sideBadge"></span></button>
@@ -2422,7 +2440,7 @@ body.df-open{overflow:hidden}
 </div></div>
 
 <div id="tourModal" class="modalback" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true"><h2>Neue Tour anlegen</h2><div class="hint" id="newTourHint"></div><div class="formrow"><div class="field"><label for="newTourNo">Tournummer oder Name</label><input id="newTourNo" autocomplete="off" placeholder="z. B. 5044"></div><div class="field"><label for="newTourSource">Startbereich</label><select id="newTourSource"></select></div></div><div class="field" style="margin-top:10px"><label for="newTourStart">Ladebeginn (optional)</label><input id="newTourStart" autocomplete="off" placeholder="z. B. 03:00 → Abfahrt 04:00"></div><div id="newTourError" class="modalerror"></div><div class="modalactions"><button class="btn" id="cancelTourBtn" type="button">Abbrechen</button><button class="btn primary" id="createTourBtn" type="button">Tour anlegen</button></div></div></div>
-<div id="reportModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Prüfbericht</h2><div class="hint">Stand der aktuellen Feiertagsplanung. Der Excel-Export ist nur ohne Fehler möglich.</div><div id="reportBody"></div><div class="modalactions"><button class="btn" id="closeReportBtn" type="button">Schließen</button><button class="btn" id="reportDownloadBtn" type="button">Bericht als HTML</button><button class="btn primary" id="reportExcelBtn" type="button">Excel exportieren</button></div></div></div>
+<div id="reportModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Prüfbericht</h2><div class="hint">Stand der aktuellen Feiertagsplanung. Hinweise zeigen Abweichungen von den Regeln – exportiert werden kann trotzdem.</div><div id="reportBody"></div><div class="modalactions"><button class="btn" id="closeReportBtn" type="button">Schließen</button><button class="btn" id="reportDownloadBtn" type="button">Bericht als HTML</button><button class="btn primary" id="reportExcelBtn" type="button">Excel exportieren</button></div></div></div>
 <div id="backtestModal" class="modalback" aria-hidden="true"><div class="modal reportmodal" role="dialog" aria-modal="true"><h2>Backtest gegen Referenzplan</h2><div class="hint" id="backtestHint"></div><div class="btrow"><label class="optlog"><input type="checkbox" id="btOptimize"> Autoplan inkl. Touren-Optimierung</label><button class="btn sm" id="sweepBtn" type="button">Parameter vergleichen (16 Varianten)</button></div><div id="sweepBody"></div><div id="backtestBody"></div><div class="modalactions"><button class="btn" id="closeBacktestBtn" type="button">Schließen</button><button class="btn" id="backtestCurrentBtn" type="button">Aktuellen Plan vergleichen</button><button class="btn primary" id="backtestAutoBtn" type="button">Autoplan rechnen und vergleichen</button></div></div></div>
 <div id="mapsModal" class="modalback" aria-hidden="true"><div class="modal mapsmodal" role="dialog" aria-modal="true"><h2 id="mapsTitle">Google Maps</h2><div class="hint" id="mapsHint"></div><div id="mapsBody" class="mapslist"></div><div class="modalactions"><button class="btn" id="closeMapsBtn" type="button">Schließen</button></div></div></div>
 <script>eval(atob('__JSZIP__'))</script>
@@ -2626,6 +2644,8 @@ function familyModel(exclDays){
 
 /* ---------- Plan aufbauen ---------- */
 function getRoute(id){return routes.find(r=>r.id===id)}
+function routeByTour(day,source,tour){return routes.find(r=>r.day===day&&String(r.source)===String(source)&&String(r.tour)===String(tour))}
+function uniqueRouteId(day,source,tour){const base=routeId(day,source,tour);let id=base,n=2;while(getRoute(id))id=base+'#'+(n++);return id}
 function getAssignment(aid){return assignments.find(a=>a.aid===aid)}
 function daySort(a,b){const dd=DAY_ORDER.indexOf(a.day)-DAY_ORDER.indexOf(b.day);if(dd)return dd;return String(a.tour).localeCompare(String(b.tour),'de',{numeric:true})||a.source.localeCompare(b.source)}
 function sortOriginal(r){r.items.sort((x,y)=>(x.originalRouteId===r.id?x.origIndex:1e6)-(y.originalRouteId===r.id?y.origIndex:1e6))}
@@ -2650,7 +2670,7 @@ function buildOriginalPlan(){
   routes.forEach(evaluateRoute);
   autoResolveCoveredDeliveries(false);
 }
-function routeChanged(r){return r.items.length!==r.originalCount||r.items.some((a,i)=>a.originalRouteId!==r.id||a.origIndex!==i)}
+function routeChanged(r){return (r.origTour!=null&&String(r.origTour)!==String(r.tour))||r.items.length!==r.originalCount||r.items.some((a,i)=>a.originalRouteId!==r.id||a.origIndex!==i)}
 
 /* ---------- Ausfalltage ---------- */
 function selectedOutageDays(){return DAY_ORDER.filter(d=>outageDays.has(d))}
@@ -2920,7 +2940,7 @@ function buildClusters(fromDays,toDay,accept=null){
     });
   }else pool.forEach(x=>{if(x.skip||x.a.extra||targetDayAlreadyHas(x.a,toDay))return;const h=historyTargetTour(x.a,toDay);if(!h||LOCKED.has(String(h.tour)))return;pushMap(memGroups,x.a.Quelle+'::'+h.tour,x)});
   memGroups.forEach((ms,key)=>{
-    const [src,tour]=key.split('::'),r=getRoute(routeId(toDay,src,tour));
+    const [src,tour]=key.split('::'),r=routeByTour(toDay,src,tour);
     if(r&&!isLocked(r)){const room=Math.max(0,hardRoom(r));const take=ms.slice(0,room);if(!take.length)return;reserve.set(r.id,(reserve.get(r.id)||0)+take.length);take.forEach(x=>x.mem=true);
       out.push(makeCluster({kind:'insert',source:src,target:r,family:null,members:take,toDay,note:'wie bei früheren Feiertagen',memory:true}))}
     else{const take=ms.slice(0,Math.min(srcCap(src),ms.length));take.forEach(x=>x.mem=true);used.add(src+'::'+tour);
@@ -3125,8 +3145,8 @@ function applyCluster(id,silent=false){
   let target;
   if(c.kind==='insert'){target=getRoute(c.target.id);if(!target){if(!silent)showBlocked('Ziel-Tour existiert nicht mehr.');return 0}}
   else{
-    let name=c.name,n=2;while(getRoute(routeId(c.toDay,c.source,name)))name=c.name+'-'+(n++);
-    target={id:routeId(c.toDay,c.source,name),day:c.toDay,source:c.source,tour:name,items:[],originalCount:0,manuallyCreated:true,generatedRest:true,normalStart:c.normalStart,familyId:c.family?.id||null,familyLabel:c.family?.label||'',familyTypical:c.family?.typical||null,repLabel:c.rep?DAY_LABELS[c.rep.day]+' '+c.rep.tour:''};
+    let name=c.name,n=2;while(routeByTour(c.toDay,c.source,name))name=c.name+'-'+(n++);
+    target={id:uniqueRouteId(c.toDay,c.source,name),day:c.toDay,source:c.source,tour:name,items:[],originalCount:0,manuallyCreated:true,generatedRest:true,normalStart:c.normalStart,familyId:c.family?.id||null,familyLabel:c.family?.label||'',familyTypical:c.family?.typical||null,repLabel:c.rep?DAY_LABELS[c.rep.day]+' '+c.rep.tour:''};
     routes.push(target);
   }
   target.templateIds=[...new Set([...(target.templateIds||[]),...c.templateIds])];
@@ -3173,7 +3193,7 @@ function optimizeDay(day,silent=false){
   if(!cand.some(r=>r.manuallyCreated||routeChanged(r))){if(!silent)showInfo('Nichts zu optimieren',`Am ${DAY_LABELS[day]} gibt es keine geänderten oder neuen Touren.`,'warn');return null}
   if(!silent)UNDO=snapshotPlan();
   const kmBefore=dayKm(day),t0=performance.now();
-  const movable=(a,R)=>!isExcluded(a)&&!GROUP_OF.has(sapOf(a))&&(W.regular?(R.manuallyCreated||routeChanged(R)||a.originalRouteId!==R.id):a.originalRouteId!==R.id);
+  const movable=(a,R)=>!isExcluded(a)&&!GROUP_OF.has(sapOf(a))&&!a.manualMove&&!/^manuell/.test(a.planNote||'')&&(W.regular?(R.manuallyCreated||routeChanged(R)||a.originalRouteId!==R.id):a.originalRouteId!==R.id);
   // 1) Reihenfolge je geänderter Tour (manuell fixierte bleiben)
   cand.filter(r=>(r.manuallyCreated||routeChanged(r))&&!r.manualOrder).forEach(r=>{const o=improveSequence(orderByTemplate(r.items,r),r);r.items=o.items});
   const cost=new Map();cand.forEach(r=>cost.set(r,routeTotal(r.items,r,W)));
@@ -3237,6 +3257,7 @@ const ICON={
   sort:'<svg class="i" viewBox="0 0 16 16"><path d="M5 2.8v10.4M2.8 11l2.2 2.2L7.2 11M11 13.2V2.8M8.8 5L11 2.8 13.2 5"/></svg>',
   del:'<svg class="i" viewBox="0 0 16 16"><path d="M3 4.5h10M6.2 4.5V3h3.6v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>',
   x:'<svg class="i" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+  pen:'<svg class="i" viewBox="0 0 16 16"><path d="M10.5 2.8l2.7 2.7-7.4 7.4H3.1v-2.7z"/><path d="M9.2 4.1l2.7 2.7"/></svg>',
   clock:'<svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.2l2.2 1.4"/></svg>',
   lock:'<svg class="i" viewBox="0 0 16 16" style="width:11px;height:11px"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2"/><path d="M5.5 7V5.3a2.5 2.5 0 0 1 5 0V7"/></svg>',
   plus:'<svg class="i" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg>'
@@ -3288,11 +3309,11 @@ function routeHtml(r){
   if(r.repLabel)meta.push(`<span>Vorlage ${esc(r.repLabel)}</span>`);
   if(tc)meta.push(`<span class="warn">${tc} Zeitkonflikt${tc>1?'e':''}</span>`);
   if(over)meta.push(`<span class="bad">${n-cap} über Maximum</span>`);
-  const title=`${DAY_LABELS[r.day]} · Tour ${r.tour} · ${srcLabel(r.source)} · ${n} von max. ${cap} Kunden${hasRouteStart(r)?' · '+routeClockInfo(r):''}${r.items.length?'':' · leer'}\nKlick: auf-/zuklappen · Kunden auf den Kopf ziehen = anhängen`;
+  const title=`${DAY_LABELS[r.day]} · Tour ${r.tour} · ${srcLabel(r.source)} · ${n} von max. ${cap} Kunden${hasRouteStart(r)?' · '+routeClockInfo(r):''}${r.items.length?'':' · leer'}\nKlick: auf-/zuklappen · Doppelklick auf die Nummer: umbenennen · Kunden auf den Kopf ziehen = anhängen`;
   return `<section class="route ${chg?'changed':''} ${r.manuallyCreated?'newroute':''} ${over?'overcap':''} ${tc?'timeconflict':''} ${lk?'locked':''} ${open?'':'collapsed'}" data-route="${esc(r.id)}">`+
   `<div class="rhead" data-route-head="${esc(r.id)}" title="${esc(title)}"><button class="rtoggle" type="button" aria-expanded="${open}" aria-label="Tour ${esc(r.tour)} auf-/zuklappen">${ICON.chev}</button>`+
-  `<div class="rtop"><span class="rno">${esc(r.tour)}</span><span class="src">${esc(srcLabel(r.source))}</span>${r.manuallyCreated?'<span class="tag new">neu</span>':''}${lk?`<span class="tag lock" title="Gesperrte Tour: nichts hinzufügen oder herausnehmen">${ICON.lock}gesperrt</span>`:''}${r.familyLabel?`<span class="tag fam" title="Tourfamilie ${esc(r.familyLabel)}">${esc(r.familyLabel)}</span>`:''}${d?`<span class="delta ${d<0?'neg':''}" title="gegenüber Original">${d>0?'+':''}${d}</span>`:''}</div>`+
-  `<div class="ract"><button class="iconbtn" type="button" title="In Google Maps öffnen" aria-label="Google Maps" data-google-maps="${esc(r.id)}">${ICON.pin}</button><button class="iconbtn" type="button" title="Reihenfolge ab Valluhn neu berechnen" aria-label="Neu sortieren" data-seq-route="${esc(r.id)}">${ICON.sort}</button>${r.manuallyCreated?`<button class="iconbtn danger" type="button" title="Neue Tour löschen" aria-label="Tour löschen" data-delete-route="${esc(r.id)}">${ICON.del}</button>`:''}</div>`+
+  `<div class="rtop"><span class="rno">${esc(r.tour)}</span>${r.origTour!=null&&String(r.origTour)!==String(r.tour)?`<span class="tag ren" title="umbenannt">vorher ${esc(r.origTour)}</span>`:''}<span class="src">${esc(srcLabel(r.source))}</span>${r.manuallyCreated?'<span class="tag new">neu</span>':''}${lk?`<span class="tag lock" title="Gesperrte Tour: nichts hinzufügen oder herausnehmen">${ICON.lock}gesperrt</span>`:''}${r.familyLabel?`<span class="tag fam" title="Tourfamilie ${esc(r.familyLabel)}">${esc(r.familyLabel)}</span>`:''}${d?`<span class="delta ${d<0?'neg':''}" title="gegenüber Original">${d>0?'+':''}${d}</span>`:''}</div>`+
+  `<div class="ract"><button class="iconbtn" type="button" title="In Google Maps öffnen" aria-label="Google Maps" data-google-maps="${esc(r.id)}">${ICON.pin}</button><button class="iconbtn" type="button" title="Reihenfolge ab Valluhn neu berechnen" aria-label="Neu sortieren" data-seq-route="${esc(r.id)}">${ICON.sort}</button><button class="iconbtn" type="button" title="Tournummer ändern (oder Doppelklick auf die Nummer)" aria-label="Tour umbenennen" data-rename-route="${esc(r.id)}">${ICON.pen}</button>${r.manuallyCreated?`<button class="iconbtn danger" type="button" title="Neue Tour löschen" aria-label="Tour löschen" data-delete-route="${esc(r.id)}">${ICON.del}</button>`:''}</div>`+
   `<div class="rload"><span class="lbar ${lv}"><i style="width:${w}%"></i></span><span class="lcnt ${over?'over':''}">${n}/${cap}</span>${dep?`<span class="ldep">${dep}</span>`:''}${tc&&!open?`<span class="lwarn" title="${tc} voraussichtliche Zeitkonflikte">${ICON.clock}${tc}</span>`:''}</div>`+
   `${meta.length?`<div class="rmeta">${meta.join('')}</div>`:''}</div>`+
   `<div class="dropzone" data-route="${esc(r.id)}">${cards||'<div class="empty">Kunden hierher ziehen</div>'}</div></section>`;
@@ -3332,12 +3353,12 @@ function updateSteps(open,errors){
   const s1=outageDays.size>0||!!document.getElementById('allOnTarget')?.checked,s2=targetDays().length>0;
   setStep(1,s1?'done':'current');setStep(2,!s1?'':s2?'done':'current');
   setStep(3,!(s1&&s2)?'':open?'current':'done');
-  setStep(4,errors?'bad':(!open&&s1&&s2)?'current':'');
+  setStep(4,(!open&&s1&&s2)?'current':'');
   const rs=document.getElementById('readyState'),x=document.getElementById('xlsxBtn');
-  if(errors){rs.className='ready bad';rs.textContent=errors+' Fehler – Export gesperrt'}
+  if(errors){rs.className='ready warn';rs.textContent=errors+' Hinweis'+(errors>1?'e':'')+' prüfen'}
   else if(open){rs.className='ready wait';rs.textContent='noch '+open+' offen'}
   else{rs.className='ready ok';rs.textContent='bereit'}
-  x.classList.toggle('armed',!errors&&!open&&s1&&s2);
+  x.classList.toggle('armed',!open&&s1&&s2);
   const tds=targetDays();
   {const fb=document.getElementById('fullDayBtn'),d=tds[0]||null;if(fb){fb.hidden=!d;if(d){fb.dataset.day=d;fb.querySelector('span').textContent=DAY_LABELS[d]+' im Vollbild'}}}document.querySelectorAll('[data-outage-day]').forEach(b=>{const on=tds.includes(b.dataset.outageDay);b.classList.toggle('tgt',on);b.title=DAY_LABELS[b.dataset.outageDay]+(outageDays.has(b.dataset.outageDay)?' fällt aus – klicken zum Aufheben':on?' ist Zieltag':' – klicken: fällt aus')});
 }
@@ -3369,7 +3390,7 @@ function renderChanges(){
 function saveDayScroll(){document.querySelectorAll('.daybody[data-day]').forEach(el=>dayScroll[el.dataset.day]=el.scrollTop)}
 function restoreDayScroll(){document.querySelectorAll('.daybody[data-day]').forEach(el=>{el.scrollTop=scrollToNewDay===el.dataset.day?el.scrollHeight:(dayScroll[el.dataset.day]||0)});scrollToNewDay=null}
 function dragCleanup(){document.body.classList.remove('dragging');document.querySelectorAll('.over,.over-route,.dragsrc').forEach(z=>z.classList.remove('over','over-route','dragsrc'))}
-function renderAll(){dragCleanup();saveDayScroll();const dfs=dayFull?saveDfScroll():null;if(dayFull)renderDayFull();else renderWeek();renderUnplanned();renderMetrics();renderChanges();bindDnD();bindDayActions();restoreDayScroll();if(dfs)restoreDfScroll(dfs)}
+function renderAll(){dragCleanup();saveDayScroll();const dfs=dayFull?saveDfScroll():null;if(dayFull)renderDayFull();else renderWeek();renderUnplanned();renderMetrics();renderChanges();bindDnD();bindDayActions();restoreDayScroll();if(dfs)restoreDfScroll(dfs);scheduleAutosave()}
 
 /* ---------- Navigation: Seitenleiste, Ansicht, Springen ---------- */
 function setSideTab(t){sideTab=t;document.querySelectorAll('[data-tab]').forEach(b=>{const on=b.dataset.tab===t;b.classList.toggle('active',on);b.setAttribute('aria-selected',String(on))});document.querySelectorAll('[data-pane]').forEach(p=>p.classList.toggle('active',p.dataset.pane===t))}
@@ -3441,43 +3462,88 @@ function renderDayFull(){
 }
 function saveDfScroll(){return {b:document.getElementById('dfBody').scrollTop,r:document.getElementById('dfRail').scrollTop}}
 function restoreDfScroll(s){document.getElementById('dfBody').scrollTop=s.b;document.getElementById('dfRail').scrollTop=s.r}
+
+/* ---------- Tournummer umbenennen: Stift im Tourkopf oder Doppelklick auf die Nummer ---------- */
+function renameRoute(id,val){
+  const r=getRoute(id);if(!r){renderAll();return}const t=String(val||'').trim().replace(/\s+/g,' ');
+  if(!t||t===String(r.tour)){renderAll();return}
+  const other=routes.find(x=>x!==r&&x.day===r.day&&String(x.source)===String(r.source)&&String(x.tour)===t);
+  if(other){
+    if(!confirm(`Tour ${t} gibt es am ${DAY_LABELS[r.day]} schon (${other.items.length} Kunden).\n\nDie ${r.items.length} Kunden von Tour ${r.tour} an Tour ${t} anhängen und die Touren zusammenlegen?`)){renderAll();return}
+    const n=r.items.length,old=r.tour;
+    r.items.splice(0).forEach(a=>{other.items.push(a);a.currentDay=other.day;a.currentTour=other.tour;if(a.originalRouteId!==other.id){a.manualMove=true;a.planNote='manuell'}});
+    if(r.manuallyCreated)routes=routes.filter(x=>x!==r);else evaluateRoute(r);
+    optimizeRouteOrder(other);renderAll();
+    toast(other.items.length>capOf(other)?'warn':'good','Touren zusammengelegt',`${DAY_LABELS[other.day]}: ${n} Kunden von Tour ${old} jetzt in Tour ${t}`+(other.items.length>capOf(other)?` – ${other.items.length} Kunden, über dem Maximum (${capOf(other)}).`:'.'),6000);return;
+  }
+  const old=String(r.tour);if(r.origTour==null)r.origTour=old;r.tour=t;if(String(r.origTour)===t)delete r.origTour;
+  r.items.forEach(a=>a.currentTour=t);
+  if(!r.normalStart)r.normalStart=startLabel(old)||'';   // Abfahrt bleibt die der Tour, nicht die der neuen Nummer
+  renderAll();
+  const notes=[];if(LOCKED.has(t))notes.push(`${t} steht in der Liste der gesperrten Touren.`);if(/^[1-6]\d{2,5}$/.test(t)&&DIGIT_DAY[t[0]]!==r.day)notes.push(`Die erste Ziffer passt nicht zum ${DAY_LABELS[r.day]}.`);
+  toast(notes.length?'warn':'good','Tour umbenannt',`${DAY_LABELS[r.day]}: ${old} → ${t}. Im Excel-Export bekommen alle Kunden der Tour die neue Nummer.`+(notes.length?' '+notes.join(' '):''),notes.length?7000:4500);
+}
+function startRename(sec){
+  const id=sec?.dataset.route,r=getRoute(id);if(!r)return;const rno=sec.querySelector('.rno');if(!rno||sec.querySelector('.rnoedit'))return;
+  const inp=document.createElement('input');inp.className='rnoedit';inp.type='text';inp.value=r.tour;inp.setAttribute('aria-label','Neue Tournummer');inp.title='Enter = übernehmen · Esc = abbrechen';
+  rno.replaceWith(inp);inp.focus();inp.select();
+  let done=false;const fin=ok=>{if(done)return;done=true;if(ok)renameRoute(id,inp.value);else renderAll()};
+  inp.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Enter'){e.preventDefault();fin(true)}else if(e.key==='Escape'){e.preventDefault();fin(false)}});
+  inp.addEventListener('blur',()=>fin(true));
+  ['click','mousedown','dblclick','dragstart'].forEach(ev=>inp.addEventListener(ev,e=>e.stopPropagation()));
+}
 /* ---------- Drag & Drop ---------- */
+/* Hand-Verschiebungen (Ziehen, ×, Rechtsklick) sind immer erlaubt – Sperren, Ausschluss, Startbereich, Doppelung und
+   Maximum gelten nur für Vorschläge/Autoplan/Optimierung. Abweichungen werden gemeldet und im Prüfbericht als Hinweis geführt. */
+function manualNotes(a,cur,to){
+  const n=[];if(!a)return n;
+  if(isExcluded(a))n.push(`SAP ${a.SAP} steht auf der Ausschlussliste.`);
+  if(cur&&isLocked(cur)&&(!to||cur.id!==to.id))n.push(`Tour ${cur.tour} ist gesperrt.`);
+  if(to&&(!cur||cur.id!==to.id)){
+    if(isLocked(to))n.push(`Tour ${to.tour} ist gesperrt.`);
+    if(String(a.Quelle)!==String(to.source))n.push(`Startbereich wechselt: ${srcLabel(a.Quelle)} → ${srcLabel(to.source)}.`);
+    if(duplicateOnDay(a,to.day))n.push(`SAP ${a.SAP} wird am ${DAY_LABELS[to.day]} doppelt beliefert.`);
+    if(capacityFull(to,a))n.push(`Tour ${to.tour} liegt damit über dem Maximum (${capOf(to)}).`);
+    if(outageDays.has(to.day))n.push(`${DAY_LABELS[to.day]} ist ein Ausfalltag.`);
+  }
+  return n;
+}
 function moveAid(aid,toRouteId,beforeAid=null){
-  if(!aid)return;const a=getAssignment(aid),cur=currentRouteForAid(aid);
-  if(isExcluded(a)&&(toRouteId==='UNPLANNED'||!cur||cur.id!==toRouteId)){showBlocked(`SAP ${a.SAP} steht auf der Ausschlussliste und bleibt unverändert.`);return}
-  if(toRouteId==='UNPLANNED'&&cur&&isLocked(cur)){showBlocked(`Tour ${cur.tour} ist gesperrt – Kunden bleiben unverändert.`);return}
-  if(toRouteId!=='UNPLANNED'){const reason=moveBlockReason(a,getRoute(toRouteId));if(reason){showBlocked(reason);return}}
+  if(!aid)return;const a=getAssignment(aid);if(!a)return;const cur=currentRouteForAid(aid),to0=toRouteId==='UNPLANNED'?null:getRoute(toRouteId);
+  if(toRouteId!=='UNPLANNED'&&!to0)return;
+  const notes=manualNotes(a,cur,to0);
   const found=removeFromCurrent(aid);if(!found)return;
-  if(toRouteId==='UNPLANNED'){cancelledAids.delete(aid);unplanned.push(found.a);if(found.from)evaluateRoute(found.from);renderAll();showInfo('Kunde ausgeplant',`${found.a.SAP} · ${found.a.Name} liegt jetzt in AUSGEPLANT.`,'warn');return}
-  const to=getRoute(toRouteId);if(!to){(found.from?found.from.items:unplanned).push(found.a);renderAll();return}
+  if(toRouteId==='UNPLANNED'){cancelledAids.delete(aid);unplanned.push(found.a);if(found.from)evaluateRoute(found.from);renderAll();toast(notes.length?'warn':'warn','Kunde ausgeplant',`${found.a.SAP} · ${found.a.Name} liegt jetzt in der Ablage.`+(notes.length?' '+notes.join(' ')+' Von Hand übersteuert.':''),notes.length?8000:5000);return}
+  const to=to0;
   cancelledAids.delete(aid);autoCoveredAids.delete(aid);cancelReasons.delete(aid);
   const ix=beforeAid?to.items.findIndex(x=>x.aid===beforeAid):-1;
   if(ix<0)to.items.push(found.a);else to.items.splice(ix,0,found.a);
   found.a.currentDay=to.day;found.a.currentTour=to.tour;
+  if(found.from!==to){found.a.manualMove=true;found.a.planNote='manuell'+(notes.length?' (Regel übersteuert)':'')}
   if(found.from&&found.from!==to)evaluateRoute(found.from);
-  if(ix>=0){to.manualOrder=true;evaluateRoute(to)}else if(routeChanged(to)||to.manuallyCreated)optimizeRouteOrder(to);
-  renderAll();if(found.a.originalRouteId!==to.id)showMove(found.a,to);
+  if(ix>=0){to.manualOrder=true;evaluateRoute(to)}else if(routeChanged(to)||to.manuallyCreated)optimizeRouteOrder(to);else evaluateRoute(to);
+  renderAll();
+  if(notes.length)toast('warn',`${DAY_LABELS[to.day]} · Tour ${to.tour}: von Hand übersteuert`,`${found.a.SAP} · ${found.a.Name}. ${notes.join(' ')}`,8000);
+  else if(found.a.originalRouteId!==to.id)showMove(found.a,to);
 }
 /* ---------- Rechtsklick: Verschieben zur Tour … ---------- */
 const DIGIT_DAY=Object.fromEntries(Object.entries(DAY_DIGIT).map(([d,n])=>[n,d]));
 function closeCtx(){document.getElementById('ctxmenu')?.remove()}
 function findTourTarget(a,txt){
   const t=String(txt||'').trim();if(!t)return null;
-  const rs=routes.filter(r=>String(r.tour)===t&&String(r.source)===String(a.Quelle));
-  if(rs.length){const td=targetDays();return rs.find(r=>td.includes(r.day))||rs.find(r=>!outageDays.has(r.day))||rs[0]}
-  return null;
+  const rs=routes.filter(r=>String(r.tour)===t);if(!rs.length)return null;
+  const same=rs.filter(r=>String(r.source)===String(a.Quelle)),pool=same.length?same:rs,td=targetDays();
+  return pool.find(r=>td.includes(r.day))||pool.find(r=>!outageDays.has(r.day))||pool[0];
 }
 function createTourFor(a,tour){
-  const day=DIGIT_DAY[String(tour)[0]];if(!day||!/^\d{3,6}$/.test(String(tour)))return {err:`Tour ${tour} gibt es nicht – aus der ersten Ziffer lässt sich kein Tag ableiten.`};
-  if(outageDays.has(day))return {err:`Tour ${tour} läge am ${DAY_LABELS[day]} – das ist ein Ausfalltag.`};
-  if(LOCKED.has(String(tour)))return {err:`Tour ${tour} ist gesperrt.`};
-  const r={id:routeId(day,a.Quelle,tour),day,source:a.Quelle,tour:String(tour),items:[],originalCount:0,manuallyCreated:true,normalStart:startLabel(tour)||'',templateIds:[]};
+  const t=String(tour||'').trim();if(!t)return {err:'Bitte eine Tournummer eingeben.'};
+  const day=(/^[1-6]\d{2,5}$/.test(t)?DIGIT_DAY[t[0]]:null)||targetDays()[0]||currentRouteForAid(a.aid)?.day||a.originalDay;
+  const r={id:uniqueRouteId(day,a.Quelle,t),day,source:a.Quelle,tour:t,items:[],originalCount:0,manuallyCreated:true,normalStart:startLabel(t)||'',templateIds:[]};
   routes.push(r);routes.sort(daySort);return {r};
 }
 function moveToTourNo(aid,txt){
   const a=getAssignment(aid);if(!a)return;let r=findTourTarget(a,txt);
-  if(!r){const c=createTourFor(a,String(txt).trim());if(c.err){showBlocked(c.err);return}r=c.r;
-    const why=moveBlockReason(a,r);if(why){routes=routes.filter(x=>x!==r);showBlocked(why);return}}
+  if(!r){const c=createTourFor(a,txt);if(c.err){showBlocked(c.err);return}r=c.r}
   closeCtx();moveAid(aid,r.id);
 }
 function openCtx(e,aid){
@@ -3485,14 +3551,14 @@ function openCtx(e,aid){
   const td=targetDays(),days=[...new Set([...(td.length?td:[]),...(cur&&!outageDays.has(cur.day)?[cur.day]:[])])];
   const cand=routes.filter(r=>days.includes(r.day)&&String(r.source)===String(a.Quelle)&&r.items.length&&(!cur||r.id!==cur.id)).map(r=>({r,why:moveBlockReason(a,r),f:fitFor(a,r,true)}));
   cand.sort((p,q)=>(!!p.why-!!q.why)||(RANK[p.f.key]-RANK[q.f.key])||((p.f.nearest??999)-(q.f.nearest??999)));
-  const item=(c)=>`<div class="ctxitem ${c.why?'dis':''}" data-ctx-route="${esc(c.r.id)}" title="${esc(c.why||c.f.label)}"><span><b>Tour ${esc(c.r.tour)}</b> · ${DAY_SHORT[c.r.day]} <small>${c.r.items.length}/${capOf(c.r)}</small></span><small>${c.why?'gesperrt/voll':esc(c.f.label)+(Number.isFinite(c.f.nearest)?' · '+fmt(c.f.nearest)+' km':'')}</small></div>`;
-  const orig=getRoute(a.originalRouteId),back=orig&&cur&&orig.id!==cur.id&&!outageDays.has(orig.day);
+  const item=(c)=>`<div class="ctxitem ${c.why?'ovr':''}" data-ctx-route="${esc(c.r.id)}" title="${esc(c.why||c.f.label)}"><span><b>Tour ${esc(c.r.tour)}</b> · ${DAY_SHORT[c.r.day]} <small>${c.r.items.length}/${capOf(c.r)}</small></span><small>${c.why?'⚠ '+esc(c.why.replace(/\.$/,'')):esc(c.f.label)+(Number.isFinite(c.f.nearest)?' · '+fmt(c.f.nearest)+' km':'')}</small></div>`;
+  const orig=getRoute(a.originalRouteId),back=orig&&(!cur||orig.id!==cur.id);
   const m=document.createElement('div');m.id='ctxmenu';m.className='ctxmenu';
   m.innerHTML=`<div class="ctxhead"><b>${esc(a.SAP)} · ${esc(a.Name)}</b><span>${esc(a.Ort||'')} · jetzt ${cur?DAY_SHORT[cur.day]+' '+esc(cur.tour):'ausgeplant'} · Herkunft ${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span></div>
   <div class="ctxsec">Verschieben zur Tour …</div>
   <div class="ctxin"><input id="ctxTour" list="ctxTours" placeholder="Tournummer, z. B. 4033" autocomplete="off"><button type="button" id="ctxGo">OK</button></div>
-  <datalist id="ctxTours">${routes.filter(r=>String(r.source)===String(a.Quelle)&&!outageDays.has(r.day)).map(r=>`<option value="${esc(r.tour)}">${DAY_LABELS[r.day]} · ${r.items.length} Kunden</option>`).join('')}</datalist>
-  <div class="ctxhint">Nicht vorhandene Nummer = neue Tour (Tag aus der ersten Ziffer: 1 = Mo … 6 = Sa).</div>
+  <datalist id="ctxTours">${routes.filter(r=>String(r.source)===String(a.Quelle)).map(r=>`<option value="${esc(r.tour)}">${DAY_LABELS[r.day]} · ${r.items.length} Kunden</option>`).join('')}</datalist>
+  <div class="ctxhint">Nicht vorhandene Nummer = neue Tour (Tag aus der ersten Ziffer: 1 = Mo … 6 = Sa). Von Hand ist alles erlaubt – Regelabweichungen werden nur gemeldet.</div>
   ${cand.length?`<div class="ctxsec">Passende Touren ${days.map(d=>DAY_SHORT[d]).join(' + ')}</div>${cand.slice(0,10).map(item).join('')}`:''}
   ${back?`<div class="ctxsec">Weitere</div><div class="ctxitem" data-ctx-route="${esc(orig.id)}"><span>Zurück in Originaltour ${DAY_SHORT[orig.day]} ${esc(orig.tour)}</span></div>`:''}
   ${cur?`<div class="ctxitem" data-ctx-route="UNPLANNED"><span>Ausplanen</span></div>`:''}`;
@@ -3501,7 +3567,7 @@ function openCtx(e,aid){
   const inp=m.querySelector('#ctxTour');inp.focus();
   inp.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();moveToTourNo(aid,inp.value)}else if(ev.key==='Escape')closeCtx()});
   m.querySelector('#ctxGo').addEventListener('click',()=>moveToTourNo(aid,inp.value));
-  m.querySelectorAll('[data-ctx-route]').forEach(el=>el.addEventListener('click',()=>{if(el.classList.contains('dis')){showBlocked(el.title);return}const id=el.dataset.ctxRoute;closeCtx();moveAid(aid,id)}));
+  m.querySelectorAll('[data-ctx-route]').forEach(el=>el.addEventListener('click',()=>{const id=el.dataset.ctxRoute;closeCtx();moveAid(aid,id)}));
 }
 document.addEventListener('mousedown',e=>{const m=document.getElementById('ctxmenu');if(m&&!m.contains(e.target))closeCtx()});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeCtx()});
@@ -3526,7 +3592,7 @@ function bindDnD(){
     h.addEventListener('dragover',e=>{e.preventDefault();sec.classList.add('over-route')});
     h.addEventListener('dragleave',e=>{if(!h.contains(e.relatedTarget))sec.classList.remove('over-route')});
     h.addEventListener('drop',e=>{e.preventDefault();sec.classList.remove('over-route');moveAid(dragAid,h.dataset.routeHead,null);dragCleanup()});
-    h.addEventListener('click',e=>{if(e.target.closest('button:not(.rtoggle)'))return;toggleRoute(sec)});
+    h.addEventListener('click',e=>{if(e.target.closest('button:not(.rtoggle),.rno,.rnoedit'))return;toggleRoute(sec)});
   });
 }
 function bindDayActions(){
@@ -3535,6 +3601,8 @@ function bindDayActions(){
   document.querySelectorAll('[data-seq-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();const r=getRoute(b.dataset.seqRoute);if(r){optimizeRouteOrder(r);renderAll();showInfo('Neu sortiert',`Tour ${r.tour}: Reihenfolge ab Valluhn neu berechnet.`,'good')}}));
   document.querySelectorAll('[data-google-maps]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();openGoogleMapsRoute(b.dataset.googleMaps)}));
   document.querySelectorAll('[data-full-day]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();openDayFull(b.dataset.fullDay)}));
+  document.querySelectorAll('[data-rename-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();startRename(b.closest('.route'))}));
+  document.querySelectorAll('.route .rno').forEach(el=>el.addEventListener('dblclick',e=>{e.stopPropagation();startRename(el.closest('.route'))}));
   document.querySelectorAll('[data-show-empty]').forEach(b=>b.addEventListener('click',()=>{showEmptyOut.add(b.dataset.showEmpty);renderAll()}));
 }
 
@@ -3558,7 +3626,7 @@ function closeNewTour(){newTourDay=null;document.getElementById('tourModal').cla
 function createNewTour(){
   const tour=document.getElementById('newTourNo').value.trim(),source=document.getElementById('newTourSource').value,start=document.getElementById('newTourStart').value.trim(),err=document.getElementById('newTourError');
   if(!newTourDay||!tour){err.textContent='Bitte eine Tournummer eingeben.';return}
-  const id=routeId(newTourDay,source,tour);if(getRoute(id)){err.textContent='Diese Tour gibt es an diesem Tag bereits.';return}
+  if(routeByTour(newTourDay,source,tour)){err.textContent='Diese Tour gibt es an diesem Tag bereits.';return}const id=uniqueRouteId(newTourDay,source,tour);
   routes.push({id,day:newTourDay,source,tour,items:[],originalCount:0,manuallyCreated:true,normalStart:start||startLabel(tour)});routes.sort(daySort);scrollToNewDay=newTourDay;closeNewTour();renderAll();
 }
 function deleteNewRoute(id){const r=getRoute(id);if(!r||!r.manuallyCreated)return;if(r.items.length&&!confirm(`Tour ${r.tour} löschen? ${r.items.length} Kunden gehen nach AUSGEPLANT.`))return;unplanned.push(...r.items);routes=routes.filter(x=>x.id!==id);renderAll()}
@@ -3604,12 +3672,12 @@ function reportTable(rows,headers){return `<div class="reportscroll"><table clas
 function buildReportHtmlBody(){
   const v=validateForExcel(),cancelled=unplanned.filter(a=>cancelledAids.has(a.aid)),other=unplanned.filter(a=>!cancelledAids.has(a.aid));
   const warn=[];if(v.leftOnOutage)warn.push(`${v.leftOnOutage} Lieferungen stehen noch auf ${outageDaysLabel()}.`);if(other.length)warn.push(`${other.length} Lieferungen sind ausgeplant.`);if(v.timeViolations.length)warn.push(`${v.timeViolations.length} voraussichtliche Zeitkonflikte.`);if(excludedSaps.size)warn.push(`${excludedSaps.size} SAP auf der Ausschlussliste.`);if(v.unmapped.length)warn.push(`${v.unmapped.length} Lieferung(en) ohne Zeile in LADEREIHENFOLGE – Reihenfolge nur im Report/CSV.`);
-  const head=v.ok?'<div class="reportok"><b>Abschlussprüfung bestanden:</b> keine neue Doppelbelieferung, kein Startbereichswechsel, keine Tour über dem Maximum.</div>':`<div class="reporterror">Abschlussprüfung: ${v.errors.map(esc).join(' · ')}</div>`;
+  const head=v.ok?'<div class="reportok"><b>Abschlussprüfung bestanden:</b> keine neue Doppelbelieferung, kein Startbereichswechsel, keine Tour über dem Maximum.</div>':`<div class="reporterror"><b>Hinweise – Export trotzdem möglich:</b> ${v.errors.map(esc).join(' · ')}</div>`;
   return head+(warn.length?`<div class="reportwarn">${warn.map(esc).join('<br>')}</div>`:'')+
   `<div class="reportstatus"><div class="reportkpi"><b>${assignments.length}</b><span>Wochen-Lieferungen</span></div><div class="reportkpi"><b>${v.changed.length}</b><span>verschoben</span></div><div class="reportkpi"><b>${v.newRoutes.length}</b><span>neue Touren</span></div><div class="reportkpi"><b>${cancelled.length}</b><span>gestrichen</span></div><div class="reportkpi"><b>${other.length}</b><span>ausgeplant</span></div><div class="reportkpi"><b>${v.dups.length}</b><span>unerlaubte Doppelungen</span></div><div class="reportkpi"><b>${v.timeViolations.length}</b><span>Zeitkonflikte</span></div></div>`+
   `<div class="reportsection"><h3>Verschiebungen</h3>${reportTable(v.changed.map(x=>[x.a.SAP,x.a.Name,`${DAY_LABELS[x.a.originalDay]} / ${x.a.originalTour}`,`${DAY_LABELS[x.r.day]} / ${x.r.tour}`,srcLabel(x.r.source),x.a.planNote||'manuell',x.f.label,Number.isFinite(x.f.nearest)?fmt(x.f.nearest)+' km':'–',x.a.Zeitkritisch?timeInfo(x.a):'']),['SAP','Kunde','Original','Neu','Startbereich','Grundlage','Geo','Nächster Kunde','Lieferinfo'])}</div>`+
   (LAST_OPT?`<div class="reportsection"><h3>Letzte Optimierung</h3>${reportTable([[String(LAST_OPT.day).split('+').map(d=>DAY_LABELS[d]||d).join(' + '),LAST_OPT.moves,LAST_OPT.swaps,LAST_OPT.removed.join(', ')||'–',fmt(LAST_OPT.kmBefore),fmt(LAST_OPT.kmAfter),fmt(LAST_OPT.kmBefore-LAST_OPT.kmAfter)]],['Tag','verschoben','getauscht','eingesparte Touren','km vorher','km nachher','Ersparnis km'])}</div>`:'')+
-  `<div class="reportsection"><h3>Geänderte und neue Touren</h3>${reportTable(routes.filter(r=>r.items.length&&(r.manuallyCreated||routeChanged(r))).map(r=>[DAY_LABELS[r.day],r.tour,r.manuallyCreated?'neu':'geändert',srcLabel(r.source),r.items.length,r.familyLabel||'–',r.repLabel||'–',hasRouteStart(r)?formatMin(routeStartMinutes(r)):'',hasRouteStart(r)?formatMin(departureMinutes(r)):'',Number.isFinite(r.km)?Math.round(r.km):'',fmtDur(r.dur),Number.isFinite(r.end)?formatMin(r.end):'',[...new Set(r.items.map(a=>DAY_SHORT[a.originalDay]+' '+a.originalTour))].join(', '),r.items.filter(a=>a._timeViolation).length]),['Tag','Tour','Art','Startbereich','Kunden','Tourfamilie','Vorlage','Ladebeginn','Abfahrt','km','Dauer','zurück','Herkunft','Zeitkonflikte'])}</div>`+
+  `<div class="reportsection"><h3>Geänderte und neue Touren</h3>${reportTable(routes.filter(r=>r.items.length&&(r.manuallyCreated||routeChanged(r))).map(r=>[DAY_LABELS[r.day],r.tour,(r.manuallyCreated?'neu':'geändert')+(r.origTour!=null&&String(r.origTour)!==String(r.tour)?` (vorher ${r.origTour})`:''),srcLabel(r.source),r.items.length,r.familyLabel||'–',r.repLabel||'–',hasRouteStart(r)?formatMin(routeStartMinutes(r)):'',hasRouteStart(r)?formatMin(departureMinutes(r)):'',Number.isFinite(r.km)?Math.round(r.km):'',fmtDur(r.dur),Number.isFinite(r.end)?formatMin(r.end):'',[...new Set(r.items.map(a=>DAY_SHORT[a.originalDay]+' '+a.originalTour))].join(', '),r.items.filter(a=>a._timeViolation).length]),['Tag','Tour','Art','Startbereich','Kunden','Tourfamilie','Vorlage','Ladebeginn','Abfahrt','km','Dauer','zurück','Herkunft','Zeitkonflikte'])}</div>`+
   `<div class="reportsection"><h3>Gestrichene Ausfall-Lieferungen</h3>${reportTable(cancelled.map(a=>[a.SAP,a.Name,DAY_LABELS[a.originalDay],a.originalTour,srcLabel(a.Quelle),cancelReasons.get(a.aid)||'gestrichen']),['SAP','Kunde','Originaltag','Originaltour','Startbereich','Grund'])}</div>`+
   `<div class="reportsection"><h3>Ausgeplant</h3>${reportTable(other.map(a=>[a.SAP,a.Name,DAY_LABELS[a.originalDay],a.originalTour,srcLabel(a.Quelle)]),['SAP','Kunde','Originaltag','Originaltour','Startbereich'])}</div>`+
   (v.dups.length?`<div class="reportsection"><h3>Neue Doppelbelieferungen – vor Export lösen</h3>${reportTable(v.dups.map(g=>[sapOf(g[0].a),DAY_LABELS[g[0].r.day],g.map(x=>x.r.tour).join(' / '),g.length]),['SAP','Tag','Touren','Anzahl'])}</div>`:'')+
@@ -3669,7 +3737,7 @@ function clearOutageDays(){
     const rs=routes.filter(r=>r.day===T&&String(r.source)===String(a.Quelle));
     let best=null,bd=Infinity;
     rs.forEach(r=>{let d=Infinity;r.items.forEach(x=>{const k=dist(a,x);if(Number.isFinite(k)&&k<d)d=k});if(d===Infinity)d=1e6+r.items.length;if(d<bd){bd=d;best=r}});
-    if(!best){let name='Rest',n=2;while(getRoute(routeId(T,a.Quelle,name)))name='Rest-'+(n++);best={id:routeId(T,a.Quelle,name),day:T,source:a.Quelle,tour:name,items:[],originalCount:0,manuallyCreated:true,normalStart:'',templateIds:[]};routes.push(best);routes.sort(daySort)}
+    if(!best){let name='Rest',n=2;while(routeByTour(T,a.Quelle,name))name='Rest-'+(n++);best={id:uniqueRouteId(T,a.Quelle,name),day:T,source:a.Quelle,tour:name,items:[],originalCount:0,manuallyCreated:true,normalStart:'',templateIds:[]};routes.push(best);routes.sort(daySort)}
     best.items.push(a);a.currentDay=best.day;a.currentTour=best.tour;a.planNote='Alle Kunden am Zieltag';
     cancelledAids.delete(a.aid);autoCoveredAids.delete(a.aid);cancelReasons.delete(a.aid);touched.add(best);
   });
@@ -3747,7 +3815,7 @@ function cellMarker(sdoc){
 }
 function currentExcelPlan(){const p={};CUSTOMERS.forEach(c=>{p[c.uid]={};DAY_ORDER.forEach(d=>p[c.uid][d]='')});routes.forEach(r=>r.items.forEach(a=>{if(p[a.uid])p[a.uid][r.day]=String(r.tour)}));return p}
 async function exportExactExcel(){
-  const v=validateForExcel();if(!v.ok){openFinalReport();showBlocked('Excel-Export gesperrt: '+v.errors.join(' '));return}
+  const v=validateForExcel();if(!v.ok&&!confirm('Vor dem Export bitte prüfen:\n\n• '+v.errors.join('\n• ')+'\n\nTrotzdem exportieren?'))return;
   try{
     const zip=await JSZip.loadAsync(b64ToUint8(ORIGINAL_XLSX_B64)),parser=new DOMParser(),ser=new XMLSerializer();
     const wb=parser.parseFromString(await zip.file('xl/workbook.xml').async('string'),'application/xml'),rel=parser.parseFromString(await zip.file('xl/_rels/workbook.xml.rels').async('string'),'application/xml'),paths=sheetPathMap(wb,rel),plan=currentExcelPlan();
@@ -3850,10 +3918,119 @@ function initControls(){
   document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement)fsByUs=false;syncFsBtn()});
   let dst=null;$('dfSearch').addEventListener('input',e=>{clearTimeout(dst);dst=setTimeout(()=>{$('search').value=e.target.value;searchText=e.target.value.trim().toLowerCase();renderAll()},140)});
   $('dfSearch').addEventListener('keydown',e=>{if(e.key==='Escape'&&e.target.value){e.target.value='';clearSearch()}});
-  document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!dayFull)return;if(document.querySelector('.modalback.show')||document.getElementById('ctxmenu'))return;if(e.target?.id==='dfSearch'&&e.target.value)return;closeDayFull()},true);
+  document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!dayFull)return;if(document.querySelector('.modalback.show')||document.getElementById('ctxmenu')||e.target?.classList?.contains('rnoedit'))return;if(e.target?.id==='dfSearch'&&e.target.value)return;closeDayFull()},true);
   parseExcluded();parseLocked();parseGroups();clampMax();readTimeTol();presetFromReference();
 }
-initControls();buildOriginalPlan();
+/* ---------- Speichern & Weiterarbeiten ----------
+   1) automatisch im Browser (localStorage, je HTML eindeutig)  2) „Speichern“ = HTML-Kopie mit eingebautem Stand
+   3) Stand als .json speichern / laden (auch aus einer gespeicherten HTML) */
+const PLAN_STAMP='__GENERATED__';
+const PLAN_KEY='fwp30_state_'+(s=>{let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))>>>0;return h.toString(36)})(ORIGINAL_XLSX_NAME+'|'+PLAN_STAMP+'|'+CUSTOMERS.length+'|'+CUSTOMERS.slice(0,5).map(c=>c.uid).join(','));
+const SAVED_EMBED=(()=>{try{const e=document.getElementById('savedState');return e?JSON.parse(e.textContent):null}catch(e){return null}})();
+let AUTOSAVE_ON=false,AS_T=null,LAST_SIG='',FILE_SIG='',LS_FAIL=false,PENDING_LOCAL=null;
+const STATE_INPUTS=['maxCustomers','excludeSaps','lockedTours','mergeKm','timeTol','timeHard','dnaWeight','tourFixed','autoOver','fixedGroups'],STATE_CHECKS=['allOnTarget','blockMode','mergeSmall','optRegular'];
+function fmtTs(t){try{return new Date(t).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}
+function planState(){
+  const $=id=>document.getElementById(id),inputs={},checks={},sources={},notes={};
+  STATE_INPUTS.forEach(id=>{const e=$(id);if(e)inputs[id]=e.value});STATE_CHECKS.forEach(id=>{const e=$(id);if(e)checks[id]=e.checked});
+  SOURCES.forEach(s=>{const e=$('src_'+s);if(e)sources[s]=e.checked});
+  assignments.forEach(a=>{if(a.planNote||a.fixedGroup)notes[a.aid]=[a.planNote||'',a.fixedGroup||'']});
+  let changes=0;routes.forEach(r=>r.items.forEach(a=>{if(a.originalRouteId!==r.id)changes++}));changes+=unplanned.filter(a=>!autoCoveredAids.has(a.aid)).length;
+  return {v:1,plan:PLAN_KEY,source:ORIGINAL_XLSX_NAME,stamp:PLAN_STAMP,savedAt:Date.now(),changes,
+    settings:{outage:selectedOutageDays(),toDay:$('toDay').value,inputs,checks,sources},
+    routes:routes.map(r=>{const o={id:r.id,day:r.day,source:r.source,tour:r.tour,items:r.items.map(a=>a.aid)};if(r.manuallyCreated||r.origTour!=null){o.m=r.manuallyCreated?1:0;o.ns=r.normalStart||''}if(r.generatedRest)o.gen=1;if(r.familyLabel)o.fl=r.familyLabel;if(r.familyId)o.fid=r.familyId;if(r.familyTypical)o.ft=r.familyTypical;if(r.repLabel)o.rep=r.repLabel;if(r.templateIds?.length)o.tpl=r.templateIds;if(r.capFixed)o.cap=r.capFixed;if(r.manualOrder)o.mo=1;if(r.extraOnly)o.xo=1;return o}),
+    unplanned:unplanned.map(a=>a.aid),cancelled:[...cancelledAids],covered:[...autoCoveredAids],reasons:Object.fromEntries(cancelReasons),notes};
+}
+function stateSig(s){if(!s)return '';const {savedAt,...rest}=s;return JSON.stringify(rest)}
+function applyState(s){
+  if(!s||!Array.isArray(s.routes))throw new Error('Datei enthält keinen Planungsstand.');
+  const $=id=>document.getElementById(id),set=s.settings||{};
+  Object.entries(set.inputs||{}).forEach(([id,v])=>{const e=$(id);if(e&&STATE_INPUTS.includes(id))e.value=v});
+  Object.entries(set.checks||{}).forEach(([id,v])=>{const e=$(id);if(e&&STATE_CHECKS.includes(id))e.checked=!!v});
+  Object.entries(set.sources||{}).forEach(([k,v])=>{const e=$('src_'+k);if(e)e.checked=!!v});
+  outageDays=new Set((set.outage||[]).filter(d=>DAY_ORDER.includes(d)));renderOutageButtons();syncTargetDayOptions(true);
+  if(set.toDay&&DAY_ORDER.includes(set.toDay)&&!outageDays.has(set.toDay))$('toDay').value=set.toDay;syncTargetDayOptions();
+  clampMax();parseExcluded();parseLocked();parseGroups();readTimeTol();SRC_TYP.clear();
+  BLOCK_MODE=$('blockMode').checked;MERGE_SMALL=$('mergeSmall').checked;MERGE_KM=Math.max(5,Number($('mergeKm').value)||25);AUTO_OVER=Math.max(0,Number($('autoOver').value)||0);
+  buildOriginalPlan();                                  // Grundplan inkl. Zusatz-Lieferungen für diese Einstellungen
+  const byAid=new Map(assignments.map(a=>[a.aid,a])),placed=new Set();let missing=0;
+  routes.forEach(r=>r.items=[]);unplanned=[];
+  s.routes.forEach(sr=>{
+    let r=getRoute(sr.id);
+    if(!r){if(!sr.m)return;r={id:sr.id,day:sr.day,source:sr.source,tour:String(sr.tour),items:[],originalCount:0,manuallyCreated:true,normalStart:sr.ns||startLabel(sr.tour)||'',templateIds:[]};routes.push(r)}
+    if(String(r.tour)!==String(sr.tour)){if(r.origTour==null)r.origTour=String(r.tour);r.tour=String(sr.tour);if(String(r.origTour)===r.tour)delete r.origTour}if(sr.ns&&!r.normalStart)r.normalStart=sr.ns;
+    if(sr.gen)r.generatedRest=true;if(sr.fl)r.familyLabel=sr.fl;if(sr.fid)r.familyId=sr.fid;if(sr.ft)r.familyTypical=sr.ft;if(sr.rep)r.repLabel=sr.rep;if(sr.tpl)r.templateIds=sr.tpl;if(sr.cap)r.capFixed=sr.cap;if(sr.mo)r.manualOrder=true;if(sr.xo)r.extraOnly=true;
+    (sr.items||[]).forEach(aid=>{const a=byAid.get(aid);if(!a||placed.has(aid)){missing++;return}placed.add(aid);r.items.push(a);a.currentDay=r.day;a.currentTour=r.tour});
+  });
+  (s.unplanned||[]).forEach(aid=>{const a=byAid.get(aid);if(!a||placed.has(aid)){missing++;return}placed.add(aid);unplanned.push(a);a.currentDay=null;a.currentTour=null});
+  assignments.forEach(a=>{if(placed.has(a.aid))return;const r=getRoute(a.originalRouteId);if(r&&!a.extra)r.items.push(a);else unplanned.push(a)});   // im Stand unbekannt → Originalplatz
+  cancelledAids=new Set((s.cancelled||[]).filter(x=>byAid.has(x)));autoCoveredAids=new Set((s.covered||[]).filter(x=>byAid.has(x)));
+  cancelReasons=new Map(Object.entries(s.reasons||{}).filter(([k])=>byAid.has(k)));
+  Object.entries(s.notes||{}).forEach(([aid,n])=>{const a=byAid.get(aid);if(!a||!Array.isArray(n))return;if(n[0])a.planNote=n[0];if(n[1])a.fixedGroup=n[1]});
+  routes.sort(daySort);routes.forEach(r=>{r.items.forEach((a,i)=>a.currentLoadOrder=i+1);evaluateRoute(r)});
+  hideSugg();UNDO=null;LAST_OPT=null;$('undoBtn').style.display='none';
+  renderAll();return missing;
+}
+function setSaveState(txt,cls=''){const e=document.getElementById('saveState');if(e){e.textContent=txt;e.className='savestate '+cls}}
+function autosaveNow(){
+  if(!AUTOSAVE_ON)return;const s=planState(),sig=stateSig(s);if(sig===LAST_SIG)return;
+  try{localStorage.setItem(PLAN_KEY,JSON.stringify(s));LAST_SIG=sig;LS_FAIL=false;setSaveState('automatisch gesichert '+new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}),'ok')}
+  catch(e){LS_FAIL=true;setSaveState('Browser-Sicherung nicht möglich – bitte „Speichern“','warn')}
+}
+function scheduleAutosave(){if(!AUTOSAVE_ON)return;clearTimeout(AS_T);AS_T=setTimeout(autosaveNow,700)}
+function readLocal(){try{const t=localStorage.getItem(PLAN_KEY);return t?JSON.parse(t):null}catch(e){return null}}
+function fileStamp(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`}
+function baseName(){return String(ORIGINAL_XLSX_NAME||'Feiertagsplanung').replace(/\.xlsx$/i,'')}
+function snapshotHtml(state){
+  const clone=document.documentElement.cloneNode(true),q=s=>clone.querySelector(s);
+  q('#savedState')?.remove();q('#ctxmenu')?.remove();
+  ['#week','#dfGrid','#dfRail','#suggBody','#changeBody','#unplannedDrop','#goneBox','#reportBody','#backtestBody','#sweepBody','#mapsBody','#outageDays','#sourceChips','#toDay'].forEach(s=>{const e=q(s);if(e)e.innerHTML=''});
+  clone.querySelectorAll('.modalback.show').forEach(m=>m.classList.remove('show'));clone.querySelectorAll('details[open]').forEach(d=>d.removeAttribute('open'));
+  q('#dayFull')?.setAttribute('hidden','');q('#restoreBar')?.setAttribute('hidden','');q('body')?.classList.remove('df-open','dragging');
+  {const d=q('#drawer');if(d)d.className='drawer'}{const u=q('#undoBtn');if(u)u.style.display='none'}
+  document.querySelectorAll('textarea[id]').forEach(t=>{const c=q('#'+t.id);if(c)c.textContent=t.value});
+  [...STATE_INPUTS,...STATE_CHECKS].forEach(id=>{const i=document.getElementById(id),c=q('#'+id);if(!i||!c||i.tagName==='TEXTAREA'||i.tagName==='SELECT')return;if(i.type==='checkbox'){if(i.checked)c.setAttribute('checked','');else c.removeAttribute('checked')}else c.setAttribute('value',i.value)});
+  const sc=document.createElement('script');sc.id='savedState';sc.type='application/json';sc.textContent=JSON.stringify(state).replace(/</g,'\\u003c');
+  const main=[...clone.querySelectorAll('script')].find(s=>s.textContent.includes('const CUSTOMERS='));main.parentNode.insertBefore(sc,main);
+  return '<!doctype html>\n'+clone.outerHTML;
+}
+function saveHtml(){
+  try{const s=planState();download(new Blob([snapshotHtml(s)],{type:'text/html;charset=utf-8'}),`${baseName()}_Planung_${fileStamp()}.html`);FILE_SIG=stateSig(s);autosaveNow();
+    showInfo('Gespeichert',`${s.changes} Änderungen in „${baseName()}_Planung_${fileStamp()}.html“. Zum Weiterarbeiten diese Datei öffnen.`,'good')}
+  catch(e){console.error(e);showBlocked('Speichern fehlgeschlagen: '+(e?.message||e))}
+}
+function saveJson(){const s=planState();download(new Blob([JSON.stringify(s)],{type:'application/json'}),`${baseName()}_Stand_${fileStamp()}.json`);FILE_SIG=stateSig(s);showInfo('Stand gespeichert',`${s.changes} Änderungen als .json – über „Stand laden …“ wieder einlesen.`,'good')}
+function loadStateFile(file){
+  const rd=new FileReader();
+  rd.onload=()=>{try{
+    let txt=String(rd.result||''),s;
+    if(/^\s*</.test(txt)){const m=txt.match(/<script id="savedState" type="application\/json">([\s\S]*?)<\/script>/);if(!m)throw new Error('In dieser HTML ist kein Planungsstand gespeichert.');txt=m[1]}
+    s=JSON.parse(txt);
+    if(s.plan!==PLAN_KEY&&!confirm(`Der Stand stammt aus einer anderen Planungsdatei (${s.source||'?'}, erstellt ${s.stamp||'?'}).\nKunden werden über Blatt, SAP und Zeile zugeordnet – nicht gefundene bleiben an ihrem Originalplatz.\n\nTrotzdem laden?`))return;
+    const miss=applyState(s);AUTOSAVE_ON=true;hideRestoreBar();autosaveNow();
+    showInfo('Stand geladen',`Stand vom ${fmtTs(s.savedAt)} · ${s.changes||0} Änderungen`+(miss?` · ${miss} Lieferungen nicht mehr in dieser Datei`:''),miss?'warn':'good');
+  }catch(e){console.error(e);showBlocked('Laden fehlgeschlagen: '+(e?.message||e))}};
+  rd.readAsText(file);
+}
+function showRestoreBar(L){PENDING_LOCAL=L;const b=document.getElementById('restoreBar');document.getElementById('restoreText').textContent=`Automatisch gesicherter Stand vom ${fmtTs(L.savedAt)} gefunden – ${L.changes||0} Änderungen.`;b.hidden=false;setSaveState('Sicherung pausiert – bitte oben entscheiden','warn')}
+function hideRestoreBar(){document.getElementById('restoreBar').hidden=true;PENDING_LOCAL=null}
+function initPersistence(){
+  const $=id=>document.getElementById(id);
+  $('saveBtn').addEventListener('click',saveHtml);
+  $('saveJsonBtn').addEventListener('click',()=>{closeMenus();saveJson()});
+  $('loadBtn').addEventListener('click',()=>{closeMenus();$('loadFile').value='';$('loadFile').click()});
+  $('loadFile').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)loadStateFile(f)});
+  $('restoreYes').addEventListener('click',()=>{const L=PENDING_LOCAL;hideRestoreBar();try{const miss=applyState(L);showInfo('Wiederhergestellt',`Stand vom ${fmtTs(L.savedAt)} · ${L.changes||0} Änderungen`+(miss?` · ${miss} nicht zugeordnet`:''),'good')}catch(e){showBlocked('Wiederherstellen fehlgeschlagen: '+(e?.message||e))}AUTOSAVE_ON=true;autosaveNow()});
+  $('restoreNo').addEventListener('click',()=>{hideRestoreBar();AUTOSAVE_ON=true;LAST_SIG='';autosaveNow()});
+  document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&!e.altKey&&e.key.toLowerCase()==='s'){e.preventDefault();saveHtml()}});
+  window.addEventListener('beforeunload',e=>{if(!LS_FAIL&&AUTOSAVE_ON)return;const s=planState();if(s.changes&&stateSig(s)!==FILE_SIG){e.preventDefault();e.returnValue=''}});
+  let E=null;
+  if(SAVED_EMBED){try{const miss=applyState(SAVED_EMBED);E=SAVED_EMBED;FILE_SIG=stateSig(planState());showInfo('Planungsstand geladen',`Gespeichert am ${fmtTs(E.savedAt)} · ${E.changes||0} Änderungen – hier weiterarbeiten.`+(miss?` ${miss} Lieferungen nicht zugeordnet.`:''),'good')}catch(e){console.error(e);showBlocked('Gespeicherter Stand konnte nicht geladen werden: '+(e?.message||e))}}
+  const L=readLocal(),cur=stateSig(planState());
+  if(L&&Array.isArray(L.routes)&&(L.savedAt||0)>(E?.savedAt||0)&&stateSig(L)!==cur)showRestoreBar(L);
+  else{AUTOSAVE_ON=true;LAST_SIG=L&&stateSig(L)===cur?cur:'';autosaveNow();if(LAST_SIG)setSaveState('automatisch gesichert','ok')}
+}
+initControls();buildOriginalPlan();initPersistence();
 </script>
 </body></html>'''
 

@@ -7,6 +7,8 @@ Neu in V30.1:
   Zieltag-Tour mit den meisten Mitgliedern, Mitglieder aus anderen Zieltag-Touren ziehen mit um, Obergrenze gilt für die
   Gruppe nicht, Optimierung trennt sie nicht; pflegbar im Generator und im Blatt „Gruppen“ der Adressdatei
 - Bugfix: „alle Kunden am Zieltag“ + „Alle übernehmen“ erzeugt keine neuen Doppelbelieferungen mehr
+- Zieltag ist immer genau ein Tag – „Vortag + Folgetag“ entfällt; Vorgabe nach früheren Feiertagen bzw. Standardrichtung
+- Tag im Vollbild: alle Touren eines Tages über den ganzen Bildschirm, rechts „noch offen“ und Ablage
 
 Neu in V30 (Oberfläche):
 - Dispo-HTML neu gestaltet: Arbeitsleiste in vier Schritten (Ausfall → Ziel → Umplanen → Abschließen) mit
@@ -1946,7 +1948,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .dbtn.active::after{content:"";position:absolute;left:0;right:0;bottom:0;height:5px;background:var(--hatch)}
 .dbtn.tgt{border-color:var(--tgt);color:var(--tgt)}
 .dbtn.tgt::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--tgt)}
-#toDay{min-width:190px;font-weight:600}
+#toDay{min-width:170px;font-weight:600}
 .prog{display:grid;gap:4px;min-width:190px;margin-left:8px;flex:1;max-width:300px}
 .progtxt{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
 .progtxt b{font:600 20px/1 var(--f-sign);font-variant-numeric:tabular-nums}
@@ -2311,7 +2313,7 @@ body.df-open{overflow:hidden}
 
 <section class="flow" aria-label="Arbeitsablauf">
   <div class="step" id="step1"><div class="sh"><span class="sn">1</span>Welche Tage fallen aus?</div><div class="sc"><div class="days" id="outageDays"></div></div></div>
-  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Wohin?</div><div class="sc"><select id="toDay" aria-label="Zieltag"></select><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten). Bei Vortag + Folgetag gilt der Vortag."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label></div></div>
+  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Auf welchen Tag?</div><div class="sc"><select id="toDay" aria-label="Zieltag" title="Alle Kunden der Ausfalltage gehen auf diesen einen Tag"></select><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten)."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label></div></div>
   <div class="step grow" id="step3"><div class="sh"><span class="sn">3</span>Umplanen</div><div class="sc">
     <button class="btn primary" id="suggestBtn" type="button">Vorschläge berechnen</button>
     <button class="btn" id="optimizeBtn" type="button" title="Reihenfolge je Tour (2-opt/Or-opt) und Kundentausch zwischen Touren am Zieltag">Touren optimieren</button>
@@ -2653,18 +2655,23 @@ function routeChanged(r){return r.items.length!==r.originalCount||r.items.some((
 /* ---------- Ausfalltage ---------- */
 function selectedOutageDays(){return DAY_ORDER.filter(d=>outageDays.has(d))}
 function outageDaysLabel(days=selectedOutageDays()){return days.length?days.map(d=>DAY_LABELS[d]).join(' + '):'kein Ausfalltag'}
-function syncTargetDayOptions(){
-  const sel=document.getElementById('toDay');[...sel.options].forEach(o=>o.disabled=outageDays.has(o.value));
-  const n=neighborDays(),ao=[...sel.options].find(o=>o.value==='auto');if(ao)ao.textContent=`Vortag + Folgetag (${[n.prev,n.next].filter(Boolean).map(d=>DAY_SHORT[d]).join(' + ')||'–'})`;
-  if(ao)ao.disabled=!outageDays.size;
-  if(!outageDays.size&&(sel.value==='auto'||!sel.value)){sel.value=DAY_ORDER.includes('Fr')?'Fr':DAY_ORDER[0];return}
-  if(sel.value==='auto')return;
-  if(!sel.value||outageDays.has(sel.value)){const ch=selectedOutageDays(),first=ch.length?Math.min(...ch.map(d=>DAY_ORDER.indexOf(d))):DAY_ORDER.length;let fb=null;for(let i=first-1;i>=0;i--)if(!outageDays.has(DAY_ORDER[i])){fb=DAY_ORDER[i];break}sel.value=fb||DAY_ORDER.find(d=>!outageDays.has(d))||''}
+/* Vorgabe-Zieltag: Mehrheit der früheren Feiertage (Vortag vs. Folgetag), sonst Standardrichtung je Wochentag */
+function defaultTarget(){
+  const out=selectedOutageDays();if(!out.length)return DAY_ORDER.includes('Fr')?'Fr':DAY_ORDER[0];
+  const n=neighborDays();
+  if(n.prev&&n.next){let p=0,x=0;out.forEach(d=>Object.values(HISTORY?.[d]?.tours||{}).forEach(t=>{p+=Number(t.prev)||0;x+=Number(t.next)||0}));if(p!==x)return p>x?n.prev:n.next}
+  const side=DEFAULT_SIDE[out[0]]||'prev';
+  return (side==='prev'?(n.prev||n.next):(n.next||n.prev))||DAY_ORDER.find(d=>!outageDays.has(d))||'';
+}
+function syncTargetDayOptions(reset=false){
+  const sel=document.getElementById('toDay'),n=neighborDays();
+  [...sel.options].forEach(o=>{o.disabled=outageDays.has(o.value);o.textContent=DAY_LABELS[o.value]+(outageDays.has(o.value)?' (fällt aus)':o.value===n.prev?' (Vortag)':o.value===n.next?' (Folgetag)':'')});
+  if(reset||!sel.value||outageDays.has(sel.value))sel.value=defaultTarget();
 }
 function renderOutageButtons(){
   const box=document.getElementById('outageDays');
   box.innerHTML=DAY_ORDER.map(d=>`<button type="button" class="dbtn ${outageDays.has(d)?'active':''}" aria-pressed="${outageDays.has(d)}" data-outage-day="${d}">${DAY_SHORT[d]}</button>`).join('');
-  box.querySelectorAll('[data-outage-day]').forEach(b=>b.addEventListener('click',()=>{const d=b.dataset.outageDay;if(outageDays.has(d)){outageDays.delete(d);if(!outageDays.size){const c=document.getElementById('allOnTarget');if(c&&!c.checked){c.checked=true;showInfo('Kein Ausfalltag','Es fällt kein Tag aus – alle Kunden werden am gewählten Zieltag beliefert („Alle Kunden am Zieltag" wurde aktiviert).')}}}else outageDays.add(d);renderOutageButtons();syncTargetDayOptions();autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()}));
+  box.querySelectorAll('[data-outage-day]').forEach(b=>b.addEventListener('click',()=>{const d=b.dataset.outageDay;if(outageDays.has(d)){outageDays.delete(d);if(!outageDays.size){const c=document.getElementById('allOnTarget');if(c&&!c.checked){c.checked=true;showInfo('Kein Ausfalltag','Es fällt kein Tag aus – alle Kunden werden am gewählten Zieltag beliefert („Alle Kunden am Zieltag" wurde aktiviert).')}}}else outageDays.add(d);renderOutageButtons();syncTargetDayOptions(true);autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()}));
 }
 /* Vortag/Folgetag: Ausfall-Kunden gehen – wie in den historischen Plänen – auf den Tag davor oder danach */
 const DEFAULT_SIDE={Mo:'next',Die:'next',Mitt:'next',Don:'prev',Fr:'prev',Sam:'prev'};
@@ -2678,9 +2685,7 @@ function neighborDays(){
 }
 function targetDays(){
   const v=document.getElementById('toDay')?.value;
-  const allOn=document.getElementById('allOnTarget')?.checked;
-  if(v==='auto'){if(!outageDays.size)return [];const n=neighborDays(),t=[n.prev,n.next].filter(Boolean);return allOn?t.slice(0,1):t}
-  return v&&!outageDays.has(v)?[v]:[];
+  return v&&DAY_ORDER.includes(v)&&!outageDays.has(v)?[v]:[];
 }
 /* „Alle Kunden am Zieltag“: jeder Kunde der Woche ohne Lieferung am Zieltag bekommt eine Zusatz-Lieferung */
 let EXTRA_T=null;
@@ -3707,7 +3712,7 @@ function presetFromReference(){
   CUSTOMERS.forEach(c=>{if(!c.REF)return;DAY_ORDER.forEach(d=>{if(c[d]!=null&&c[d]!=='')o[d]++;if(c.REF[d]!=null&&c.REF[d]!=='')r[d]++})});
   const out=DAY_ORDER.filter(d=>o[d]>0&&r[d]<=o[d]*.1);if(!out.length)return;
   const target=DAY_ORDER.filter(d=>!out.includes(d)).sort((a,b)=>(r[b]-o[b])-(r[a]-o[a]))[0];
-  outageDays=new Set(out);renderOutageButtons();document.getElementById('toDay').value='auto';syncTargetDayOptions();
+  outageDays=new Set(out);renderOutageButtons();syncTargetDayOptions(true);if(target&&!outageDays.has(target))document.getElementById('toDay').value=target;syncTargetDayOptions();
 }
 
 /* ---------- Excel-Export ---------- */
@@ -3803,8 +3808,8 @@ function initControls(){
   $('cancelTourBtn').addEventListener('click',closeNewTour);$('createTourBtn').addEventListener('click',createNewTour);
   ['newTourNo','newTourStart'].forEach(id=>$(id).addEventListener('keydown',e=>{if(e.key==='Enter')createNewTour();if(e.key==='Escape')closeNewTour()}));
   /* Arbeitsleiste */
-  $('toDay').innerHTML='<option value="auto">Vortag + Folgetag</option>'+DAY_ORDER.map(d=>`<option value="${d}">nur ${DAY_LABELS[d]}</option>`).join('');$('toDay').value='auto';
-  renderOutageButtons();syncTargetDayOptions();
+  $('toDay').innerHTML=DAY_ORDER.map(d=>`<option value="${d}">${DAY_LABELS[d]}</option>`).join('');
+  renderOutageButtons();syncTargetDayOptions(true);
   $('toDay').addEventListener('change',()=>{autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()});
   $('allOnTarget').addEventListener('change',()=>{if(!$('allOnTarget').checked&&!outageDays.size){const t=$('toDay').value;outageDays.add(t==='Sam'?'Fr':'Sam');renderOutageButtons();syncTargetDayOptions()}autoResolveCoveredDeliveries(false);const n=assignments.filter(a=>a.extra).length;if($('allOnTarget').checked)showInfo('Alle Kunden am Zieltag',`${n} Kunden bekommen zusätzlich eine Lieferung am ${targetLabel()} – über „Vorschläge berechnen“ oder Autoplan einplanen.`,'good');if(suggOpen())computeSuggestions()});
   $('suggestBtn').addEventListener('click',()=>busy($('suggestBtn'),'Berechne …',computeSuggestions));

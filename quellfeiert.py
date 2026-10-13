@@ -1875,6 +1875,7 @@ HTML_TEMPLATE = r'''<!doctype html>
   --r-col:10px;--r-card:8px;--r-cust:6px;--r-tag:4px;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{height:100%}
 body{margin:0;background:var(--ground);color:var(--ink);font:13px/1.4 var(--f-ui);-webkit-font-smoothing:antialiased}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -1996,8 +1997,10 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .dayhead::before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:var(--line)}
 .daycol.is-out .dayhead::before{height:7px;background:var(--hatch)}
 .daycol.is-tgt .dayhead::before{background:var(--tgt)}
-.dayline{display:flex;align-items:center;flex-wrap:wrap;gap:3px 7px}
-.dayname{font:600 17px/1.1 var(--f-sign);letter-spacing:-.01em}
+.dayline{display:flex;align-items:center;gap:7px;min-width:0}
+.dayacts{display:flex;flex:none;margin-left:auto;margin-right:-3px}
+.dayline .role{flex:none}
+.dayname{font:600 17px/1.1 var(--f-sign);letter-spacing:-.01em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .role{font-size:11px;font-weight:700;padding:2px 6px;border-radius:var(--r-tag)}
 .role.out{background:var(--out);color:#fff}
 .role.tgt{background:var(--tgt);color:#fff}
@@ -2008,7 +2011,6 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .daybig b{display:block;font:600 22px/1 var(--f-sign);color:var(--out);font-variant-numeric:tabular-nums}
 .daycol.is-tgt .daybig b{color:var(--tgt)}
 .daybig.done b{color:var(--tgt);font-size:15px}
-.addtour{margin-left:auto;margin-right:-2px}
 .daybody{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:7px}
 .daycol.is-out .daybody{background:repeating-linear-gradient(-45deg,transparent 0 10px,rgba(200,16,46,.045) 10px 20px)}
 .emptyday{padding:22px 10px;text-align:center;color:var(--muted);font-size:12px}
@@ -2245,6 +2247,42 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
   .cname{font-size:12px}
   .fit .fl{display:none}
 }
+/* ---------- Tag im Vollbild ---------- */
+body.df-open{overflow:hidden}
+.dayfull{position:fixed;inset:0;z-index:380;display:flex;flex-direction:column;background:var(--ground)}
+.dfhead{display:grid;gap:9px;padding:11px 14px 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+.dfrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dfspacer{flex:1}
+.dft{display:flex;align-items:center;gap:9px}
+.dfname{font:600 25px/1 var(--f-sign);letter-spacing:-.01em}
+.dfstats{display:flex;flex-wrap:wrap;gap:4px 16px;margin-left:8px;font-size:12.5px;color:var(--muted)}
+.dfstats b{font:600 16px/1 var(--f-sign);color:var(--ink2);font-variant-numeric:tabular-nums;margin-right:2px}
+.dfstats .in b{color:var(--tgt)}.dfstats .bad,.dfstats .bad b{color:var(--bad)}.dfstats .warn,.dfstats .warn b{color:var(--warn)}
+.dfdays button{position:relative;min-width:42px;font:600 14px/1 var(--f-sign)}
+.dfdays button.out::after,.dfdays button.tgt::after{content:"";position:absolute;left:5px;right:5px;bottom:2px;height:3px;border-radius:2px}
+.dfdays button.out::after{background:var(--hatch)}.dfdays button.tgt::after{background:var(--tgt)}
+#dfFsBtn[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:#fff}
+.dfmain{flex:1;min-height:0;display:flex}
+.dfbody{flex:1;min-width:0;overflow:auto;padding:12px 14px 24px}
+.dfgrid{column-width:290px;column-gap:10px}
+.dfgrid .route{display:inline-block;width:100%;break-inside:avoid;margin:0 0 10px}
+.dfgrid .hiddenroutes,.dfgrid .emptyday{break-inside:avoid;display:inline-block;width:100%}
+.cort{display:none}
+.dfgrid.compact .cust{padding:3px 4px 3px 6px;margin-top:3px;align-items:center}
+.dfgrid.compact .cl2{display:none}
+.dfgrid.compact .cort{display:inline;flex:none;color:var(--muted);font-size:11.5px}
+.dfgrid.compact .ctags{margin-top:3px}
+.dfgrid.compact .fit .fl{display:none}
+.dfgrid.compact .seq{width:18px;height:18px}
+.dfrail{width:330px;flex:none;overflow:auto;padding:14px 12px 24px;background:var(--panel);border-left:1px solid var(--line)}
+.dfsec{margin-bottom:20px}
+.dfsec h3{display:flex;align-items:center;gap:8px;margin:0;font:600 16px/1.2 var(--f-sign)}
+.dfsec h3 .cnt{font:600 12px/18px var(--f-sign);min-width:20px;padding:0 6px;border-radius:9px;background:var(--panel2);text-align:center}
+.dfsec h3 .cnt.hot{background:var(--accent);color:#fff}
+.dfsec p{margin:3px 0 8px;font-size:12px;color:var(--muted)}
+.dfsec h4{display:flex;gap:6px;margin:12px 0 2px;font:600 13px/1.2 var(--f-sign);color:var(--ink2)}
+.dfsec .unplanned-drop{min-height:90px}
+@media (max-width:900px){.dfrail{display:none}}
 @media (max-width:1180px){.side{position:fixed;right:0;top:0;bottom:0;z-index:420;box-shadow:-16px 0 40px rgba(20,30,45,.18)}.app:not(.side-hidden) .board{padding-right:12px}}
 @media (max-width:900px){.step{border-right:0;border-bottom:1px solid var(--line2);width:100%}.ctx,.status .r{display:none}.searchwrap{width:100%}.rgrid{grid-template-columns:1fr}.side{width:min(420px,100vw)}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -2253,6 +2291,7 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
   .board{overflow:visible;padding:0}.week,.week.focus{min-width:0!important;height:auto;grid-template-columns:repeat(3,1fr)!important;gap:6px}
   .daycol{background:#fff;border:1px solid #ccc}.daybody{overflow:visible}
   .route.collapsed .dropzone{display:block}.route.collapsed .rmeta{display:flex}
+  body.df-open .app{display:none!important}.dayfull{position:static;display:block;background:#fff}.dfhead .dfrow+.dfrow,.dfrail,.dfdays,#dfFsBtn,#dfClose{display:none!important}.dfbody{overflow:visible;padding:0}.dfgrid{column-width:240px}
   .route,.cust{break-inside:avoid}.dayhead::before,.cust,.otag,.seq,.fit,.role{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style>
@@ -2277,6 +2316,7 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
     <button class="btn primary" id="suggestBtn" type="button">Vorschläge berechnen</button>
     <button class="btn" id="optimizeBtn" type="button" title="Reihenfolge je Tour (2-opt/Or-opt) und Kundentausch zwischen Touren am Zieltag">Touren optimieren</button>
     <button class="btn ghost" id="undoBtn" type="button" style="display:none">Optimierung rückgängig</button>
+    <button class="btn" id="fullDayBtn" type="button" hidden title="Alle Touren des Tages über den ganzen Bildschirm – zum Nacharbeiten per Drag &amp; Drop"><svg class="i" viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg><span>Zieltag im Vollbild</span></button>
     <div class="prog" title="Lieferungen der Ausfalltage, die noch umgeplant werden müssen"><div class="progtxt"><b id="openOutageCount">0</b><span>offen</span><span class="mut" id="flowDone"></span></div><div class="progbar"><i id="flowProg"></i></div><div class="progsub">am Zieltag schon beliefert: <b id="coveredOutageCount">0</b></div></div>
   </div></div>
   <div class="step" id="step4"><div class="sh"><span class="sn">4</span>Abschließen <span class="ready wait" id="readyState">–</span></div><div class="sc">
@@ -2332,6 +2372,21 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
   <span class="r" id="netHint"></span>
 </footer>
 </div>
+
+<section class="dayfull" id="dayFull" hidden aria-label="Tag im Vollbild">
+  <header class="dfhead">
+    <div class="dfrow"><div class="dft" id="dfTitle"></div><div class="dfstats" id="dfStats"></div><div class="dfspacer"></div>
+      <div class="seg dfdays" role="group" aria-label="Tag wechseln"><button type="button" data-df-day="Mo">Mo</button><button type="button" data-df-day="Die">Di</button><button type="button" data-df-day="Mitt">Mi</button><button type="button" data-df-day="Don">Do</button><button type="button" data-df-day="Fr">Fr</button><button type="button" data-df-day="Sam">Sa</button></div>
+      <button class="btn" id="dfFsBtn" type="button" aria-pressed="false" title="Browser-Vollbild ein/aus (Taskleiste und Browserleisten ausblenden)"><svg class="i" viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg>Bildschirm</button>
+      <button class="btn primary" id="dfClose" type="button" title="Zurück zur Woche (Esc)"><svg class="i" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>Zur Woche</button></div>
+    <div class="dfrow"><div class="searchwrap"><svg class="i" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg><input id="dfSearch" class="search" type="text" placeholder="SAP, Kunde, Ort oder Tour" autocomplete="off"></div>
+      <div class="seg" role="group" aria-label="Touren anzeigen"><button class="active" data-view="all" type="button">Alle</button><button data-view="changed" type="button">Geändert</button><button data-view="new" type="button">Neu</button><button data-view="issues" type="button">Mit Problemen</button></div>
+      <button class="btn tgl box" id="dfCollapse" type="button" aria-pressed="false" title="Touren ohne Änderung nur als Kopfzeile">Unveränderte zuklappen</button>
+      <button class="btn tgl box" id="dfCompact" type="button" aria-pressed="false" title="Kundenkarten einzeilig – mehr Touren auf einen Blick">Kompakt</button>
+      <div class="dfspacer"></div><button class="btn" id="dfAddTour" type="button"><svg class="i" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg>Neue Tour</button></div>
+  </header>
+  <div class="dfmain"><div class="dfbody" id="dfBody"><div class="dfgrid" id="dfGrid"></div></div><aside class="dfrail" id="dfRail" aria-label="Noch offen und Ablage"></aside></div>
+</section>
 
 <div id="drawer" class="drawer" role="status" aria-live="polite"><h3 id="drawerTitle"></h3><p id="drawerText"></p></div>
 
@@ -3199,6 +3254,7 @@ function routeVisibleByMode(r){if(routeViewMode==='new')return !!r.manuallyCreat
 function visibleDays(){if(layoutMode!=='focus')return DAY_ORDER;const s=new Set([...selectedOutageDays(),...targetDays()]),d=DAY_ORDER.filter(x=>s.has(x));return d.length?d:DAY_ORDER}
 /* Unveränderte Touren zugeklappt; geänderte, neue und Ausfalltag-Touren offen – Klick auf den Kopf überschreibt das je Tour */
 function routeIsOpen(r){
+  if(DAYVIEW){if(dayRouteOpen.has(r.id))return dayRouteOpen.get(r.id);if(!dayCollapse||searchText||routeViewMode==='issues'||r.manuallyCreated)return true;return !!r.items.length&&(routeChanged(r)||outageDays.has(r.day))}
   if(routeOpen.has(r.id))return routeOpen.get(r.id);
   if(!collapseUnchanged||searchText||routeViewMode==='issues')return true;
   if(r.manuallyCreated)return true;
@@ -3213,7 +3269,7 @@ function cardHtml(a,r,pos){
     tags=`<div class="ctags"><span class="otag d-${a.originalDay}" title="Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${esc(a.originalTour)}">${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span><span class="fit ${fit.key}" title="${esc(fit.label)}${fit.nearName?' · nächster Kunde '+esc(fit.nearName):''}">${km?`<span class="fl">${esc(FIT_SHORT[fit.key]||fit.label)} · </span>${km.slice(3)}`:esc(FIT_SHORT[fit.key]||fit.label)}</span>${fit.peers>=2?`<span class="flag dna" title="${fit.peers} Kunden dieser Tour fahren sonst mit ihm zusammen">DNA ${fit.peers}</span>`:''}${fit.dupe?'<span class="flag dupe">Doppellieferung</span>':''}${fit.timeRisk||a._timeViolation?'<span class="flag time">Zeit prüfen</span>':''}${fit.startMismatch?'<span class="flag area">Startbereich!</span>':''}${a.gq==='plz'?'<span class="flag plz" title="Nur PLZ-genau verortet">nur PLZ</span>':''}${a.extra?'<span class="flag">Zusatz</span>':''}${a.fixedGroup?`<span class="flag grp" title="Feste Kundengruppe ${esc(a.fixedGroup)}">Gruppe ${esc(a.fixedGroup)}</span>`:''}</div>`;
   }else if(ex||a._timeViolation){tags=`<div class="ctags">${ex?'<span class="flag ex">Ausschlussliste</span>':''}${a._timeViolation?'<span class="flag time">Zeitkonflikt</span>':''}</div>`}
   const tip=`Ladefolge ${pos} · Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${a.originalTour}${Number.isFinite(a._eta)?' · ETA '+formatMin(a._eta):''}${a.Zeitkritisch?' · '+timeInfo(a):''}${ex?' · Ausschlussliste':''}\nZiehen zum Verschieben · Rechtsklick: zu Tour …`;
-  return `<div class="cust ${moved?'moved d-'+a.originalDay:''} ${fit?.key==='bad'?'badmove':''} ${ex?'excluded':''}" draggable="true" data-aid="${esc(a.aid)}" title="${esc(tip)}"><span class="seq">${pos}</span><div class="cmain"><div class="cl1"><span class="sap">${esc(a.SAP)}</span><span class="cname">${esc(a.Name)}</span>${a.Zeitkritisch?ICON.clock:''}</div><div class="cl2"><span class="ort">${esc(a.Ort||'')}</span><span class="str">${esc(a.Strasse||'')}</span></div>${tags}</div><button class="remove" type="button" title="In die Ablage (ausplanen)" aria-label="Ausplanen" data-remove="${esc(a.aid)}">${ICON.x}</button></div>`;
+  return `<div class="cust ${moved?'moved d-'+a.originalDay:''} ${fit?.key==='bad'?'badmove':''} ${ex?'excluded':''}" draggable="true" data-aid="${esc(a.aid)}" title="${esc(tip)}"><span class="seq">${pos}</span><div class="cmain"><div class="cl1"><span class="sap">${esc(a.SAP)}</span><span class="cname">${esc(a.Name)}</span><span class="cort">${esc(a.Ort||'')}</span>${a.Zeitkritisch?ICON.clock:''}</div><div class="cl2"><span class="ort">${esc(a.Ort||'')}</span><span class="str">${esc(a.Strasse||'')}</span></div>${tags}</div><button class="remove" type="button" title="In die Ablage (ausplanen)" aria-label="Ausplanen" data-remove="${esc(a.aid)}">${ICON.x}</button></div>`;
 }
 function routeHtml(r){
   if(!activeSources().includes(r.source)||!routeVisibleByMode(r))return '';
@@ -3252,7 +3308,7 @@ function renderWeek(){
     const parts=rs.map(r=>{if(out&&!r.items.length&&!r.manuallyCreated&&!showEmptyOut.has(day)&&!searchText&&src.includes(r.source)){hidden++;return ''}return routeHtml(r)}).join('');
     const hid=hidden?`<div class="hiddenroutes"><span>${hidden} geleerte Tour${hidden>1?'en':''} ausgeblendet</span><button type="button" data-show-empty="${day}">anzeigen</button></div>`:'';
     const empty=!parts?(out?'<div class="emptyday"><b>Alles umgeplant</b>An diesem Tag liegt keine Lieferung mehr.</div>':`<div class="emptyday">${searchText||routeViewMode!=='all'?'Keine passenden Touren':'Keine Touren'}</div>`):'';
-    return `<div class="daycol ${out?'is-out':''} ${tgt?'is-tgt':''}" data-daycol="${day}"><div class="dayhead"><div class="dayline"><span class="dayname">${DAY_LABELS[day]}</span>${role}<button class="iconbtn addtour" type="button" title="Neue Tour am ${DAY_LABELS[day]} anlegen" aria-label="Tour anlegen" data-add-tour="${day}">${ICON.plus}</button></div><div class="dayrow2"><div class="daystats"><span><b>${act.length}</b> Touren</span><span><b>${total}</b> Kunden</span></div>${big}</div></div><div class="daybody" data-day="${day}">${parts}${empty}${hid}</div></div>`;
+    return `<div class="daycol ${out?'is-out':''} ${tgt?'is-tgt':''}" data-daycol="${day}"><div class="dayhead"><div class="dayline"><span class="dayname">${DAY_LABELS[day]}</span>${role}<span class="dayacts"><button class="iconbtn addtour" type="button" title="Neue Tour am ${DAY_LABELS[day]} anlegen" aria-label="Tour anlegen" data-add-tour="${day}">${ICON.plus}</button><button class="iconbtn" type="button" title="${DAY_LABELS[day]} im Vollbild bearbeiten" aria-label="${DAY_LABELS[day]} im Vollbild" data-full-day="${day}">${ICON.expand}</button></span></div><div class="dayrow2"><div class="daystats"><span><b>${act.length}</b> Touren</span><span><b>${total}</b> Kunden</span></div>${big}</div></div><div class="daybody" data-day="${day}">${parts}${empty}${hid}</div></div>`;
   }).join('');
 }
 function miniCard(a,extra=''){return `<div class="cust moved d-${a.originalDay}" draggable="true" data-aid="${esc(a.aid)}" title="Herkunft ${DAY_LABELS[a.originalDay]} / Tour ${esc(a.originalTour)} – zum Einplanen in eine Tour ziehen oder Rechtsklick"><span class="seq">–</span><div class="cmain"><div class="cl1"><span class="sap">${esc(a.SAP)}</span><span class="cname">${esc(a.Name)}</span></div><div class="cl2"><span class="ort">${esc(a.Ort||'')}</span><span class="str">${esc(a.Strasse||'')}</span></div><div class="ctags"><span class="otag d-${a.originalDay}">${DAY_SHORT[a.originalDay]} ${esc(a.originalTour)}</span>${extra}</div></div><span></span></div>`}
@@ -3277,7 +3333,8 @@ function updateSteps(open,errors){
   else if(open){rs.className='ready wait';rs.textContent='noch '+open+' offen'}
   else{rs.className='ready ok';rs.textContent='bereit'}
   x.classList.toggle('armed',!errors&&!open&&s1&&s2);
-  const tds=targetDays();document.querySelectorAll('[data-outage-day]').forEach(b=>{const on=tds.includes(b.dataset.outageDay);b.classList.toggle('tgt',on);b.title=DAY_LABELS[b.dataset.outageDay]+(outageDays.has(b.dataset.outageDay)?' fällt aus – klicken zum Aufheben':on?' ist Zieltag':' – klicken: fällt aus')});
+  const tds=targetDays();
+  {const fb=document.getElementById('fullDayBtn'),d=tds[0]||null;if(fb){fb.hidden=!d;if(d){fb.dataset.day=d;fb.querySelector('span').textContent=DAY_LABELS[d]+' im Vollbild'}}}document.querySelectorAll('[data-outage-day]').forEach(b=>{const on=tds.includes(b.dataset.outageDay);b.classList.toggle('tgt',on);b.title=DAY_LABELS[b.dataset.outageDay]+(outageDays.has(b.dataset.outageDay)?' fällt aus – klicken zum Aufheben':on?' ist Zieltag':' – klicken: fällt aus')});
 }
 function renderMetrics(){
   let moved=0,good=0;routes.forEach(r=>r.items.forEach(a=>{if(a.originalRouteId!==r.id){moved++;const k=fitFor(a,r).key;if(k==='good'||k==='ok')good++}}));
@@ -3307,7 +3364,7 @@ function renderChanges(){
 function saveDayScroll(){document.querySelectorAll('.daybody[data-day]').forEach(el=>dayScroll[el.dataset.day]=el.scrollTop)}
 function restoreDayScroll(){document.querySelectorAll('.daybody[data-day]').forEach(el=>{el.scrollTop=scrollToNewDay===el.dataset.day?el.scrollHeight:(dayScroll[el.dataset.day]||0)});scrollToNewDay=null}
 function dragCleanup(){document.body.classList.remove('dragging');document.querySelectorAll('.over,.over-route,.dragsrc').forEach(z=>z.classList.remove('over','over-route','dragsrc'))}
-function renderAll(){dragCleanup();saveDayScroll();renderWeek();renderUnplanned();renderMetrics();renderChanges();bindDnD();bindDayActions();restoreDayScroll()}
+function renderAll(){dragCleanup();saveDayScroll();const dfs=dayFull?saveDfScroll():null;if(dayFull)renderDayFull();else renderWeek();renderUnplanned();renderMetrics();renderChanges();bindDnD();bindDayActions();restoreDayScroll();if(dfs)restoreDfScroll(dfs)}
 
 /* ---------- Navigation: Seitenleiste, Ansicht, Springen ---------- */
 function setSideTab(t){sideTab=t;document.querySelectorAll('[data-tab]').forEach(b=>{const on=b.dataset.tab===t;b.classList.toggle('active',on);b.setAttribute('aria-selected',String(on))});document.querySelectorAll('[data-pane]').forEach(p=>p.classList.toggle('active',p.dataset.pane===t))}
@@ -3320,7 +3377,7 @@ function setView(v,render=true){routeViewMode=v;document.querySelectorAll('[data
 function setLayout(v,render=true){layoutMode=v;lsSet('layout',v);document.querySelectorAll('[data-layout]').forEach(x=>x.classList.toggle('active',x.dataset.layout===v));if(render)renderAll()}
 function setCollapse(on,render=true){collapseUnchanged=on;lsSet('collapse',on);routeOpen.clear();document.getElementById('collapseBtn').setAttribute('aria-pressed',String(on));if(render)renderAll()}
 function clearSearch(render=true){document.getElementById('search').value='';searchText='';if(render)renderAll()}
-function toggleRoute(sec){const id=sec.dataset.route,open=!sec.classList.contains('collapsed');routeOpen.set(id,!open);sec.classList.toggle('collapsed',open);sec.querySelector('.rtoggle')?.setAttribute('aria-expanded',String(!open))}
+function toggleRoute(sec){const id=sec.dataset.route,open=!sec.classList.contains('collapsed');(sec.closest('#dayFull')?dayRouteOpen:routeOpen).set(id,!open);sec.classList.toggle('collapsed',open);sec.querySelector('.rtoggle')?.setAttribute('aria-expanded',String(!open))}
 function flashEl(el){if(!el)return;el.scrollIntoView({block:'center',inline:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),1700)}
 function revealRoute(r){
   if(layoutMode==='focus'&&!visibleDays().includes(r.day))setLayout('week',false);
@@ -3335,6 +3392,50 @@ function focusAid(aid){
 }
 function focusRoute(id){const r=getRoute(id);if(!r)return;revealRoute(r);if(searchText)clearSearch(false);renderAll();flashEl(document.querySelector(`#week .route[data-route="${CSS.escape(id)}"]`))}
 
+/* ---------- Tag im Vollbild: alle Touren eines Tages nebeneinander, rechts „noch offen“ und Ablage ---------- */
+let dayFull=null,DAYVIEW=false,dayCollapse=lsGet('dayCollapse',false),dayCompact=lsGet('dayCompact',false),dayFsWanted=lsGet('dayFs',true),fsByUs=false;
+const dayRouteOpen=new Map();
+ICON.expand='<svg class="i" viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg>';
+function enterFs(){const el=document.documentElement;if(document.fullscreenElement||!el.requestFullscreen)return;try{el.requestFullscreen().then(()=>{fsByUs=true;syncFsBtn()}).catch(()=>{})}catch(e){}}
+function exitFs(){if(fsByUs&&document.fullscreenElement)document.exitFullscreen().catch(()=>{});fsByUs=false}
+function syncFsBtn(){document.getElementById('dfFsBtn')?.setAttribute('aria-pressed',String(!!document.fullscreenElement))}
+function openDayFull(day){
+  if(!day||!DAY_ORDER.includes(day))return;
+  if(dayFsWanted)enterFs();                       // braucht den Klick als Auslöser – daher zuerst
+  if(!dayFull){saveDayScroll();document.getElementById('week').innerHTML=''}   // Woche wird beim Schließen neu gezeichnet
+  const sw=dayFull!==day;dayFull=day;if(sw)dayRouteOpen.clear();
+  document.body.classList.add('df-open');document.getElementById('dayFull').hidden=false;
+  document.getElementById('dfSearch').value=document.getElementById('search').value;
+  closeCtx();renderAll();if(sw)document.getElementById('dfBody').scrollTop=0;
+}
+function closeDayFull(){
+  if(!dayFull)return;dayFull=null;document.body.classList.remove('df-open');document.getElementById('dayFull').hidden=true;
+  document.getElementById('dfGrid').innerHTML='';document.getElementById('dfRail').innerHTML='';
+  exitFs();closeCtx();renderAll();
+}
+function renderDayFull(){
+  const day=dayFull,tds=targetDays(),out=outageDays.has(day),tgt=tds.includes(day),src=activeSources(),$=id=>document.getElementById(id);
+  ISSUES=routeViewMode==='issues'?issueContext():null;
+  const rs=routes.filter(r=>r.day===day),act=rs.filter(r=>src.includes(r.source)&&routeVisibleByMode(r));
+  const total=act.reduce((n,r)=>n+r.items.length,0),inn=rs.reduce((n,r)=>n+r.items.filter(a=>a.originalRouteId!==r.id).length,0),nw=rs.filter(r=>r.manuallyCreated&&r.items.length).length;
+  const km=rs.reduce((s,r)=>s+(r.items.length&&Number.isFinite(r.km)?r.km:0),0),over=rs.filter(r=>r.items.length>capOf(r)).length,tc=rs.reduce((n,r)=>n+r.items.filter(a=>a._timeViolation).length,0);
+  DAYVIEW=true;let hidden=0;
+  const parts=rs.map(r=>{if(out&&!r.items.length&&!r.manuallyCreated&&!showEmptyOut.has(day)&&!searchText){hidden++;return ''}return routeHtml(r)}).join('');
+  DAYVIEW=false;
+  $('dfTitle').innerHTML=`<span class="dfname">${DAY_LABELS[day]}</span>${out?'<span class="role out">Ausfall</span>':tgt?'<span class="role tgt">Ziel</span>':''}`;
+  $('dfStats').innerHTML=`<span><b>${act.length}</b> Touren</span><span><b>${total}</b> Kunden</span>${inn?`<span class="in"><b>+${inn}</b> eingeplant</span>`:''}${nw?`<span><b>${nw}</b> neue Tour${nw>1?'en':''}</span>`:''}<span><b>${Math.round(km).toLocaleString('de-DE')}</b> km</span>${over?`<span class="bad"><b>${over}</b> über Maximum</span>`:''}${tc?`<span class="warn"><b>${tc}</b> Zeitkonflikt${tc>1?'e':''}</span>`:''}`;
+  document.querySelectorAll('[data-df-day]').forEach(b=>{const d=b.dataset.dfDay;b.classList.toggle('active',d===day);b.classList.toggle('out',outageDays.has(d));b.classList.toggle('tgt',tds.includes(d))});
+  $('dfCollapse').setAttribute('aria-pressed',String(dayCollapse));$('dfCompact').setAttribute('aria-pressed',String(dayCompact));syncFsBtn();
+  const grid=$('dfGrid');grid.classList.toggle('compact',dayCompact);
+  const hid=hidden?`<div class="hiddenroutes"><span>${hidden} geleerte Tour${hidden>1?'en':''} ausgeblendet</span><button type="button" data-show-empty="${day}">anzeigen</button></div>`:'';
+  grid.innerHTML=parts?parts+hid:(out?'<div class="emptyday"><b>Alles umgeplant</b>An diesem Tag liegt keine Lieferung mehr.</div>'+hid:`<div class="emptyday">${searchText||routeViewMode!=='all'?'Keine passenden Touren':'Keine Touren'}</div>`);
+  const open=out?[]:routes.filter(r=>outageDays.has(r.day)&&src.includes(r.source)).map(r=>({r,items:r.items.filter(a=>!isExcluded(a)&&matches(a,r))})).filter(x=>x.items.length);
+  const nOpen=open.reduce((n,x)=>n+x.items.length,0),abl=unplanned.filter(a=>!autoCoveredAids.has(a.aid)&&src.includes(a.Quelle)&&matches(a,null));
+  $('dfRail').innerHTML=(out?'':`<section class="dfsec"><h3>Noch offen <span class="cnt ${nOpen?'hot':''}">${nOpen}</span></h3><p>${nOpen?'Kunden der Ausfalltage – in eine Tour ziehen oder Rechtsklick → zu Tour.':'Auf den Ausfalltagen liegt nichts mehr.'}</p>${open.map(x=>`<h4>${DAY_SHORT[x.r.day]} ${esc(x.r.tour)} <span class="mut">${x.items.length}</span></h4>${x.items.map(a=>miniCard(a)).join('')}`).join('')}</section>`)+
+    `<section class="dfsec"><h3>Ablage <span class="cnt ${abl.length?'hot':''}">${abl.length}</span></h3><p>Hierher ziehen = ausplanen.</p><div class="unplanned-drop" data-route="UNPLANNED">${abl.map(a=>miniCard(a,(cancelledAids.has(a.aid)?'<span class="flag gone">gestrichen</span>':'')+(a.extra?'<span class="flag">Zusatz-Lieferung</span>':''))).join('')||'<div class="emptyhint">Leer</div>'}</div></section>`;
+}
+function saveDfScroll(){return {b:document.getElementById('dfBody').scrollTop,r:document.getElementById('dfRail').scrollTop}}
+function restoreDfScroll(s){document.getElementById('dfBody').scrollTop=s.b;document.getElementById('dfRail').scrollTop=s.r}
 /* ---------- Drag & Drop ---------- */
 function moveAid(aid,toRouteId,beforeAid=null){
   if(!aid)return;const a=getAssignment(aid),cur=currentRouteForAid(aid);
@@ -3406,7 +3507,7 @@ function bindDnD(){
     el.addEventListener('dragend',dragCleanup);
     el.addEventListener('dragover',e=>e.preventDefault());
     el.addEventListener('contextmenu',e=>openCtx(e,el.dataset.aid));
-    el.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();const z=el.closest('.dropzone');if(z&&el.dataset.aid!==dragAid)moveAid(dragAid,z.dataset.route,el.dataset.aid);else if(!z)moveAid(dragAid,'UNPLANNED');dragCleanup()});
+    el.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();const z=el.closest('.dropzone');if(z&&el.dataset.aid!==dragAid)moveAid(dragAid,z.dataset.route,el.dataset.aid);else if(!z&&el.closest('.unplanned-drop'))moveAid(dragAid,'UNPLANNED');dragCleanup()});
   });
   document.querySelectorAll('[data-remove]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();moveAid(b.dataset.remove,'UNPLANNED')}));
   document.querySelectorAll('.dropzone,.unplanned-drop').forEach(z=>{
@@ -3428,6 +3529,7 @@ function bindDayActions(){
   document.querySelectorAll('[data-delete-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();deleteNewRoute(b.dataset.deleteRoute)}));
   document.querySelectorAll('[data-seq-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();const r=getRoute(b.dataset.seqRoute);if(r){optimizeRouteOrder(r);renderAll();showInfo('Neu sortiert',`Tour ${r.tour}: Reihenfolge ab Valluhn neu berechnet.`,'good')}}));
   document.querySelectorAll('[data-google-maps]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();openGoogleMapsRoute(b.dataset.googleMaps)}));
+  document.querySelectorAll('[data-full-day]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();openDayFull(b.dataset.fullDay)}));
   document.querySelectorAll('[data-show-empty]').forEach(b=>b.addEventListener('click',()=>{showEmptyOut.add(b.dataset.showEmpty);renderAll()}));
 }
 
@@ -3729,9 +3831,21 @@ function initControls(){
   document.addEventListener('dragend',dragCleanup);
   document.addEventListener('keydown',e=>{
     const tag=(e.target?.tagName||'').toLowerCase(),typing=tag==='input'||tag==='textarea'||tag==='select'||e.target?.isContentEditable;
-    if(e.key==='/'&&!typing&&!e.ctrlKey&&!e.metaKey){e.preventDefault();$('search').focus();$('search').select()}
+    if(e.key==='/'&&!typing&&!e.ctrlKey&&!e.metaKey){e.preventDefault();const s=$(dayFull?'dfSearch':'search');s.focus();s.select()}
     if(e.key==='Escape'){document.querySelectorAll('.modalback.show').forEach(m=>m.classList.remove('show'));closeMenus()}
   });
+  /* Tag im Vollbild */
+  $('fullDayBtn').addEventListener('click',()=>openDayFull($('fullDayBtn').dataset.day));
+  $('dfClose').addEventListener('click',closeDayFull);
+  document.querySelectorAll('[data-df-day]').forEach(b=>b.addEventListener('click',()=>openDayFull(b.dataset.dfDay)));
+  $('dfCollapse').addEventListener('click',()=>{dayCollapse=!dayCollapse;lsSet('dayCollapse',dayCollapse);dayRouteOpen.clear();renderAll()});
+  $('dfCompact').addEventListener('click',()=>{dayCompact=!dayCompact;lsSet('dayCompact',dayCompact);renderAll()});
+  $('dfAddTour').addEventListener('click',()=>openNewTour(dayFull));
+  $('dfFsBtn').addEventListener('click',()=>{if(document.fullscreenElement){dayFsWanted=false;document.exitFullscreen().catch(()=>{})}else{dayFsWanted=true;enterFs()}lsSet('dayFs',dayFsWanted)});
+  document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement)fsByUs=false;syncFsBtn()});
+  let dst=null;$('dfSearch').addEventListener('input',e=>{clearTimeout(dst);dst=setTimeout(()=>{$('search').value=e.target.value;searchText=e.target.value.trim().toLowerCase();renderAll()},140)});
+  $('dfSearch').addEventListener('keydown',e=>{if(e.key==='Escape'&&e.target.value){e.target.value='';clearSearch()}});
+  document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!dayFull)return;if(document.querySelector('.modalback.show')||document.getElementById('ctxmenu'))return;if(e.target?.id==='dfSearch'&&e.target.value)return;closeDayFull()},true);
   parseExcluded();parseLocked();parseGroups();clampMax();readTimeTol();presetFromReference();
 }
 initControls();buildOriginalPlan();

@@ -27,6 +27,8 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
   Export schreibt sie in LADEREIHENFOLGE; nochmal klicken = zurück
 - Löschen-Button auf jeder Tour (nicht gesperrt): Kunden kommen in die Ablage – dort ohne Lieferung an diesem Tag;
   „Löschen rückgängig“, gelöschte Touren bleiben beim Speichern/Wiederherstellen gelöscht
+- Excel-Export: Blatt LADEREIHENFOLGE genau wie geplant – jede Lieferung geänderter/neuer Touren mit Tour, Position, SAP;
+  Zusatz-Lieferungen bekommen frei gewordene oder neue Zeilen (Formel Name/Straße/PLZ/Ort wie darüber); Excel rechnet beim Öffnen neu
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
 
@@ -4134,6 +4136,46 @@ function cellMarker(sdoc){
     cell.setAttribute('s',String(cache.get(key)));
   };
 }
+/* LADEREIHENFOLGE wie geplant: jede Lieferung einer geänderten oder neuen Tour bekommt Tour, Position und SAP.
+   Lieferungen ohne eigene Zeile (Zusatz-Lieferungen, Lücken im Blatt) nutzen frei gewordene Zeilen, sonst neue Zeilen am
+   Ende – mit der Formel für Name/Straße/PLZ/Ort wie in der Zeile darüber. Ausgeplante/gestrichene Lieferungen und alte Zeilen einer neu geschriebenen Tournummer: Zeile leer. */
+let LRF_STATS=null;
+function writeLoadOrders(doc){
+  const ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main',data=doc.getElementsByTagNameNS('*','sheetData')[0];
+  const rowMap=new Map();[...data.getElementsByTagNameNS('*','row')].forEach(el=>rowMap.set(Number(el.getAttribute('r')),el));
+  const cellOf=(n,col)=>{const el=rowMap.get(n)||getOrCreateRow(doc,n);rowMap.set(n,el);return [...el.children].find(c=>c.localName==='c'&&c.getAttribute('r')===col+n)};
+  const setText=(n,col,val)=>{const c=setCellValue(doc,n,col,'');rowMap.set(n,c.parentNode);if(val==null||String(val).trim()==='')return;c.setAttribute('t','inlineStr');const is=doc.createElementNS(ns,'is'),t=doc.createElementNS(ns,'t');t.textContent=String(val).trim();is.appendChild(t);c.appendChild(is)};
+  const setCached=(n,a)=>{[['D',a?.Name],['E',a?.Strasse],['F',a?.Plz],['G',a?.Ort]].forEach(([col,v])=>{const c=cellOf(n,col);if(!c)return;[...c.children].forEach(ch=>{if(ch.localName!=='f')c.removeChild(ch)});const s=v==null?'':String(v);
+    if(/^\d+$/.test(s.trim())&&col==='F'){c.removeAttribute('t');const e=doc.createElementNS(ns,'v');e.textContent=s.trim();c.appendChild(e)}else{c.setAttribute('t','str');const e=doc.createElementNS(ns,'v');e.setAttribute('xml:space','preserve');e.textContent=s;c.appendChild(e)}})};
+  const write=(n,r,i,a)=>{setCellValue(doc,n,'A',r.tour);setCellValue(doc,n,'B',i+1);setText(n,'C',a.SAP);setCached(n,a)};
+  const used=new Set();routes.forEach(r=>r.items.forEach(a=>{if(a.loadOrderRow)used.add(Number(a.loadOrderRow))}));
+  const free=[];let cleared=0;
+  unplanned.forEach(a=>{const n=Number(a.loadOrderRow);if(!n||used.has(n)||free.includes(n))return;['A','B'].forEach(c=>setCellValue(doc,n,c,''));setText(n,'C','');setCached(n,null);free.push(n);cleared++});
+  // alte Zeilen mit einer Tournummer, die jetzt neu geschrieben wird (z. B. 4015 aus einem früheren Plan) → leeren, sonst doppelt
+  const todo=routes.filter(r=>r.items.length&&(routeChanged(r)||r.manuallyCreated||r.items.some(a=>!a.loadOrderRow)));   // auch Touren mit Lücken im Blatt
+  const tours=new Set(todo.map(r=>String(r.tour)));
+  const valA=n=>{const c=cellOf(n,'A');if(!c||c.getAttribute('t')==='s')return '';const v=[...c.getElementsByTagNameNS('*','v')][0]?.textContent??[...c.getElementsByTagNameNS('*','t')][0]?.textContent??'';const x=String(v).trim();return /^\d+(\.0+)?$/.test(x)?String(parseInt(x,10)):x};
+  let stale=0;[...rowMap.keys()].forEach(n=>{if(n<2||used.has(n)||free.includes(n))return;if(tours.has(valA(n))){['A','B'].forEach(c=>setCellValue(doc,n,c,''));setText(n,'C','');setCached(n,null);free.push(n);stale++}});
+  free.sort((x,y)=>x-y);
+  // Vorlage für neue Zeilen: letzte Zeile mit Formel in Spalte D
+  let tpl=null;[...rowMap.keys()].sort((x,y)=>y-x).some(k=>{const el=rowMap.get(k),d=[...el.children].find(c=>c.localName==='c'&&/^D\d+$/.test(c.getAttribute('r')||''));if(d&&d.getElementsByTagNameNS('*','f').length){tpl=el;return true}return false});
+  let last=Math.max(1,...rowMap.keys());const firstNew=last+1;
+  const newRow=()=>{const n=++last;if(!tpl){getOrCreateRow(doc,n);return n}
+    const old=tpl.getAttribute('r'),el=tpl.cloneNode(true);el.setAttribute('r',String(n));
+    [...el.children].forEach(c=>{if(c.localName!=='c')return;const ref=c.getAttribute('r')||'',col=ref.replace(/\d+$/,'');c.setAttribute('r',col+n);
+      const f=c.getElementsByTagNameNS('*','f')[0];
+      if(f){f.textContent=f.textContent.split('$C'+old).join('$C'+n);if(f.getAttribute('ref'))f.setAttribute('ref',f.getAttribute('ref').replace(new RegExp(old,'g'),String(n)));if(f.getAttribute('t')==='shared'){f.removeAttribute('si');f.removeAttribute('t')}}
+      else if(!['E','F','G'].includes(col)){[...c.children].forEach(ch=>c.removeChild(ch));c.removeAttribute('t')}});
+    data.appendChild(el);rowMap.set(n,el);return n};
+  let rows=0,added=0,reused=0;
+  todo.forEach(r=>r.items.forEach((a,i)=>{
+    let n=Number(a.loadOrderRow);
+    if(!n){if(free.length){n=free.shift();reused++}else{n=newRow();added++}}
+    write(n,r,i,a);rows++;
+  }));
+  const dim=doc.getElementsByTagNameNS('*','dimension')[0];if(dim){const ref=dim.getAttribute('ref')||'';const m=ref.match(/^([A-Z]+\d+:[A-Z]+)(\d+)$/);if(m&&Number(m[2])<last)dim.setAttribute('ref',m[1]+last)}
+  return {rows,added,reused,cleared,stale,firstNew};
+}
 function currentExcelPlan(){const p={};CUSTOMERS.forEach(c=>{p[c.uid]={};DAY_ORDER.forEach(d=>p[c.uid][d]='')});routes.forEach(r=>r.items.forEach(a=>{if(p[a.uid])p[a.uid][r.day]=String(r.tour)}));return p}
 async function exportExactExcel(){
   const v=validateForExcel();if(!v.ok&&!confirm('Vor dem Export bitte prüfen:\n\n• '+v.errors.join('\n• ')+'\n\nTrotzdem exportieren?'))return;
@@ -4145,7 +4187,8 @@ async function exportExactExcel(){
     for(const source of SOURCES){const path=paths[source];if(!path||!zip.file(path))continue;const doc=parser.parseFromString(await zip.file(path).async('string'),'application/xml');CUSTOMERS.forEach(c=>{if(c.Quelle!==source||!c.excel_row)return;DAY_ORDER.forEach(day=>{const col=DAY_CELL_COLUMNS?.[source]?.[day];if(!col)return;const origVal=c[day]==null?'':String(c[day]),newVal=plan[c.uid]?.[day]||'';if(origVal!==newVal){const cell=setCellValue(doc,Number(c.excel_row),col,newVal);if(newVal&&mark&&cell){mark(cell,extraAt.has(c.uid+'|'+day)?'extra':'add');nMark++}}})});zip.file(path,ser.serializeToString(doc))}
     if(mark&&nMark)zip.file(stylePath,ser.serializeToString(sdoc));
     const lp=paths['LADEREIHENFOLGE'];
-    if(lp&&zip.file(lp)){const doc=parser.parseFromString(await zip.file(lp).async('string'),'application/xml');routes.filter(r=>routeChanged(r)||r.manuallyCreated).forEach(r=>r.items.forEach((a,i)=>{if(a.loadOrderRow){setCellValue(doc,Number(a.loadOrderRow),'A',r.tour);setCellValue(doc,Number(a.loadOrderRow),'B',i+1);setCellValue(doc,Number(a.loadOrderRow),'C',a.SAP)}}));unplanned.forEach(a=>{if(a.loadOrderRow)['A','B','C'].forEach(c=>setCellValue(doc,Number(a.loadOrderRow),c,''))});zip.file(lp,ser.serializeToString(doc))}
+    if(lp&&zip.file(lp)){const doc=parser.parseFromString(await zip.file(lp).async('string'),'application/xml');LRF_STATS=writeLoadOrders(doc);zip.file(lp,ser.serializeToString(doc))}
+    {const cp=wb.getElementsByTagNameNS('*','calcPr')[0];if(cp){cp.setAttribute('fullCalcOnLoad','1');zip.file('xl/workbook.xml',ser.serializeToString(wb))}}   // Excel rechnet T-B-Druck & Co. beim Öffnen neu
     const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
     download(blob,String(ORIGINAL_XLSX_NAME||'Quelldatei.xlsx').replace(/\.xlsx$/i,'')+'_Feiertagsplanung.xlsx');
   }catch(err){console.error(err);showBlocked('Excel-Export fehlgeschlagen: '+(err?.message||err))}

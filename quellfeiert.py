@@ -17,6 +17,9 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
 - Gleiche Endnummer zählt nur im selben Gebiet: Block bzw. Zusatz-Lieferung muss im Mittel ≤ 30 km vom nächsten Kunden
   der Zieltour liegen (2064 Hamburg geht nicht mehr in 1064 Wendland); Zusatz-Lieferungen ohne passende Tour gehen in
   die nächste Tour mit Platz (bis 45 km) statt in eine Mini-Tour
+- „Alle Kunden am Zieltag“ mit Vorlagetag (Vorgabe Freitag): die Tourzusammenstellung des Vorlagetags wird 1:1
+  übernommen, Tournummern mit der Ziffer des Zieltags (5045 → 1045); Kunden ohne Vorlagetour gehen zu ihren bisherigen
+  Mitfahrern bzw. in die nächstgelegene Tour; Reihenfolge wie am Vorlagetag; „eigene Touren“ = bisherige Blockregeln
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
 
@@ -1984,7 +1987,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .dbtn.tgt{border-color:var(--tgt);color:var(--tgt)}
 .dbtn.tgt::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--tgt)}
 #toDay{min-width:200px;max-width:360px;font-weight:600}
-#step2 .sc{row-gap:5px}#step2 .sc>.chk{flex-basis:100%;contain:inline-size}
+#step2 .sc{row-gap:5px}#step2 .allrow{flex-basis:100%;contain:inline-size;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tplwrap{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2)}.tplwrap[hidden]{display:none}.tplwrap select{padding:3px 6px;font-size:13px;font-weight:600}
 .tgthint{flex-basis:100%;contain:inline-size;font-size:12px;line-height:1.4;color:var(--muted)}.tgthint:empty{display:none}.tgthint b{color:var(--ink);font-weight:600}.tgthint .warnx{color:var(--out);font-weight:600;white-space:nowrap}.tgthint button{white-space:nowrap;border:0;background:none;padding:0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-decoration:underline}
 .prog{display:grid;gap:4px;min-width:190px;margin-left:8px;flex:1;max-width:300px}
 .progtxt{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
@@ -2171,7 +2174,8 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
 .clumem .nm b{font:600 12.5px var(--f-sign)}
 .clumem .remove{opacity:1}
 .anc{font-size:10.5px;font-weight:600;line-height:16px;border-radius:var(--r-tag);padding:0 5px;white-space:nowrap}
-.anc.fix{background:var(--accent-soft);color:var(--accent)}.anc.pull{background:var(--warn-bg);color:var(--warn)}
+.anc.fix{background:var(--accent-soft);color:var(--accent)}
+.anc.tpl{background:var(--good-bg);color:var(--good)}.anc.pull{background:var(--warn-bg);color:var(--warn)}
 .anc.direct{background:var(--good-bg);color:var(--good)}.anc.peer{background:var(--Mitt-bg);color:var(--Mitt)}.anc.geo{background:var(--panel2);color:var(--muted)}
 
 /* Ablage */
@@ -2356,7 +2360,7 @@ body.df-open{overflow:hidden}
 
 <section class="flow" aria-label="Arbeitsablauf">
   <div class="step" id="step1"><div class="sh"><span class="sn">1</span>Welche Tage fallen aus?</div><div class="sc"><div class="days" id="outageDays"></div></div></div>
-  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Wohin?</div><div class="sc"><select id="toDay" aria-label="Zieltag" title="Aufteilen auf Vortag und Folgetag (nach früheren Feiertagen) oder alle Kunden auf einen Tag"></select><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten)."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label><div class="tgthint" id="targetHint" aria-live="polite"></div></div></div>
+  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Wohin?</div><div class="sc"><select id="toDay" aria-label="Zieltag" title="Aufteilen auf Vortag und Folgetag (nach früheren Feiertagen) oder alle Kunden auf einen Tag"></select><div class="allrow"><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten)."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label><span id="tplWrap" class="tplwrap" hidden title="Tourzusammenstellung dieses Tages 1:1 übernehmen – Tournummern mit der Ziffer des Zieltags (5045 → 1045). „eigene Touren“: Zieltag-Touren behalten und Ausfalltouren als Block einplanen.">Touren wie <select id="tplDay" aria-label="Vorlagetag"><option value="">eigene Touren</option><option value="Mo">Montag</option><option value="Die">Dienstag</option><option value="Mitt">Mittwoch</option><option value="Don">Donnerstag</option><option value="Fr" selected>Freitag</option><option value="Sam">Samstag</option></select></span></div><div class="tgthint" id="targetHint" aria-live="polite"></div></div></div>
   <div class="step grow" id="step3"><div class="sh"><span class="sn">3</span>Umplanen</div><div class="sc">
     <button class="btn primary" id="suggestBtn" type="button">Vorschläge berechnen</button>
     <button class="btn" id="optimizeBtn" type="button" title="Reihenfolge je Tour (2-opt/Or-opt) und Kundentausch zwischen Touren am Zieltag">Touren optimieren</button>
@@ -2494,7 +2498,7 @@ let AUTO_OVER=2;   // neue/erweiterte Touren dürfen um so viele Kunden größer
 const ROAD_FACTOR=Number(NET.factor)||1.28,AVG_KMH=Number(NET.kmh)||62,HAS_MATRIX=(NET.pairs||0)>0;
 DEPOT.node=0;
 const QUALITY_LABEL={good:'passt sehr gut',ok:'passt gut',warn:'grenzwertig',bad:'eher nicht',unknown:'nicht bewertbar'};
-const ANCHOR_LABEL={direct:'fährt dort',peer:'Mitfahrer',geo:'Geo',fix:'Gruppe',pull:'zieht um'};
+const ANCHOR_LABEL={direct:'fährt dort',peer:'Mitfahrer',geo:'Geo',fix:'Gruppe',pull:'zieht um',tpl:'Vorlage'};
 
 /* ---------- Grundfunktionen ---------- */
 function normSap(v){const m=String(v??'').match(/\d+/);return m?String(Number(m[0])):''}
@@ -2720,7 +2724,7 @@ const TGT_PREV=new Map();
 function freeTours(){const v=String(document.getElementById('freeTours')?.value??'').trim();if(v==='')return null;const n=Number(v);return Number.isFinite(n)&&n>=0?Math.round(n):null}
 function targetPreview(T){
   const out=selectedOutageDays();if(!out.length||!T||outageDays.has(T)||!routes.length)return null;
-  const key=out.join(',')+'>'+T+'|'+activeSources().join(',')+'|'+[...excludedSaps].sort().join(',')+'|'+[...LOCKED].sort().join(',')+'|'+maxCustomers+'|'+namingKeep();
+  const S=tplDayOf(T),key=out.join(',')+'>'+T+'|'+S+'|'+activeSources().join(',')+'|'+[...excludedSaps].sort().join(',')+'|'+[...LOCKED].sort().join(',')+'|'+maxCustomers+'|'+namingKeep();
   if(TGT_PREV.has(key))return TGT_PREV.get(key);
   const active=activeSources(),onT=new Set(),seen=new Set(),byFrom=new Map();let tot=0,cov=0;
   routes.forEach(r=>{if(r.day===T&&!r.manuallyCreated)(r.origItems||r.items).forEach(a=>onT.add(sapOf(a)))});
@@ -2733,6 +2737,7 @@ function targetPreview(T){
   const hardRoom=r=>capOf(r)-(r.origItems||r.items).filter(a=>a.originalDay===T).length;
   let neu=0;
   try{blockAssign(byFrom,T,hardRoom,used).forEach((P,fid)=>{if(P.follow||P.t)return;const n=(byFrom.get(fid)?.length||0)+(P.pulls?.length||0);if(n)neu+=Math.ceil(n/maxCustomers)})}catch(e){neu=NaN}
+  if(S)neu=tplRoutesOf(S).filter(r=>!routeByTour(T,r.source,tplName(r.tour,T))).length;
   const res={T,tot,cov,open:tot-cov,neu};TGT_PREV.set(key,res);return res;
 }
 function recommendedTarget(){
@@ -2742,6 +2747,7 @@ function recommendedTarget(){
 function newToursOn(day,withSugg=false){return routes.filter(r=>r.day===day&&r.manuallyCreated&&r.items.length).length+(withSugg?clusters.filter(c=>c.kind==='new'&&c.toDay===day).length:0)}
 function vehicleWarnings(withSugg=false){const lim=freeTours();if(lim==null)return [];return targetDays().map(d=>({d,n:newToursOn(d,withSugg)})).filter(x=>x.n>lim).map(x=>`${DAY_LABELS[x.d]}: ${x.n} neue Touren, aber nur ${lim} Fahrzeuge/Fahrer frei (${x.n-lim} zu viel)`)}
 function renderTargetPreview(){
+  {const w=document.getElementById('tplWrap'),s=document.getElementById('tplDay'),T=targetDays()[0]||'';if(w)w.hidden=!document.getElementById('allOnTarget')?.checked;if(s)[...s.options].forEach(o=>{if(!o.value)return;o.disabled=o.value===T;o.textContent=DAY_LABELS[o.value]+(o.value===T?' (Zieltag)':'')})}
   const sel=document.getElementById('toDay'),hint=document.getElementById('targetHint');if(!sel||!hint)return;
   const lim=freeTours(),rec=recommendedTarget(),nf=v=>Number.isFinite(v)?v:'?';
   const nb=neighborDays(),two=!!(nb.prev&&nb.next);
@@ -2773,7 +2779,7 @@ function syncTargetDayOptions(reset=false){
   });
   const keep=(cur==='auto'&&has)||(cur==='nextweek'&&has&&!n.next);
   if((reset&&!keep)||!cur||(DAY_ORDER.includes(cur)&&outageDays.has(cur))||(cur==='nextweek'&&!keep)||(cur==='auto'&&!has))sel.value=defaultTarget();
-  renderTargetPreview();
+  applyTplDefault();renderTargetPreview();
 }
 function renderOutageButtons(){
   const box=document.getElementById('outageDays');
@@ -3245,11 +3251,68 @@ function evaluateCluster(c){
   else if(c.family){const share=(c.direct+c.peer*.6)/Math.max(1,n);q=share>=.6?'good':share>=.3?'ok':'warn'}else q=geoKey==='unknown'?'warn':geoKey;
   if(geoKey==='bad')q=q==='good'?'warn':'bad';else if(geoKey==='warn'&&q==='good')q='ok';
   if(c.timeViol)q=downgrade(q);
-  if(c.fixed)q='good';   // feste Gruppe = Regel, keine Abwägung
+  if(c.fixed||c.template)q='good';   // feste Gruppe / Vorlagetag = Regel, keine Abwägung
   c.quality=q;
 }
+/* ---------- Vorlagetag: Tourzusammenstellung 1:1 übernehmen ---------- */
+function tplDayOf(T){const v=document.getElementById('tplDay')?.value||'';return document.getElementById('allOnTarget')?.checked&&T&&v&&DAY_ORDER.includes(v)&&v!==T?v:''}
+function defaultTpl(){const T=targetDays()[0]||document.getElementById('toDay')?.value||'',n=neighborDays();if(outageDays.has('Fr')&&T&&(T===n.prev||T===n.next))return '';return T==='Fr'?'':'Fr'}   // Fr fällt aus → Vortag/Folgetag: Blockregeln (wie im Disponentenplan); sonst Freitagstouren 1:1
+function applyTplDefault(){const s=document.getElementById('tplDay');if(s&&!s.dataset.user)s.value=defaultTpl()}
+function tplName(tour,T){const t=String(tour);return /^[1-6]\d{3,5}$/.test(t)?DAY_DIGIT[T]+t.slice(1):t+'-'+DAY_SHORT[T]}
+function tplRoutesOf(S){const active=activeSources();return routes.filter(r=>r.day===S&&!r.manuallyCreated&&active.includes(r.source)&&(r.origItems||[]).length)}
+function buildTemplateClusters(T,S){
+  const active=activeSources(),key=a=>a.Quelle+'|'+sapOf(a),tpls=tplRoutesOf(S);
+  // Zieltour je Vorlagetour: gleiche Endnummer mit Zieltag-Ziffer; vorhandene Zieltag-Tour wird neu zusammengestellt
+  const used=new Set(routes.filter(r=>r.day===T).map(r=>r.source+'::'+r.tour)),G=new Map(),byTpl=new Map();
+  tpls.forEach(r=>{
+    let name=tplName(r.tour,T),ex=routeByTour(T,r.source,name);
+    if((ex&&isLocked(ex))||LOCKED.has(name)){ex=null;const n0=Number(name);let alt=null;if(Number.isFinite(n0))for(let k=1;k<=50&&!alt;k++){const c=String(n0+k);if(c[0]===name[0]&&!used.has(r.source+'::'+c)&&!LOCKED.has(c))alt=c}name=alt||name+'-2'}
+    const g={tpl:r,route:ex||null,name,source:r.source,list:[],cap:Math.max(maxCustomers,r.origItems.length)};G.set(r.id,g);used.add(r.source+'::'+name);
+    r.origItems.forEach(a=>{if(a.originalDay===S&&!byTpl.has(key(a)))byTpl.set(key(a),g)});
+  });
+  // alle Lieferungen, die am Zieltag landen: Zieltag selbst, Ausfalltage, Zusatz-Lieferungen
+  const items=[];
+  routes.filter(r=>(r.day===T||outageDays.has(r.day))&&active.includes(r.source)&&!isLocked(r)).forEach(r=>r.items.forEach(a=>{if(!isExcluded(a))items.push({a,cur:r})}));
+  unplanned.filter(a=>a.extra&&!isExcluded(a)&&active.includes(a.Quelle)).forEach(a=>items.push({a,cur:null}));
+  const dest=new Map(),keyDest=new Map(),rest=[];
+  const put=(x,g)=>{dest.set(x.a.aid,g);g.list.push(x.a);if(!keyDest.has(key(x.a)))keyDest.set(key(x.a),g)};
+  items.forEach(x=>{const g=byTpl.get(key(x.a));if(g)put(x,g);else rest.push(x)});
+  // übrige Kunden: zur Zieltour, in der die meisten ihrer bisherigen Mitfahrer landen, sonst zur nächstgelegenen
+  const room=g=>g.cap-g.list.length;
+  rest.sort((p,q)=>(p.cur&&p.cur.day===T?0:1)-(q.cur&&q.cur.day===T?0:1));
+  rest.forEach(x=>{
+    const onT=!!x.cur&&x.cur.day===T,home=x.cur&&!x.a.extra?x.cur:getRoute(x.a.originalRouteId),cnt=new Map();let stay=0;
+    (home?.origItems||home?.items||[]).forEach(b=>{if(b.aid===x.a.aid)return;const g=keyDest.get(key(b));if(g&&g.source===x.a.Quelle)cnt.set(g,(cnt.get(g)||0)+1);else if(onT&&!byTpl.has(key(b)))stay++});
+    const top=[...cnt.entries()].filter(([t])=>room(t)>0&&geoPlausible([{a:x.a}],t.list)).sort((p,q)=>q[1]-p[1])[0];
+    // Zieltag-Tour ohne Vorlage (z. B. MK 4881): bleibt, solange die Mehrheit ihrer Kunden auch bleibt
+    if(onT&&stay>=(top?.[1]||0)){const own=[...G.values()].find(t=>t.route===home);if(!own)return;if(room(own)>0){put(x,own);return}}
+    let g=top?.[0];
+    if(!g){let best=null;G.forEach(t=>{if(t.source!==x.a.Quelle||room(t)<=0)return;const d=hasGeo(x.a)?nearKm(x.a,t.list):Infinity;if(!best||d<best.d)best={t,d}});g=best?.t}
+    if(g)put(x,g);   // kein Platz/keine Vorlagetour dieses Startbereichs → bleibt, wo er ist
+  });
+  // feste Kundengruppen bleiben zusammen (Zieltour mit den meisten Mitgliedern)
+  GROUPS.forEach(gr=>{const xs=[...dest.entries()].map(([aid,g])=>({a:getAssignment(aid),g})).filter(x=>x.a&&gr.saps.has(sapOf(x.a)));if(xs.length<2)return;
+    const cnt=new Map();xs.forEach(x=>cnt.set(x.g,(cnt.get(x.g)||0)+1));const best=[...cnt.entries()].sort((p,q)=>q[1]-p[1])[0][0];
+    xs.forEach(x=>{if(x.g===best)return;x.g.list=x.g.list.filter(b=>b.aid!==x.a.aid);best.list.push(x.a);dest.set(x.a.aid,best)})});
+  // Vorschläge je Zieltour
+  const out=[];
+  G.forEach(g=>{
+    const members=g.list.filter(a=>{const cur=currentRouteForAid(a.aid);return !(g.route&&cur&&cur.id===g.route.id)}).map(a=>{const cur=currentRouteForAid(a.aid);
+      if(cur&&cur.day===T)return {aid:a.aid,a,from:cur,pull:true,anchor:'pull'};
+      if(cur)return {aid:a.aid,a,from:cur,anchor:byTpl.get(key(a))===g?'tpl':'geo'};
+      return {aid:a.aid,a,from:{id:'X::'+a.originalRouteId,day:a.originalDay,source:a.Quelle,tour:a.originalTour,extra:true},anchor:byTpl.get(key(a))===g?'tpl':'geo'};});
+    const stray=g.route?g.route.items.filter(a=>dest.get(a.aid)&&dest.get(a.aid)!==g).length:0;
+    if(!members.length&&!stray)return;
+    const c=makeCluster({kind:g.route?'insert':'new',source:g.source,target:g.route,members,toDay:T,used:new Set(),forcedName:g.name,note:stray?`${stray} bisherige${stray>1?'':'r'} Kunde${stray>1?'n wechseln':' wechselt'} in andere Touren`:'',tpl:[g.tpl.id]});
+    c.template={day:S,tour:String(g.tpl.tour),id:g.tpl.id,size:g.list.length};out.push(c);
+  });
+  out.forEach(evaluateCluster);
+  out.sort((a,b)=>String(a.kind==='insert'?a.target.tour:a.name).localeCompare(String(b.kind==='insert'?b.target.tour:b.name),'de',{numeric:true}));
+  return out;
+}
 function buildAllClusters(fromDays){
-  const tds=targetDays();if(tds.length<=1)return buildClusters(fromDays,tds[0]);
+  const tds=targetDays();
+  if(tds.length===1&&tplDayOf(tds[0]))return buildTemplateClusters(tds[0],tplDayOf(tds[0]));if(tds.length<=1)return buildClusters(fromDays,tds[0]);
   const side=sideMap();
   let all=[];tds.forEach(d=>{all=all.concat(buildClusters(fromDays,d,x=>side.get(x.aid)?.day===d))});
   all.sort((a,b)=>RANK[a.quality]-RANK[b.quality]||(a.kind==='insert'?0:1)-(b.kind==='insert'?0:1)||b.members.length-a.members.length);
@@ -3266,7 +3329,7 @@ function clusterHtml(c){
   let title,sub;const meta=[esc(srcLabel(c.source))+', aus '+esc(origins)];
   if(c.kind==='insert'){title=`${DAY_SHORT[c.toDay]} · Tour ${esc(c.target.tour)}`;sub=`${c.target.items.length} → ${c.target.items.length+c.members.length} Kunden`;const clk=routeClockInfo(c.target);if(clk)meta.push(esc(clk))}
   else{title=c.members.some(x=>String(x.from?.tour)===String(c.name))?`${DAY_SHORT[c.toDay]} · Tour ${esc(c.name)} wieder anlegen`:`${DAY_SHORT[c.toDay]} · neue Tour ${esc(c.name)}`;sub=`${c.members.length} Kunden`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(esc(clk));if(c.compact)meta.push('Gebiet '+esc(c.compact.label)+(Number.isFinite(c.compact.avg)?', Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
-  const why=c.fixed?`<b>Feste Gruppe ${esc(c.fixed)}</b>: diese Kunden fahren immer zusammen`:c.memory?'<b>Planungsgedächtnis</b>: so bei früheren Feiertagen geplant':c.block?'<b>Tourblock</b>: die Ausfalltour bleibt zusammen':c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?`, Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''}: ${c.direct} fahren dort schon, ${c.peer} über Mitfahrer`:'Keine Tourfamilie – Zuordnung nach Lage';
+  const why=c.template?`<b>Wie ${DAY_LABELS[c.template.day]} ${esc(c.template.tour)}</b>: Tourzusammenstellung 1:1 übernommen, ${c.template.size} Kunden`:c.fixed?`<b>Feste Gruppe ${esc(c.fixed)}</b>: diese Kunden fahren immer zusammen`:c.memory?'<b>Planungsgedächtnis</b>: so bei früheren Feiertagen geplant':c.block?'<b>Tourblock</b>: die Ausfalltour bleibt zusammen':c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?`, Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''}: ${c.direct} fahren dort schon, ${c.peer} über Mitfahrer`:'Keine Tourfamilie – Zuordnung nach Lage';
   {const pl=c.members.filter(x=>x.pull).length;if(pl)meta.push(`${pl} Mitglied${pl>1?'er ziehen':' zieht'} aus anderen ${DAY_LABELS[c.toDay]}-Touren um`)}
   if(Number.isFinite(c.km))meta.push('ca. '+Math.round(c.km)+' km Rundlauf'+(HAS_MATRIX?' (Straße)':' (geschätzt)'));
   const mem=c.members.map(x=>{const a=x.a,f=x.fit;return `<div class="clumem"><span class="anc ${x.anchor}">${ANCHOR_LABEL[x.anchor]}</span><span class="nm" data-focus="${esc(x.aid)}" title="Auf der Tafel zeigen"><b>${esc(a.SAP)}</b> ${esc(a.Name)}, ${esc(a.Ort)}</span><span>${f?`<span class="fit ${f.key}" title="${esc(f.label)}${Number.isFinite(f.nearest)?' · '+fmt(f.nearest)+' km zum nächsten Kunden':''}">${Number.isFinite(f.nearest)?fmt(f.nearest)+' km':esc(FIT_SHORT[f.key]||f.label)}</span>`:''}${a.Zeitkritisch?` <span class="flag time" title="${esc(timeInfo(a))}">Zeit</span>`:''}</span><button class="remove" type="button" title="Aus dem Vorschlag nehmen" aria-label="Aus dem Vorschlag nehmen" data-drop-member="${c.id}|${esc(x.aid)}">${ICON.x}</button></div>`}).join('');
@@ -3318,13 +3381,14 @@ function applyCluster(id,silent=false){
     if(!a)return;
     if(x.pull){if(!cur||cur.day!==target.day||cur.id===target.id||isLocked(cur))return}
     else if(a.extra?cur:(!cur||!outageDays.has(cur.day)))return;
-    if(isExcluded(a)||duplicateOnDay(a,target.day)||target.items.length>=capOf(target)){blocked++;return}
+    if(isExcluded(a)||duplicateOnDay(a,target.day)||(!c.template&&target.items.length>=capOf(target))){blocked++;return}
     const f=removeFromCurrent(x.aid);if(!f)return;
-    target.items.push(f.a);f.a.currentDay=target.day;f.a.currentTour=target.tour;f.a.planNote=c.fixed?'Feste Gruppe '+c.fixed:c.family?'Familie '+c.family.label:'Geo';if(c.fixed)f.a.fixedGroup=c.fixed;moved++;
+    target.items.push(f.a);f.a.currentDay=target.day;f.a.currentTour=target.tour;f.a.planNote=c.template?`wie ${DAY_SHORT[c.template.day]} ${c.template.tour}`:c.fixed?'Feste Gruppe '+c.fixed:c.family?'Familie '+c.family.label:'Geo';if(c.fixed)f.a.fixedGroup=c.fixed;moved++;
     if(f.from)evaluateRoute(f.from);
   });
   if(c.fixed)target.capFixed=target.items.length>maxCustomers?target.items.length:0;
-  if(c.kind==='new'&&!target.items.length)routes=routes.filter(r=>r!==target);else optimizeRouteOrder(target);
+  if(c.template){target.templateIds=[c.template.id];if(!target.items.length&&c.kind==='new')routes=routes.filter(r=>r!==target);else{target.items=orderByTemplate(target.items,{id:'TPL',templateIds:[c.template.id]});target.items.forEach((x,i)=>x.currentLoadOrder=i+1);evaluateRoute(target);if(target.items.length>maxCustomers)target.capFixed=Math.max(target.capFixed||0,target.items.length)}}   // Größe wie am Vorlagetag (inkl. feste Gruppen)
+  else if(c.kind==='new'&&!target.items.length)routes=routes.filter(r=>r!==target);else optimizeRouteOrder(target);
   routes.sort(daySort);clusters=clusters.filter(x=>x!==c);
   if(!silent){resolveMergedDuplicates();renderAll();renderSuggestions();if(blocked)showBlocked(`${blocked} Kunde(n) nicht übernommen (Doppelung, Maximum oder Ausschluss).`)}
   return moved;
@@ -4095,7 +4159,7 @@ const PLAN_STAMP='__GENERATED__';
 const PLAN_KEY='fwp30_state_'+(s=>{let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))>>>0;return h.toString(36)})(ORIGINAL_XLSX_NAME+'|'+PLAN_STAMP+'|'+CUSTOMERS.length+'|'+CUSTOMERS.slice(0,5).map(c=>c.uid).join(','));
 const SAVED_EMBED=(()=>{try{const e=document.getElementById('savedState');return e?JSON.parse(e.textContent):null}catch(e){return null}})();
 let AUTOSAVE_ON=false,AS_T=null,LAST_SIG='',FILE_SIG='',LS_FAIL=false,PENDING_LOCAL=null;
-const STATE_INPUTS=['tourNaming','freeTours','maxCustomers','excludeSaps','lockedTours','mergeKm','timeTol','timeHard','dnaWeight','tourFixed','autoOver','fixedGroups'],STATE_CHECKS=['allOnTarget','blockMode','mergeSmall','optRegular'];
+const STATE_INPUTS=['tourNaming','freeTours','tplDay','maxCustomers','excludeSaps','lockedTours','mergeKm','timeTol','timeHard','dnaWeight','tourFixed','autoOver','fixedGroups'],STATE_CHECKS=['allOnTarget','blockMode','mergeSmall','optRegular'];
 function fmtTs(t){try{return new Date(t).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}
 function planState(){
   const $=id=>document.getElementById(id),inputs={},checks={},sources={},notes={};
@@ -4112,7 +4176,7 @@ function stateSig(s){if(!s)return '';const {savedAt,...rest}=s;return JSON.strin
 function applyState(s){
   if(!s||!Array.isArray(s.routes))throw new Error('Datei enthält keinen Planungsstand.');
   const $=id=>document.getElementById(id),set=s.settings||{};
-  Object.entries(set.inputs||{}).forEach(([id,v])=>{const e=$(id);if(e&&STATE_INPUTS.includes(id))e.value=v});
+  Object.entries(set.inputs||{}).forEach(([id,v])=>{const e=$(id);if(e&&STATE_INPUTS.includes(id))e.value=v});if(set.inputs&&'tplDay' in set.inputs)$('tplDay').dataset.user='1';
   Object.entries(set.checks||{}).forEach(([id,v])=>{const e=$(id);if(e&&STATE_CHECKS.includes(id))e.checked=!!v});
   Object.entries(set.sources||{}).forEach(([k,v])=>{const e=$('src_'+k);if(e)e.checked=!!v});
   outageDays=new Set((set.outage||[]).filter(d=>DAY_ORDER.includes(d)));renderOutageButtons();syncTargetDayOptions(true);
@@ -4197,6 +4261,9 @@ function initPersistence(){
   if(L&&Array.isArray(L.routes)&&(L.savedAt||0)>(E?.savedAt||0)&&stateSig(L)!==cur)showRestoreBar(L);
   else{AUTOSAVE_ON=true;LAST_SIG=L&&stateSig(L)===cur?cur:'';autosaveNow();if(LAST_SIG)setSaveState('automatisch gesichert','ok')}
 }
+document.getElementById('tplDay')?.addEventListener('change',e=>{e.target.dataset.user='1';renderTargetPreview();if(suggOpen())computeSuggestions()});
+document.getElementById('toDay')?.addEventListener('change',()=>{applyTplDefault();renderTargetPreview()});
+document.getElementById('allOnTarget')?.addEventListener('change',()=>renderTargetPreview());
 document.getElementById('freeTours')?.addEventListener('input',()=>{renderAll();if(suggOpen()&&clusters.length)renderSuggestions()});
 initControls();buildOriginalPlan();initPersistence();
 </script>

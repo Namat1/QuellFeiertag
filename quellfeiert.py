@@ -14,6 +14,9 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
 - Zieltag-Vorschau unter „Wohin?“: für Vortag und Folgetag, wie viele Ausfall-Kunden dort schon beliefert werden und ca. wie viele
   neue Touren nötig sind; ★ = Vortag/Folgetag mit der größeren Überschneidung, Hinweis mit „übernehmen“, wenn der
   gewählte Tag deutlich schlechter liegt
+- Gleiche Endnummer zählt nur im selben Gebiet: Block bzw. Zusatz-Lieferung muss im Mittel ≤ 30 km vom nächsten Kunden
+  der Zieltour liegen (2064 Hamburg geht nicht mehr in 1064 Wendland); Zusatz-Lieferungen ohne passende Tour gehen in
+  die nächste Tour mit Platz (bis 45 km) statt in eine Mini-Tour
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
 
@@ -2997,7 +3000,12 @@ function chunkGeo(list,size){
    3. sonst eine Tour mit einzelnen gemeinsamen Kunden,
    4. sonst eine neue Tour: gleiche Endnummer, belegt → nächste freie Nummer.
    Kunden der Ausfalltour, die am Zieltag in einer Tour fahren, die eine ANDERE Ausfalltour bekommt, ziehen mit
-   (ab 2 Kunden; einzelne bleiben, wo sie sind). Zusatz-Lieferungen folgen ihrer Tour-Endnummer. */
+   (ab 2 Kunden; einzelne bleiben, wo sie sind). Zusatz-Lieferungen folgen ihrer Tour-Endnummer.
+   Endnummer und Einzelbezug nur, wenn die Tour im selben Gebiet fährt (Ø ≤ 30 km zum nächsten Kunden). */
+const SAME_NO_KM=30;   // gleiche Endnummer / einzelner gemeinsamer Kunde / Zusatz-Endnummer nur, wenn der Block dort im Mittel ≤ 30 km zum nächsten Kunden liegt
+function nearKm(a,L){let m=Infinity;L.forEach(x=>{const d=dist(a,x);if(Number.isFinite(d)&&d<m)m=d});return m}
+function blockGeoKm(ms,items){const L=items.filter(hasGeo);if(!L.length)return NaN;const ds=ms.filter(x=>hasGeo(x.a)).map(x=>nearKm(x.a,L)).filter(Number.isFinite);return ds.length?ds.reduce((s,v)=>s+v,0)/ds.length:NaN}
+function geoPlausible(ms,items){const d=blockGeoKm(ms,items);return !Number.isFinite(d)||d<=SAME_NO_KM}
 function miniTour(r){return !r.manuallyCreated&&(r.originalCount||0)>0&&(r.originalCount||0)<=2}   // Sondertouren wie 4882 mit 1 Kunden
 function blockAssign(byFrom,toDay,hardRoom,used){
   const out=new Map(),taken=new Set(),keep=namingKeep(),pulled=new Set();
@@ -3014,8 +3022,8 @@ function blockAssign(byFrom,toDay,hardRoom,used){
   const byKin=(p,q)=>q.n-p.n||q.b.size-p.b.size||(String(q.r.tour)===q.b.no)-(String(p.r.tour)===p.b.no)||Math.abs(num(p.r.tour)-num(p.b.no))-Math.abs(num(q.r.tour)-num(q.b.no));
   const put=(b,r,why)=>{out.set(b.fid,{t:r,why,rank:0});taken.add(r.id)};
   kin.filter(k=>k.strong).sort(byKin).forEach(k=>{if(!out.has(k.b.fid)&&!taken.has(k.r.id)&&fits(k.b,k.r))put(k.b,k.r,`Tour ${k.r.tour}: dort fahren schon ${k.n} Kunden dieser Tour`)});
-  reg.forEach(b=>{if(out.has(b.fid)||!b.no)return;const r=routeByTour(toDay,b.src,b.no);if(r&&T.includes(r)&&!taken.has(r.id)&&fits(b,r))put(b,r,`Tour ${r.tour}: gleiche Endnummer`)});
-  kin.filter(k=>!k.strong).sort((p,q)=>q.n-p.n||(totKin.get(p.b.fid)||0)-(totKin.get(q.b.fid)||0)||byKin(p,q)).forEach(k=>{if(!out.has(k.b.fid)&&!taken.has(k.r.id)&&fits(k.b,k.r))put(k.b,k.r,`Tour ${k.r.tour}: dort ${k.n>1?'fahren schon '+k.n+' Kunden':'fährt schon ein Kunde'} dieser Tour`)});
+  reg.forEach(b=>{if(out.has(b.fid)||!b.no)return;const r=routeByTour(toDay,b.src,b.no);if(r&&T.includes(r)&&!taken.has(r.id)&&fits(b,r)&&geoPlausible(b.ms,r.items))put(b,r,`Tour ${r.tour}: gleiche Endnummer`)});   // gleiche Endnummer heißt an anderen Tagen nicht immer gleiches Gebiet (z. B. 2064 Hamburg ↔ 1064 Wendland)
+  kin.filter(k=>!k.strong).sort((p,q)=>q.n-p.n||(totKin.get(p.b.fid)||0)-(totKin.get(q.b.fid)||0)||byKin(p,q)).forEach(k=>{if(!out.has(k.b.fid)&&!taken.has(k.r.id)&&fits(k.b,k.r)&&geoPlausible(k.b.ms,k.r.items))put(k.b,k.r,`Tour ${k.r.tour}: dort ${k.n>1?'fahren schon '+k.n+' Kunden':'fährt schon ein Kunde'} dieser Tour`)});
   // neue Touren in Tournummer-Reihenfolge: gleiche Endnummer, belegt → nächste freie
   reg.forEach(b=>{if(out.has(b.fid))return;const free=!!b.no&&!used.has(b.src+'::'+b.no)&&!LOCKED.has(b.no);out.set(b.fid,{t:null,name:b.no||undefined,why:free?'neue Tour '+b.no:'neue Tour (Endnummer belegt → nächste freie)',rank:1})});
   // Mitzieher: ab 2 Kunden derselben Ausfalltour in einer Tour, die eine andere Ausfalltour bekommt
@@ -3029,13 +3037,13 @@ function blockAssign(byFrom,toDay,hardRoom,used){
     if(!take.length)return;take.forEach(a=>pulled.add(a.aid));P.pulls=(P.pulls||[]).concat(take);
   });
   // Zusatz-Lieferungen („alle Kunden am Zieltag“)
-  const geoT=b=>{let best=null;T.forEach(r=>{if(r.source!==b.src||miniTour(r)||hardRoom(r)<b.ms.length)return;const ds=b.ms.map(x=>near(x.a,r.items)).filter(Number.isFinite);if(!ds.length)return;const d=ds.reduce((s,x)=>s+x,0)/ds.length;if(d<=25*ROAD_FACTOR&&(!best||d<best.d))best={r,d}});return best?.r||null};
+  const geoT=b=>{let best=null;T.forEach(r=>{if(r.source!==b.src||miniTour(r)||hardRoom(r)<b.ms.length)return;const ds=b.ms.map(x=>near(x.a,r.items)).filter(Number.isFinite);if(!ds.length)return;const d=ds.reduce((s,x)=>s+x,0)/ds.length;if(d<=45&&(!best||d<best.d))best={r,d}});return best?.r||null};
   ext.forEach(b=>{
     if(keep){out.set(b.fid,{t:null,name:String(b.from.tour),why:'Heimattour wieder anlegen',rank:3});return}
     const suf=String(b.from.tour).slice(1),F=reg.find(x=>x.src===b.src&&/^[1-6]\d{3,4}$/.test(String(x.from.tour))&&String(x.from.tour).slice(1)===suf);
     if(F){out.set(b.fid,{follow:F.fid,geo:geoT(b),rank:3});return}
     const r=b.no?routeByTour(toDay,b.src,b.no):null;
-    if(r&&T.includes(r)&&hardRoom(r)>=b.ms.length){out.set(b.fid,{t:r,why:`Tour ${r.tour}: gleiche Endnummer`,rank:3});return}
+    if(r&&T.includes(r)&&hardRoom(r)>=b.ms.length&&geoPlausible(b.ms,r.items)){out.set(b.fid,{t:r,why:`Tour ${r.tour}: gleiche Endnummer`,rank:3});return}
     const g=geoT(b);out.set(b.fid,{t:g,why:g?`Tour ${g.tour}: nächstgelegene Tour`:'neue Tour',rank:3});
   });
   return out;
@@ -3141,7 +3149,7 @@ function buildClusters(fromDays,toDay,accept=null){
     // Zusatz-Lieferungen: in die Zieltag-Tour, in der die Ausfalltour mit derselben Endnummer gelandet ist
     order.forEach(fid=>{
       const P=plan.get(fid);if(!P?.follow)return;const ms=byFrom.get(fid),from=ms[0].from;
-      const c=(made.get(P.follow)||[]).find(c=>c.kind==='new'?c.members.length+ms.length<=srcCap(c.source):hardRoom(c.target)>=ms.length);
+      const c=(made.get(P.follow)||[]).find(c=>(c.kind==='new'?c.members.length+ms.length<=srcCap(c.source):hardRoom(c.target)>=ms.length)&&geoPlausible(ms,[...(c.kind==='insert'?c.target.items:[]),...c.members.map(x=>x.a)]));
       if(c){c.members.push(...ms);if(c.kind==='insert')reserve.set(c.target.id,(reserve.get(c.target.id)||0)+ms.length);c.note=(c.note?c.note+' · ':'')+'inkl. Zusatz-Lieferung (Endnummer '+String(from.tour).slice(1)+')'}
       else placeBlock(ms,[],P.geo||null,from,from.source,undefined,'nächstgelegene Tour');
     });

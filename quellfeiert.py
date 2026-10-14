@@ -18,7 +18,7 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
   der Zieltour liegen (2064 Hamburg geht nicht mehr in 1064 Wendland); Zusatz-Lieferungen ohne passende Tour gehen in
   die nächste Tour mit Platz (bis 45 km) statt in eine Mini-Tour
 - „Alle Kunden am Zieltag“ mit Vorlagetag (Vorgabe Freitag): die Tourzusammenstellung des Vorlagetags wird 1:1
-  übernommen, Tournummern mit der Ziffer des Zieltags (5045 → 1045); Kunden ohne Vorlagetour gehen zu ihren bisherigen
+  übernommen, Tournummer = Zieltag-Tour, in der ihre Kunden schon fahren (Fr 5005 → Mo 1006), sonst Ziffer + Endnummer; Kunden ohne Vorlagetour gehen zu ihren bisherigen
   Mitfahrern bzw. in die nächstgelegene Tour; Reihenfolge wie am Vorlagetag; „eigene Touren“ = bisherige Blockregeln
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
@@ -2360,7 +2360,7 @@ body.df-open{overflow:hidden}
 
 <section class="flow" aria-label="Arbeitsablauf">
   <div class="step" id="step1"><div class="sh"><span class="sn">1</span>Welche Tage fallen aus?</div><div class="sc"><div class="days" id="outageDays"></div></div></div>
-  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Wohin?</div><div class="sc"><select id="toDay" aria-label="Zieltag" title="Aufteilen auf Vortag und Folgetag (nach früheren Feiertagen) oder alle Kunden auf einen Tag"></select><div class="allrow"><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten)."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label><span id="tplWrap" class="tplwrap" hidden title="Tourzusammenstellung dieses Tages 1:1 übernehmen – Tournummern mit der Ziffer des Zieltags (5045 → 1045). „eigene Touren“: Zieltag-Touren behalten und Ausfalltouren als Block einplanen.">Touren wie <select id="tplDay" aria-label="Vorlagetag"><option value="">eigene Touren</option><option value="Mo">Montag</option><option value="Die">Dienstag</option><option value="Mitt">Mittwoch</option><option value="Don">Donnerstag</option><option value="Fr" selected>Freitag</option><option value="Sam">Samstag</option></select></span></div><div class="tgthint" id="targetHint" aria-live="polite"></div></div></div>
+  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Wohin?</div><div class="sc"><select id="toDay" aria-label="Zieltag" title="Aufteilen auf Vortag und Folgetag (nach früheren Feiertagen) oder alle Kunden auf einen Tag"></select><div class="allrow"><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten)."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label><span id="tplWrap" class="tplwrap" hidden title="Tourzusammenstellung dieses Tages 1:1 übernehmen – Tournummer der Zieltag-Tour, in der ihre Kunden schon fahren (Fr 5005 → Mo 1006), sonst Ziffer des Zieltags + Endnummer. „eigene Touren“: Zieltag-Touren behalten und Ausfalltouren als Block einplanen.">Touren wie <select id="tplDay" aria-label="Vorlagetag"><option value="">eigene Touren</option><option value="Mo">Montag</option><option value="Die">Dienstag</option><option value="Mitt">Mittwoch</option><option value="Don">Donnerstag</option><option value="Fr" selected>Freitag</option><option value="Sam">Samstag</option></select></span></div><div class="tgthint" id="targetHint" aria-live="polite"></div></div></div>
   <div class="step grow" id="step3"><div class="sh"><span class="sn">3</span>Umplanen</div><div class="sc">
     <button class="btn primary" id="suggestBtn" type="button">Vorschläge berechnen</button>
     <button class="btn" id="optimizeBtn" type="button" title="Reihenfolge je Tour (2-opt/Or-opt) und Kundentausch zwischen Touren am Zieltag">Touren optimieren</button>
@@ -2737,7 +2737,7 @@ function targetPreview(T){
   const hardRoom=r=>capOf(r)-(r.origItems||r.items).filter(a=>a.originalDay===T).length;
   let neu=0;
   try{blockAssign(byFrom,T,hardRoom,used).forEach((P,fid)=>{if(P.follow||P.t)return;const n=(byFrom.get(fid)?.length||0)+(P.pulls?.length||0);if(n)neu+=Math.ceil(n/maxCustomers)})}catch(e){neu=NaN}
-  if(S)neu=tplRoutesOf(S).filter(r=>!routeByTour(T,r.source,tplName(r.tour,T))).length;
+  if(S)neu=tplRoutesOf(S).filter(r=>!r.origItems.some(a=>onT.has(sapOf(a)))&&!routeByTour(T,r.source,tplName(r.tour,T))).length;   // Vorlagetouren ohne gemeinsame Kunden am Zieltag
   const res={T,tot,cov,open:tot-cov,neu};TGT_PREV.set(key,res);return res;
 }
 function recommendedTarget(){
@@ -3262,14 +3262,18 @@ function tplName(tour,T){const t=String(tour);return /^[1-6]\d{3,5}$/.test(t)?DA
 function tplRoutesOf(S){const active=activeSources();return routes.filter(r=>r.day===S&&!r.manuallyCreated&&active.includes(r.source)&&(r.origItems||[]).length)}
 function buildTemplateClusters(T,S){
   const active=activeSources(),key=a=>a.Quelle+'|'+sapOf(a),tpls=tplRoutesOf(S);
-  // Zieltour je Vorlagetour: gleiche Endnummer mit Zieltag-Ziffer; vorhandene Zieltag-Tour wird neu zusammengestellt
+  // Zieltour je Vorlagetour: die Zieltag-Tour, in der die meisten ihrer Kunden schon fahren – Tournummer vom Zieltag
+  // (Fr 5005 → Mo 1006, wenn die Kunden montags in 1006 fahren); ohne gemeinsame Kunden: Ziffer + Endnummer bzw. nächste freie
   const used=new Set(routes.filter(r=>r.day===T).map(r=>r.source+'::'+r.tour)),G=new Map(),byTpl=new Map();
-  tpls.forEach(r=>{
-    let name=tplName(r.tour,T),ex=routeByTour(T,r.source,name);
-    if((ex&&isLocked(ex))||LOCKED.has(name)){ex=null;const n0=Number(name);let alt=null;if(Number.isFinite(n0))for(let k=1;k<=50&&!alt;k++){const c=String(n0+k);if(c[0]===name[0]&&!used.has(r.source+'::'+c)&&!LOCKED.has(c))alt=c}name=alt||name+'-2'}
-    const g={tpl:r,route:ex||null,name,source:r.source,list:[],cap:Math.max(maxCustomers,r.origItems.length)};G.set(r.id,g);used.add(r.source+'::'+name);
-    r.origItems.forEach(a=>{if(a.originalDay===S&&!byTpl.has(key(a)))byTpl.set(key(a),g)});
-  });
+  const onT=new Map();routes.filter(r=>r.day===T&&!r.manuallyCreated&&!isLocked(r)).forEach(r=>(r.origItems||r.items).forEach(a=>{if(a.originalDay===T&&!onT.has(key(a)))onT.set(key(a),r)}));
+  const pairs=[];tpls.forEach(r=>{const c=new Map();r.origItems.forEach(a=>{const t=onT.get(key(a));if(t&&t.source===r.source)c.set(t,(c.get(t)||0)+1)});c.forEach((n,t)=>pairs.push({r,t,n}))});
+  pairs.sort((p,q)=>q.n-p.n||(String(q.t.tour)===tplName(q.r.tour,T))-(String(p.t.tour)===tplName(p.r.tour,T))||p.r.origItems.length-q.r.origItems.length);
+  const claim=new Map(),claimed=new Set();pairs.forEach(p=>{if(claim.has(p.r.id)||claimed.has(p.t.id))return;claim.set(p.r.id,p.t);claimed.add(p.t.id)});
+  const mk=(r,route,name)=>{const g={tpl:r,route,name,source:r.source,list:[],cap:Math.max(maxCustomers,r.origItems.length)};G.set(r.id,g);used.add(r.source+'::'+name);r.origItems.forEach(a=>{if(a.originalDay===S&&!byTpl.has(key(a)))byTpl.set(key(a),g)})};
+  tpls.forEach(r=>{const t=claim.get(r.id);if(t)mk(r,t,String(t.tour))});
+  tpls.forEach(r=>{if(G.has(r.id))return;let name=tplName(r.tour,T);
+    if(used.has(r.source+'::'+name)||LOCKED.has(name)){const n0=Number(name);let alt=null;if(Number.isFinite(n0))for(let k=1;k<=60&&!alt;k++){const c=String(n0+k);if(c[0]===name[0]&&!used.has(r.source+'::'+c)&&!LOCKED.has(c))alt=c}name=alt||name+'-2'}
+    mk(r,null,name)});
   // alle Lieferungen, die am Zieltag landen: Zieltag selbst, Ausfalltage, Zusatz-Lieferungen
   const items=[];
   routes.filter(r=>(r.day===T||outageDays.has(r.day))&&active.includes(r.source)&&!isLocked(r)).forEach(r=>r.items.forEach(a=>{if(!isExcluded(a))items.push({a,cur:r})}));

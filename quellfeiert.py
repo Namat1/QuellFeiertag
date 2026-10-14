@@ -19,7 +19,7 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
   die nächste Tour mit Platz (bis 45 km) statt in eine Mini-Tour
 - „Alle Kunden am Zieltag“ mit Vorlagetag (Vorgabe Freitag): die Tourzusammenstellung des Vorlagetags wird 1:1
   übernommen, Tournummer = Zieltag-Tour, in der ihre Kunden schon fahren (Fr 5005 → Mo 1006), sonst Ziffer + Endnummer; Kunden ohne Vorlagetour gehen zu ihren bisherigen
-  Mitfahrern bzw. in die nächstgelegene Tour; Reihenfolge wie am Vorlagetag; „eigene Touren“ = bisherige Blockregeln
+  Mitfahrern bzw. in die nächstgelegene Tour; Reihenfolge wie am Vorlagetag; „Touren optimieren“ trennt die Zusammenstellung nicht; „eigene Touren“ = bisherige Blockregeln
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
 
@@ -3422,7 +3422,7 @@ function optimizeDay(day,silent=false){
   if(!cand.some(r=>r.manuallyCreated||routeChanged(r))){if(!silent)showInfo('Nichts zu optimieren',`Am ${DAY_LABELS[day]} gibt es keine geänderten oder neuen Touren.`,'warn');return null}
   if(!silent)UNDO=snapshotPlan();
   const kmBefore=dayKm(day),t0=performance.now();
-  const movable=(a,R)=>!isExcluded(a)&&!GROUP_OF.has(sapOf(a))&&!a.manualMove&&!/^manuell/.test(a.planNote||'')&&(W.regular?(R.manuallyCreated||routeChanged(R)||a.originalRouteId!==R.id):a.originalRouteId!==R.id);
+  const movable=(a,R)=>!isExcluded(a)&&!GROUP_OF.has(sapOf(a))&&!a.manualMove&&!/^manuell/.test(a.planNote||'')&&!/^wie /.test(a.planNote||'')&&(W.regular?(R.manuallyCreated||routeChanged(R)||a.originalRouteId!==R.id):a.originalRouteId!==R.id);
   // 1) Reihenfolge je geänderter Tour (manuell fixierte bleiben)
   cand.filter(r=>(r.manuallyCreated||routeChanged(r))&&!r.manualOrder).forEach(r=>{const o=improveSequence(orderByTemplate(r.items,r),r);r.items=o.items});
   const cost=new Map();cand.forEach(r=>cost.set(r,routeTotal(r.items,r,W)));

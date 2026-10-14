@@ -20,6 +20,9 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
 - „Alle Kunden am Zieltag“ mit Vorlagetag (Vorgabe Freitag): die Tourzusammenstellung des Vorlagetags wird 1:1
   übernommen, Tournummer = Zieltag-Tour, in der ihre Kunden schon fahren (Fr 5005 → Mo 1006), sonst Ziffer + Endnummer; Kunden ohne Vorlagetour gehen zu ihren bisherigen
   Mitfahrern bzw. in die nächstgelegene Tour; Reihenfolge wie am Vorlagetag; „Touren optimieren“ trennt die Zusammenstellung nicht; „eigene Touren“ = bisherige Blockregeln
+- Alle-Kunden-Konstellation (neuer Upload, wird in der Adressdatei gespeichert): Tourzusammenstellung eines fertigen
+  Plans, in dem an einem Tag alle Kunden fahren (z. B. Donnerstag der Feiertagsplanung); gilt als Vorgabe für jeden Tag mit
+  „Alle Kunden am Zieltag“ – Tournummern des Zieltags, Reihenfolge aus der Ladereihenfolge des Plans
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
 
@@ -1153,6 +1156,8 @@ def apply_coordinate_overrides(df: pd.DataFrame, file_bytes: bytes) -> tuple[pd.
 
 ADDR_SHEET, MATRIX_SHEET, HIST_SHEET, EXCL_SHEET = "Adressen", "Strassenmatrix", "Planungsgedaechtnis", "Ausschluss"
 GROUP_SHEET = "Gruppen"
+KONST_SHEET = "Konstellation"
+DAY_NAMES = {"Mo": "Montag", "Die": "Dienstag", "Mitt": "Mittwoch", "Don": "Donnerstag", "Fr": "Freitag", "Sam": "Samstag"}
 # Feste Kundengruppen (Konstellation wie die Mittwochstour): fahren beim Umplanen immer zusammen in EINER Tour.
 # Vorgabe, solange die Adressdatei noch kein Blatt „Gruppen“ hat; danach gilt das Blatt bzw. die Eingabe im Generator.
 FIXED_GROUPS_DEFAULT = {
@@ -1174,7 +1179,7 @@ def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, 
     Rückgabe: Adresstabelle, Straßenmatrizen je Profil {profil: {coordkey: [km, min]}},
     Zusatz {'history': Planungsgedächtnis, 'excluded': SAP-Ausschlussliste, 'legacy_matrix': Matrix ohne Profilangabe}."""
     matrices: dict = {}
-    meta = {"history": {}, "excluded": [], "legacy_matrix": False, "groups": None}
+    meta = {"history": {}, "excluded": [], "legacy_matrix": False, "groups": None, "konst": None}
     if name.lower().endswith(".csv"):
         adr = pd.read_csv(io.BytesIO(file_bytes), sep=None, engine="python", dtype=str, encoding="utf-8-sig")
     else:
@@ -1203,6 +1208,20 @@ def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, 
                 meta["groups"] = {k: list(dict.fromkeys(v)) for k, v in groups.items() if len(set(v)) >= 2}
             except Exception:
                 meta["groups"] = None
+        if KONST_SHEET in xl.sheet_names:
+            try:
+                ks = pd.read_excel(xl, sheet_name=KONST_SHEET, dtype=str).fillna("")
+                rows = []
+                for q, s, c, t, lo in ks.iloc[:, :5].itertuples(index=False, name=None):
+                    if str(q).strip() and str(s).strip() and str(t).strip():
+                        rows.append([str(q).strip(), int(float(s)), int(float(c)) if str(c).strip() else None, str(t).strip(),
+                                     float(lo) if str(lo).strip() else None])
+                day = next((x for x in ks.get("Tag", pd.Series(dtype=str)) if str(x).strip()), "")
+                src = next((x for x in ks.get("Datei", pd.Series(dtype=str)) if str(x).strip()), "")
+                meta["konst"] = {"name": src, "day": day, "n": len(rows), "total": len(rows), "rows": rows} \
+                    if rows and day in DAY_COLUMNS else None
+            except Exception:
+                meta["konst"] = None
         if MATRIX_SHEET in xl.sheet_names:
             m = pd.read_excel(xl, sheet_name=MATRIX_SHEET)
             has_prof = "profil" in [str(c).strip().lower() for c in m.columns]
@@ -1225,6 +1244,22 @@ def read_address_file(file_bytes: bytes, name: str = "") -> tuple[pd.DataFrame, 
         raise ValueError("Adressdatei braucht eine Spalte SAP")
     adr["SAP"] = pd.to_numeric(adr["SAP"], errors="coerce").astype("Int64")
     return adr.dropna(subset=["SAP"]).drop_duplicates("SAP", keep="last"), matrices, meta
+
+
+def extract_konstellation(plan_bytes: bytes, name: str = "") -> dict | None:
+    """Alle-Kunden-Konstellation aus einem fertigen Plan: der Tag mit den meisten Lieferungen (z. B. der Donnerstag, an dem
+    alle Kunden fahren) – je Kunde Blatt, SAP, CSB, Tour und Ladereihenfolge."""
+    df = enrich_load_orders(read_source(plan_bytes), plan_bytes)
+    counts = {d: int(df[d].notna().sum()) for d in DAY_COLUMNS}
+    day = max(counts, key=counts.get)
+    rows = []
+    for q, sap, csb, t, lo in df[["Quelle", "SAP", "CSB", day, f"LRF_{day}"]].itertuples(index=False, name=None):
+        if pd.isna(sap) or pd.isna(t) or _tour_key(t) == "":
+            continue
+        lo = json_ready(lo)
+        rows.append([str(q), int(sap), int(csb) if pd.notna(csb) else None, _tour_key(t),
+                     float(lo) if isinstance(lo, (int, float)) else None])
+    return {"name": name, "day": day, "n": len(rows), "total": int(len(df)), "rows": rows} if rows else None
 
 
 def parse_groups(text: str) -> dict:
@@ -1299,7 +1334,8 @@ def apply_address_file(df: pd.DataFrame, adr: pd.DataFrame, addresses: bool = Tr
 
 def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrices: dict,
                            prev: pd.DataFrame | None = None, history: dict | None = None,
-                           excluded: list | None = None, groups: dict | None = None) -> bytes:
+                           excluded: list | None = None, groups: dict | None = None,
+                           konst: dict | None = None) -> bytes:
     """Aktualisierte Adressdatei: alle Kunden mit bester Koordinate + Straßenmatrix (koordinatenbasiert).
     matrices: {profil: {coordkey: [km, min]}} – jedes Profil in eigenen Zeilen (Spalte 'profil')."""
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -1348,6 +1384,8 @@ def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrices: 
         "Blatt Ausschluss: SAP-Nummern, die der Planer nie umplant (eine je Zeile). Darf hier direkt gepflegt werden.",
         "Blatt Gruppen: feste Kundengruppen (Spalte Gruppe = Name, z. B. die Mittwochstour 3003; Spalte SAP = Mitglied, eine Zeile je Kunde). "
         "Mitglieder fahren beim Umplanen immer zusammen in einer Tour. Darf hier direkt gepflegt werden.",
+        "Blatt Konstellation: Tourzusammenstellung eines Tages, an dem alle Kunden fahren (Vorlage für „Alle Kunden am Zieltag“). "
+        "Wird durch eine neu hochgeladene Konstellation ersetzt.",
         f"Erstellt: {datetime.now():%d.%m.%Y %H:%M} · {APP_BUILD}",
     ]})
     buf = io.BytesIO()
@@ -1367,6 +1405,10 @@ def build_address_workbook(geo: pd.DataFrame, original: pd.DataFrame, matrices: 
         pd.DataFrame(g_rows, columns=["Gruppe", "SAP", "Name"]).to_excel(w, sheet_name=GROUP_SHEET, index=False)
         for col_, wd_ in (("A", 12), ("B", 12), ("C", 40)):
             w.sheets[GROUP_SHEET].column_dimensions[col_].width = wd_
+        if konst and konst.get("rows"):
+            pd.DataFrame([list(x[:5]) + [konst.get("day", ""), konst.get("name", "")] for x in konst["rows"]],
+                         columns=["Blatt", "SAP", "CSB", "Tour", "Reihenfolge", "Tag", "Datei"]).to_excel(
+                w, sheet_name=KONST_SHEET, index=False)
         if history:
             js = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
             pd.DataFrame({"json": [js[i:i + 30000] for i in range(0, len(js), 30000)]}).to_excel(w, sheet_name=HIST_SHEET, index=False)
@@ -1868,7 +1910,7 @@ def _fill(template: str, mapping: dict[str, str]) -> str:
 
 def build_html(customers, tour_starts, source_name, source_xlsx, day_col_map,
                info_name="", starts_name="", ref_name="", matrix=None, net=None, history=None,
-               excluded=None, groups=None) -> str:
+               excluded=None, groups=None, konst=None) -> str:
     aux = " · ".join(x for x in [info_name, starts_name, (f"Referenz: {ref_name}" if ref_name else "")] if x)
     return _fill(HTML_TEMPLATE, {
         "SRC": escape(source_name),
@@ -1886,6 +1928,7 @@ def build_html(customers, tour_starts, source_name, source_xlsx, day_col_map,
         "HISTORY": _js(history or {}),
         "EXCLUDED_TXT": escape("\n".join(str(s) for s in (excluded or []))),
         "GROUPS_TXT": escape(groups_to_text(groups if groups is not None else FIXED_GROUPS_DEFAULT)),
+        "KONST": _js(konst) if konst else "null",
         "NET": _js(net or {"factor": DEFAULT_ROAD_FACTOR, "kmh": DEFAULT_KMH, "pairs": 0, "needed": 0}),
     })
 
@@ -1987,7 +2030,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .dbtn.tgt{border-color:var(--tgt);color:var(--tgt)}
 .dbtn.tgt::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--tgt)}
 #toDay{min-width:200px;max-width:360px;font-weight:600}
-#step2 .sc{row-gap:5px}#step2 .allrow{flex-basis:100%;contain:inline-size;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tplwrap{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2)}.tplwrap[hidden]{display:none}.tplwrap select{padding:3px 6px;font-size:13px;font-weight:600}
+#step2 .sc{row-gap:5px}#step2 .allrow{flex-basis:100%;contain:inline-size;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tplwrap{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2);white-space:nowrap}.tplwrap[hidden]{display:none}.tplwrap select{padding:3px 6px;font-size:13px;font-weight:600}
 .tgthint{flex-basis:100%;contain:inline-size;font-size:12px;line-height:1.4;color:var(--muted)}.tgthint:empty{display:none}.tgthint b{color:var(--ink);font-weight:600}.tgthint .warnx{color:var(--out);font-weight:600;white-space:nowrap}.tgthint button{white-space:nowrap;border:0;background:none;padding:0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-decoration:underline}
 .prog{display:grid;gap:4px;min-width:190px;margin-left:8px;flex:1;max-width:300px}
 .progtxt{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
@@ -2485,6 +2528,7 @@ const HAS_REF=__HAS_REF__;
 const REF_NAME=__REF_NAME__;
 const MATRIX=__MATRIX__;
 const HISTORY=__HISTORY__;
+const KONST=__KONST__;   // Alle-Kunden-Konstellation {name,day,n,total,rows:[[Blatt,SAP,CSB,Tour,Reihenfolge]]}
 const NET=__NET__;
 const DAY_ORDER=['Mo','Die','Mitt','Don','Fr','Sam'];
 const DAY_LABELS={Mo:'Montag',Die:'Dienstag',Mitt:'Mittwoch',Don:'Donnerstag',Fr:'Freitag',Sam:'Samstag'};
@@ -2612,7 +2656,7 @@ function seqCost(ev){return ev.drive+ev.wait*.15+ev.late*40+ev.viol*300}
 function templateRank(r,a){
   if(a.originalRouteId===r.id&&Number.isFinite(a.origIndex))return (a.origIndex+.5)/Math.max(1,r.originalCount);
   const s=sapOf(a);
-  for(const id of (r.templateIds||[])){if(id===r.id)continue;const t=getRoute(id);const k=t?.origOrder?.get(s);if(k!=null)return (k+.5)/Math.max(1,t.originalCount)}
+  for(const id of (r.templateIds||[])){if(id===r.id)continue;const t=String(id).startsWith('K::')?konstRoutes().find(x=>x.id===id):getRoute(id);const k=t?.origOrder?.get(s);if(k!=null)return (k+.5)/Math.max(1,t.originalCount)}
   return null;
 }
 function orderByTemplate(items,r){
@@ -2747,7 +2791,7 @@ function recommendedTarget(){
 function newToursOn(day,withSugg=false){return routes.filter(r=>r.day===day&&r.manuallyCreated&&r.items.length).length+(withSugg?clusters.filter(c=>c.kind==='new'&&c.toDay===day).length:0)}
 function vehicleWarnings(withSugg=false){const lim=freeTours();if(lim==null)return [];return targetDays().map(d=>({d,n:newToursOn(d,withSugg)})).filter(x=>x.n>lim).map(x=>`${DAY_LABELS[x.d]}: ${x.n} neue Touren, aber nur ${lim} Fahrzeuge/Fahrer frei (${x.n-lim} zu viel)`)}
 function renderTargetPreview(){
-  {const w=document.getElementById('tplWrap'),s=document.getElementById('tplDay'),T=targetDays()[0]||'';if(w)w.hidden=!document.getElementById('allOnTarget')?.checked;if(s)[...s.options].forEach(o=>{if(!o.value)return;o.disabled=o.value===T;o.textContent=DAY_LABELS[o.value]+(o.value===T?' (Zieltag)':'')})}
+  {const w=document.getElementById('tplWrap'),s=document.getElementById('tplDay'),T=targetDays()[0]||'';if(w)w.hidden=!document.getElementById('allOnTarget')?.checked;if(s)[...s.options].forEach(o=>{if(!o.value||o.value==='K')return;o.disabled=o.value===T;o.textContent=DAY_LABELS[o.value]+(o.value===T?' (Zieltag)':'')})}
   const sel=document.getElementById('toDay'),hint=document.getElementById('targetHint');if(!sel||!hint)return;
   const lim=freeTours(),rec=recommendedTarget(),nf=v=>Number.isFinite(v)?v:'?';
   const nb=neighborDays(),two=!!(nb.prev&&nb.next);
@@ -3256,11 +3300,24 @@ function evaluateCluster(c){
   c.quality=q;
 }
 /* ---------- Vorlagetag: Tourzusammenstellung 1:1 übernehmen ---------- */
-function tplDayOf(T){const v=document.getElementById('tplDay')?.value||'';return document.getElementById('allOnTarget')?.checked&&T&&v&&DAY_ORDER.includes(v)&&v!==T?v:''}
-function defaultTpl(){const T=targetDays()[0]||document.getElementById('toDay')?.value||'',n=neighborDays();if(outageDays.has('Fr')&&T&&(T===n.prev||T===n.next))return '';return T==='Fr'?'':'Fr'}   // Fr fällt aus → Vortag/Folgetag: Blockregeln (wie im Disponentenplan); sonst Freitagstouren 1:1
+function tplDayOf(T){const v=document.getElementById('tplDay')?.value||'';if(!document.getElementById('allOnTarget')?.checked||!T||!v)return '';if(v==='K')return KONST?.rows?.length?'K':'';return DAY_ORDER.includes(v)&&v!==T?v:''}
+function tplLabel(d,short){return d==='K'?'Konstellation'+(KONST?.day?' '+(short?DAY_SHORT[KONST.day]:DAY_LABELS[KONST.day]):''):(short?DAY_SHORT[d]:DAY_LABELS[d])}
+/* Konstellation als Vorlagetouren (Pseudo-Touren „K::Blatt::Tour“, nicht auf der Tafel) */
+let KONST_ROUTES=null;
+function konstRoutes(){
+  if(KONST_ROUTES)return KONST_ROUTES;KONST_ROUTES=[];if(!KONST?.rows?.length)return KONST_ROUTES;
+  const byKey=new Map();CUSTOMERS.forEach(c=>{const k=c.Quelle+'|'+sapOf(c);if(!byKey.has(k))byKey.set(k,[]);byKey.get(k).push(c)});
+  const m=new Map(),seen=new Set();
+  KONST.rows.forEach(([q,sap,csb,tour,lrf])=>{const cs=byKey.get(q+'|'+normSap(sap));if(!cs)return;const c=cs.find(x=>!seen.has(x.uid)&&String(x.CSB)===String(csb))||cs.find(x=>!seen.has(x.uid));if(!c)return;seen.add(c.uid);
+    const id='K::'+q+'::'+tour;if(!m.has(id))m.set(id,{id,day:'K',source:q,tour:String(tour),origItems:[],items:[],originalCount:0,konst:true,origOrder:new Map(),_l:[]});
+    const r=m.get(id);r.origItems.push({...c,aid:'K::'+c.uid,originalDay:'K'});if(Number.isFinite(Number(lrf))&&lrf!==null&&lrf!=='')r._l.push([sapOf(c),Number(lrf)])});
+  m.forEach(r=>{r.originalCount=r.origItems.length;r.origSaps=new Set(r.origItems.map(sapOf));r._l.sort((a,b)=>a[1]-b[1]).forEach(([s],i)=>{if(!r.origOrder.has(s))r.origOrder.set(s,i)});delete r._l});
+  KONST_ROUTES=[...m.values()];return KONST_ROUTES;
+}
+function defaultTpl(){if(KONST?.rows?.length)return 'K';const T=targetDays()[0]||document.getElementById('toDay')?.value||'',n=neighborDays();if(outageDays.has('Fr')&&T&&(T===n.prev||T===n.next))return '';return T==='Fr'?'':'Fr'}   // Fr fällt aus → Vortag/Folgetag: Blockregeln (wie im Disponentenplan); sonst Freitagstouren 1:1
 function applyTplDefault(){const s=document.getElementById('tplDay');if(s&&!s.dataset.user)s.value=defaultTpl()}
 function tplName(tour,T){const t=String(tour);return /^[1-6]\d{3,5}$/.test(t)?DAY_DIGIT[T]+t.slice(1):t+'-'+DAY_SHORT[T]}
-function tplRoutesOf(S){const active=activeSources();return routes.filter(r=>r.day===S&&!r.manuallyCreated&&active.includes(r.source)&&(r.origItems||[]).length)}
+function tplRoutesOf(S){const active=activeSources();if(S==='K')return konstRoutes().filter(r=>active.includes(r.source));return routes.filter(r=>r.day===S&&!r.manuallyCreated&&active.includes(r.source)&&(r.origItems||[]).length)}
 function buildTemplateClusters(T,S){
   const active=activeSources(),key=a=>a.Quelle+'|'+sapOf(a),tpls=tplRoutesOf(S);
   // Zieltour je Vorlagetour: die Zieltag-Tour, in der die meisten ihrer Kunden schon fahren – Tournummer vom Zieltag
@@ -3334,7 +3391,7 @@ function clusterHtml(c){
   let title,sub;const meta=[esc(srcLabel(c.source))+', aus '+esc(origins)];
   if(c.kind==='insert'){title=`${DAY_SHORT[c.toDay]} · Tour ${esc(c.target.tour)}`;sub=`${c.target.items.length} → ${c.target.items.length+c.members.length} Kunden`;const clk=routeClockInfo(c.target);if(clk)meta.push(esc(clk))}
   else{title=c.members.some(x=>String(x.from?.tour)===String(c.name))?`${DAY_SHORT[c.toDay]} · Tour ${esc(c.name)} wieder anlegen`:`${DAY_SHORT[c.toDay]} · neue Tour ${esc(c.name)}`;sub=`${c.members.length} Kunden`;const clk=routeClockInfo({normalStart:c.normalStart});if(clk)meta.push(esc(clk));if(c.compact)meta.push('Gebiet '+esc(c.compact.label)+(Number.isFinite(c.compact.avg)?', Ø '+fmt(c.compact.avg)+' km zum Zentrum':''))}
-  const why=c.template?`<b>Wie ${DAY_LABELS[c.template.day]} ${esc(c.template.tour)}</b>: Tourzusammenstellung 1:1 übernommen, ${c.template.size} Kunden`:c.fixed?`<b>Feste Gruppe ${esc(c.fixed)}</b>: diese Kunden fahren immer zusammen`:c.memory?'<b>Planungsgedächtnis</b>: so bei früheren Feiertagen geplant':c.block?'<b>Tourblock</b>: die Ausfalltour bleibt zusammen':c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?`, Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''}: ${c.direct} fahren dort schon, ${c.peer} über Mitfahrer`:'Keine Tourfamilie – Zuordnung nach Lage';
+  const why=c.template?`<b>Wie ${esc(tplLabel(c.template.day))} ${esc(c.template.tour)}</b>: Tourzusammenstellung 1:1 übernommen, ${c.template.size} Kunden`:c.fixed?`<b>Feste Gruppe ${esc(c.fixed)}</b>: diese Kunden fahren immer zusammen`:c.memory?'<b>Planungsgedächtnis</b>: so bei früheren Feiertagen geplant':c.block?'<b>Tourblock</b>: die Ausfalltour bleibt zusammen':c.family?`Tourfamilie <b>${esc(c.family.label)}</b>${c.rep?`, Vorlage ${DAY_LABELS[c.rep.day]} ${esc(c.rep.tour)}`:''}: ${c.direct} fahren dort schon, ${c.peer} über Mitfahrer`:'Keine Tourfamilie – Zuordnung nach Lage';
   {const pl=c.members.filter(x=>x.pull).length;if(pl)meta.push(`${pl} Mitglied${pl>1?'er ziehen':' zieht'} aus anderen ${DAY_LABELS[c.toDay]}-Touren um`)}
   if(Number.isFinite(c.km))meta.push('ca. '+Math.round(c.km)+' km Rundlauf'+(HAS_MATRIX?' (Straße)':' (geschätzt)'));
   const mem=c.members.map(x=>{const a=x.a,f=x.fit;return `<div class="clumem"><span class="anc ${x.anchor}">${ANCHOR_LABEL[x.anchor]}</span><span class="nm" data-focus="${esc(x.aid)}" title="Auf der Tafel zeigen"><b>${esc(a.SAP)}</b> ${esc(a.Name)}, ${esc(a.Ort)}</span><span>${f?`<span class="fit ${f.key}" title="${esc(f.label)}${Number.isFinite(f.nearest)?' · '+fmt(f.nearest)+' km zum nächsten Kunden':''}">${Number.isFinite(f.nearest)?fmt(f.nearest)+' km':esc(FIT_SHORT[f.key]||f.label)}</span>`:''}${a.Zeitkritisch?` <span class="flag time" title="${esc(timeInfo(a))}">Zeit</span>`:''}</span><button class="remove" type="button" title="Aus dem Vorschlag nehmen" aria-label="Aus dem Vorschlag nehmen" data-drop-member="${c.id}|${esc(x.aid)}">${ICON.x}</button></div>`}).join('');
@@ -3388,11 +3445,11 @@ function applyCluster(id,silent=false){
     else if(a.extra?cur:(!cur||!outageDays.has(cur.day)))return;
     if(isExcluded(a)||duplicateOnDay(a,target.day)||(!c.template&&target.items.length>=capOf(target))){blocked++;return}
     const f=removeFromCurrent(x.aid);if(!f)return;
-    target.items.push(f.a);f.a.currentDay=target.day;f.a.currentTour=target.tour;f.a.planNote=c.template?`wie ${DAY_SHORT[c.template.day]} ${c.template.tour}`:c.fixed?'Feste Gruppe '+c.fixed:c.family?'Familie '+c.family.label:'Geo';if(c.fixed)f.a.fixedGroup=c.fixed;moved++;
+    target.items.push(f.a);f.a.currentDay=target.day;f.a.currentTour=target.tour;f.a.planNote=c.template?`wie ${tplLabel(c.template.day,true)} ${c.template.tour}`:c.fixed?'Feste Gruppe '+c.fixed:c.family?'Familie '+c.family.label:'Geo';if(c.fixed)f.a.fixedGroup=c.fixed;moved++;
     if(f.from)evaluateRoute(f.from);
   });
   if(c.fixed)target.capFixed=target.items.length>maxCustomers?target.items.length:0;
-  if(c.template){target.templateIds=[c.template.id];if(!target.items.length&&c.kind==='new')routes=routes.filter(r=>r!==target);else{target.items=orderByTemplate(target.items,{id:'TPL',templateIds:[c.template.id]});target.items.forEach((x,i)=>x.currentLoadOrder=i+1);evaluateRoute(target);if(target.items.length>maxCustomers)target.capFixed=Math.max(target.capFixed||0,target.items.length)}}   // Größe wie am Vorlagetag (inkl. feste Gruppen)
+  if(c.template){target.templateIds=[c.template.id];if(!target.items.length&&c.kind==='new')routes=routes.filter(r=>r!==target);else{if(String(c.template.id).startsWith('K::')&&!konstRoutes().find(x=>x.id===c.template.id)?.origOrder?.size){const o=bestOrder(target);target.items=o.items}else target.items=orderByTemplate(target.items,{id:'TPL',templateIds:[c.template.id]});target.items.forEach((x,i)=>x.currentLoadOrder=i+1);evaluateRoute(target);if(target.items.length>maxCustomers)target.capFixed=Math.max(target.capFixed||0,target.items.length)}}   // Größe wie am Vorlagetag (inkl. feste Gruppen)
   else if(c.kind==='new'&&!target.items.length)routes=routes.filter(r=>r!==target);else optimizeRouteOrder(target);
   routes.sort(daySort);clusters=clusters.filter(x=>x!==c);
   if(!silent){resolveMergedDuplicates();renderAll();renderSuggestions();if(blocked)showBlocked(`${blocked} Kunde(n) nicht übernommen (Doppelung, Maximum oder Ausschluss).`)}
@@ -4266,6 +4323,7 @@ function initPersistence(){
   if(L&&Array.isArray(L.routes)&&(L.savedAt||0)>(E?.savedAt||0)&&stateSig(L)!==cur)showRestoreBar(L);
   else{AUTOSAVE_ON=true;LAST_SIG=L&&stateSig(L)===cur?cur:'';autosaveNow();if(LAST_SIG)setSaveState('automatisch gesichert','ok')}
 }
+if(KONST?.rows?.length){const s=document.getElementById('tplDay');if(s){const o=document.createElement('option');o.value='K';o.textContent=`Konstellation ${DAY_SHORT[KONST.day]||''} (${KONST.n})`;o.title=`Alle-Kunden-Konstellation: ${DAY_LABELS[KONST.day]||''} aus ${KONST.name||'Adressdatei'}, ${KONST.n} Kunden`;s.insertBefore(o,s.options[1]||null);s.value='K'}}
 document.getElementById('tplDay')?.addEventListener('change',e=>{e.target.dataset.user='1';renderTargetPreview();if(suggOpen())computeSuggestions()});
 document.getElementById('toDay')?.addEventListener('change',()=>{applyTplDefault();renderTargetPreview()});
 document.getElementById('allOnTarget')?.addEventListener('change',()=>renderTargetPreview());
@@ -4379,10 +4437,18 @@ def main():
                      "Pläne aus derselben Zeit gemeinsam hochladen (z. B. Karfreitag + Ostermontag) – "
                      "sie dienen sich gegenseitig als Normalwoche. Jüngere Jahre zählen stärker. "
                      "Wird ins Planungsgedächtnis der Adressdatei übernommen.")
+        k1, _k2 = st.columns([1, 2])
+        with k1:
+            konst_upload = st.file_uploader(
+                "Alle-Kunden-Konstellation (.xlsx)", type=["xlsx"],
+                help="Fertiger Plan, in dem an einem Tag alle Kunden fahren (z. B. deine Feiertagsplanung mit allen Kunden am "
+                     "Donnerstag). Die Tourzusammenstellung dieses Tages gilt dann für jeden Tag mit „Alle Kunden am Zieltag“ – "
+                     "mit den Tournummern des Zieltags. Wird in der Adressdatei gespeichert, danach nicht mehr nötig.")
         st.caption("  ·  ".join([_file_state("Quelldatei", upload, True), _file_state("Tourenstart", starts_upload, True),
                                  _file_state("Kisoft", info_upload, True), _file_state("Adressdatei", addr_upload, False),
                                  _file_state("Referenz", ref_upload, False),
-                                 _file_state("Historie", hist_uploads or None, False)]))
+                                 _file_state("Historie", hist_uploads or None, False),
+                                 _file_state("Konstellation", konst_upload, False)]))
 
     res = st.container()      # ② Ergebnis – wird nach den Einstellungen gefüllt
     st.markdown("#### Einstellungen")
@@ -4557,6 +4623,22 @@ def main():
                                     "meisten Mitgliedern; Mitglieder aus anderen Touren am Zieltag ziehen mit um.")
     groups = parse_groups(grp_txt)
 
+    # Alle-Kunden-Konstellation (neuer Upload ersetzt die aus der Adressdatei) --------------------
+    konst, konst_warn = None, ""
+    if konst_upload is not None:
+        try:
+            konst = extract_konstellation(konst_upload.getvalue(), konst_upload.name)
+        except Exception as exc:
+            konst_warn = str(exc)
+    elif L["adr_prev"] is not None:
+        konst = meta.get("konst")
+    if konst:
+        notes.append(f"Alle-Kunden-Konstellation: {DAY_NAMES.get(konst['day'], konst['day'])} aus {konst.get('name') or 'Adressdatei'} – "
+                     f"{konst['n']} Kunden" + (" (aus der Adressdatei)" if konst_upload is None else " (wird in der Adressdatei gespeichert)"))
+    if konst_warn:
+        with warn_box:
+            st.warning(f"Konstellation ignoriert: {konst_warn}")
+
     # 2) Adressen verorten -----------------------------------------------------------------------
     provider = {"OpenRouteService": "ors", "Overpass (OSM, ohne Kontingent)": "ovp", "Photon (OSM, ohne Kontingent)": "photon",
                 "Nominatim (OSM, 1 Adresse/Sek.)": "osm"}.get(provider_label, "cache")
@@ -4672,7 +4754,7 @@ def main():
         html = build_html(
             make_payload(g), read_tour_starts(starts_bytes), upload.name, source_bytes,
             get_day_column_map(source_bytes), info_upload.name, starts_upload.name, ref_name, M["matrix"], net, history,
-            excluded, groups,
+            excluded, groups, konst,
         )
         # Adressdatei: alle Profile aus dem Sitzungsspeicher. Mit berechneter Matrix nur die Paare der aktuellen Kunden,
         # ohne Berechnung alles unverändert – sonst ginge die gespeicherte Matrix verloren.
@@ -4680,10 +4762,10 @@ def main():
         if use_matrix and M["pairs"]:
             keep = {_ckey(M["nodes"], i, j) for i, j in M["pairs"]}
             mats = {p: {k_: v_ for k_, v_ in c.items() if k_ in keep} for p, c in mats.items()}
-        wb = build_address_workbook(g, L["original_addr"], mats, L["adr_prev"], history, excluded, groups)
+        wb = build_address_workbook(g, L["original_addr"], mats, L["adr_prev"], history, excluded, groups, konst)
         return {"html": html.encode("utf-8"), "wb": wb, "geo": g, "matched": matched, "ref_warn": ref_warn}
 
-    k_out = _digest(k_mat, k_hist, excluded, groups, ref_bytes, ref_upload.name if ref_upload is not None else "",
+    k_out = _digest(k_mat, k_hist, excluded, groups, json.dumps(konst, sort_keys=True) if konst else "", ref_bytes, ref_upload.name if ref_upload is not None else "",
                     starts_bytes, upload.name, info_upload.name, starts_upload.name)
     try:
         with work, st.spinner("HTML und Adressdatei werden erstellt …"):

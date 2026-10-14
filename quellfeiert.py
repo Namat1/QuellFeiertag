@@ -2809,10 +2809,11 @@ function syncExtras(){
   if(!T){if(EXTRA_T)removeExtras();return 0}
   if(EXTRA_T&&EXTRA_T!==T)removeExtras();
   const active=activeSources(),has=new Set(assignments.filter(a=>a.extra).map(a=>a.uid));let n=0;
+  const onT=new Set(CUSTOMERS.filter(c=>c[T]!=null&&c[T]!=='').map(sapOf));
   CUSTOMERS.forEach(c=>{
     if(has.has(c.uid)||!active.includes(c.Quelle))return;
     const days=DAY_ORDER.filter(d=>c[d]!=null&&c[d]!=='');if(!days.length)return;
-    if(days.includes(T)||days.some(d=>outageDays.has(d)))return;           // hat schon Zieltag bzw. wird ohnehin verschoben
+    if(days.includes(T)||days.some(d=>outageDays.has(d))||onT.has(sapOf(c)))return;           // hat schon Zieltag bzw. wird ohnehin verschoben
     const ti=DAY_ORDER.indexOf(T),home=days.slice().sort((x,y)=>Math.abs(DAY_ORDER.indexOf(x)-ti)-Math.abs(DAY_ORDER.indexOf(y)-ti)||DAY_ORDER.indexOf(x)-DAY_ORDER.indexOf(y))[0];
         const a={...c,aid:c.uid+'::+'+T,originalDay:home,originalTour:String(c[home]),currentDay:null,currentTour:null,originalRouteId:routeId(home,c.Quelle,c[home]),originalLoadOrder:null,loadOrderRow:null,extra:true,planNote:'Zusatz-Lieferung'};
     assignments.push(a);unplanned.push(a);n++;

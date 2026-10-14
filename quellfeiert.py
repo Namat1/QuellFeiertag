@@ -23,6 +23,8 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
 - Alle-Kunden-Konstellation (neuer Upload, wird in der Adressdatei gespeichert): Tourzusammenstellung eines fertigen
   Plans, in dem an einem Tag alle Kunden fahren (z. B. Donnerstag der Feiertagsplanung); gilt als Vorgabe für jeden Tag mit
   „Alle Kunden am Zieltag“ – Tournummern des Zieltags, Reihenfolge aus der Ladereihenfolge des Plans
+- Button „Tour umdrehen“ im Tourkopf: gleiche Kunden, Reihenfolge rückwärts; Optimierung lässt die Reihenfolge stehen,
+  Export schreibt sie in LADEREIHENFOLGE; nochmal klicken = zurück
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
 
@@ -2218,7 +2220,8 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
 .clumem .remove{opacity:1}
 .anc{font-size:10.5px;font-weight:600;line-height:16px;border-radius:var(--r-tag);padding:0 5px;white-space:nowrap}
 .anc.fix{background:var(--accent-soft);color:var(--accent)}
-.anc.tpl{background:var(--good-bg);color:var(--good)}.anc.pull{background:var(--warn-bg);color:var(--warn)}
+.anc.tpl{background:var(--good-bg);color:var(--good)}
+.rmeta .rev{color:var(--accent);font-weight:600}.anc.pull{background:var(--warn-bg);color:var(--warn)}
 .anc.direct{background:var(--good-bg);color:var(--good)}.anc.peer{background:var(--Mitt-bg);color:var(--Mitt)}.anc.geo{background:var(--panel2);color:var(--muted)}
 
 /* Ablage */
@@ -3547,8 +3550,17 @@ const ICON={
   pen:'<svg class="i" viewBox="0 0 16 16"><path d="M10.5 2.8l2.7 2.7-7.4 7.4H3.1v-2.7z"/><path d="M9.2 4.1l2.7 2.7"/></svg>',
   clock:'<svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.2l2.2 1.4"/></svg>',
   lock:'<svg class="i" viewBox="0 0 16 16" style="width:11px;height:11px"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2"/><path d="M5.5 7V5.3a2.5 2.5 0 0 1 5 0V7"/></svg>',
-  plus:'<svg class="i" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg>'
+  plus:'<svg class="i" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg>',
+  flip:'<svg class="i" viewBox="0 0 16 16"><path d="M3 5.2h9.6M10.2 2.8l2.4 2.4-2.4 2.4M13 10.8H3.4M5.8 8.4l-2.4 2.4 2.4 2.4"/></svg>'
 };
+/* Tour umdrehen: gleiche Kunden, Reihenfolge rückwärts (letzter Kunde zuerst); nochmal klicken = zurück */
+function routeReversed(r){const o=r.origItems||[];return r.items.length>1&&o.length===r.items.length&&r.items.every((a,i)=>a===o[o.length-1-i])}
+function flipRoute(id){
+  const r=getRoute(id);if(!r||r.items.length<2)return;
+  r.items.reverse();r.items.forEach((a,i)=>a.currentLoadOrder=i+1);r.manualOrder=true;evaluateRoute(r);renderAll();
+  const f=r.items[0],l=r.items[r.items.length-1];
+  showInfo('Tour umgedreht',`${DAY_LABELS[r.day]} ${r.tour}: zuerst ${String(f.Name||f.SAP).trim()} (${String(f.Ort||'').trim()}), zuletzt ${String(l.Name||l.SAP).trim()}. Nochmal klicken = zurück.`,'good');
+}
 const FIT_SHORT={good:'passt sehr gut',ok:'passt gut',warn:'grenzwertig',bad:'eher nicht',unknown:'nicht bewertbar'};
 const GONE_LABEL={'Folgewoche Montag':'Montag der Folgewoche','Zieltag bereits vorhanden':'Am Zieltag schon beliefert','gesperrte Tour':'Gesperrte Tour entfällt','vermutlich Folgewoche (Mo)':'Vermutlich Folgewoche – bitte prüfen','zusammengelegt':'Mit anderer Ausfall-Lieferung zusammengelegt'};
 function lsGet(k,d){try{const v=localStorage.getItem('fwp30_'+k);return v==null?d:JSON.parse(v)}catch(e){return d}}
@@ -3593,6 +3605,7 @@ function routeHtml(r){
   const meta=[];
   if(n&&Number.isFinite(r.km))meta.push(`<span>${Math.round(r.km)} km</span><span>${fmtDur(r.dur)}</span>`+(Number.isFinite(r.end)?`<span>zurück ${formatMin(r.end)}</span>`:''));
   if(hasRouteStart(r))meta.push(`<span>Laden ${formatMin(routeStartMinutes(r))}</span>`);
+  if(routeReversed(r))meta.push('<span class="rev" title="Reihenfolge rückwärts gegenüber dem Original">umgedreht</span>');
   if(r.repLabel)meta.push(`<span>Vorlage ${esc(r.repLabel)}</span>`);
   if(tc)meta.push(`<span class="warn">${tc} Zeitkonflikt${tc>1?'e':''}</span>`);
   if(over)meta.push(`<span class="bad">${n-cap} über Maximum</span>`);
@@ -3600,7 +3613,7 @@ function routeHtml(r){
   return `<section class="route ${chg?'changed':''} ${r.manuallyCreated?'newroute':''} ${over?'overcap':''} ${tc?'timeconflict':''} ${lk?'locked':''} ${open?'':'collapsed'}" data-route="${esc(r.id)}">`+
   `<div class="rhead" data-route-head="${esc(r.id)}" title="${esc(title)}"><button class="rtoggle" type="button" aria-expanded="${open}" aria-label="Tour ${esc(r.tour)} auf-/zuklappen">${ICON.chev}</button>`+
   `<div class="rtop"><span class="rno">${esc(r.tour)}</span>${r.origTour!=null&&String(r.origTour)!==String(r.tour)?`<span class="tag ren" title="umbenannt">vorher ${esc(r.origTour)}</span>`:''}<span class="src">${esc(srcLabel(r.source))}</span>${r.manuallyCreated?'<span class="tag new">neu</span>':''}${lk?`<span class="tag lock" title="Gesperrte Tour: nichts hinzufügen oder herausnehmen">${ICON.lock}gesperrt</span>`:''}${r.familyLabel?`<span class="tag fam" title="Tourfamilie ${esc(r.familyLabel)}">${esc(r.familyLabel)}</span>`:''}${d?`<span class="delta ${d<0?'neg':''}" title="gegenüber Original">${d>0?'+':''}${d}</span>`:''}</div>`+
-  `<div class="ract"><button class="iconbtn" type="button" title="In Google Maps öffnen" aria-label="Google Maps" data-google-maps="${esc(r.id)}">${ICON.pin}</button><button class="iconbtn" type="button" title="Reihenfolge ab Valluhn neu berechnen" aria-label="Neu sortieren" data-seq-route="${esc(r.id)}">${ICON.sort}</button><button class="iconbtn" type="button" title="Tournummer ändern (oder Doppelklick auf die Nummer)" aria-label="Tour umbenennen" data-rename-route="${esc(r.id)}">${ICON.pen}</button>${r.manuallyCreated?`<button class="iconbtn danger" type="button" title="Neue Tour löschen" aria-label="Tour löschen" data-delete-route="${esc(r.id)}">${ICON.del}</button>`:''}</div>`+
+  `<div class="ract"><button class="iconbtn" type="button" title="In Google Maps öffnen" aria-label="Google Maps" data-google-maps="${esc(r.id)}">${ICON.pin}</button><button class="iconbtn" type="button" title="Reihenfolge ab Valluhn neu berechnen" aria-label="Neu sortieren" data-seq-route="${esc(r.id)}">${ICON.sort}</button>${r.items.length>1?`<button class="iconbtn" type="button" title="Tour umdrehen – gleiche Kunden, Reihenfolge rückwärts (letzter Kunde zuerst)" aria-label="Tour umdrehen" data-flip-route="${esc(r.id)}">${ICON.flip}</button>`:''}<button class="iconbtn" type="button" title="Tournummer ändern (oder Doppelklick auf die Nummer)" aria-label="Tour umbenennen" data-rename-route="${esc(r.id)}">${ICON.pen}</button>${r.manuallyCreated?`<button class="iconbtn danger" type="button" title="Neue Tour löschen" aria-label="Tour löschen" data-delete-route="${esc(r.id)}">${ICON.del}</button>`:''}</div>`+
   `<div class="rload"><span class="lbar ${lv}"><i style="width:${w}%"></i></span><span class="lcnt ${over?'over':''}">${n}/${cap}</span>${dep?`<span class="ldep">${dep}</span>`:''}${tc&&!open?`<span class="lwarn" title="${tc} voraussichtliche Zeitkonflikte">${ICON.clock}${tc}</span>`:''}</div>`+
   `${meta.length?`<div class="rmeta">${meta.join('')}</div>`:''}</div>`+
   `<div class="dropzone" data-route="${esc(r.id)}">${cards||'<div class="empty">Kunden hierher ziehen</div>'}</div></section>`;
@@ -3885,6 +3898,7 @@ function bindDnD(){
 function bindDayActions(){
   document.querySelectorAll('[data-add-tour]').forEach(b=>b.addEventListener('click',()=>openNewTour(b.dataset.addTour)));
   document.querySelectorAll('[data-delete-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();deleteNewRoute(b.dataset.deleteRoute)}));
+  document.querySelectorAll('[data-flip-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();flipRoute(b.dataset.flipRoute)}));
   document.querySelectorAll('[data-seq-route]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();const r=getRoute(b.dataset.seqRoute);if(r){optimizeRouteOrder(r);renderAll();showInfo('Neu sortiert',`Tour ${r.tour}: Reihenfolge ab Valluhn neu berechnet.`,'good')}}));
   document.querySelectorAll('[data-google-maps]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();openGoogleMapsRoute(b.dataset.googleMaps)}));
   document.querySelectorAll('[data-full-day]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();openDayFull(b.dataset.fullDay)}));

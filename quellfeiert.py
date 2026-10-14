@@ -25,6 +25,8 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
   „Alle Kunden am Zieltag“ – Tournummern des Zieltags, Reihenfolge aus der Ladereihenfolge des Plans
 - Button „Tour umdrehen“ im Tourkopf: gleiche Kunden, Reihenfolge rückwärts; Optimierung lässt die Reihenfolge stehen,
   Export schreibt sie in LADEREIHENFOLGE; nochmal klicken = zurück
+- Löschen-Button auf jeder Tour (nicht gesperrt): Kunden kommen in die Ablage – dort ohne Lieferung an diesem Tag;
+  „Löschen rückgängig“, gelöschte Touren bleiben beim Speichern/Wiederherstellen gelöscht
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
 
@@ -2221,7 +2223,8 @@ body.dragging .route.collapsed .rhead{background:#f4f7fb}
 .anc{font-size:10.5px;font-weight:600;line-height:16px;border-radius:var(--r-tag);padding:0 5px;white-space:nowrap}
 .anc.fix{background:var(--accent-soft);color:var(--accent)}
 .anc.tpl{background:var(--good-bg);color:var(--good)}
-.rmeta .rev{color:var(--accent);font-weight:600}.anc.pull{background:var(--warn-bg);color:var(--warn)}
+.rmeta .rev{color:var(--accent);font-weight:600}
+@container (max-width:250px){.ract .iconbtn{width:21px}}.anc.pull{background:var(--warn-bg);color:var(--warn)}
 .anc.direct{background:var(--good-bg);color:var(--good)}.anc.peer{background:var(--Mitt-bg);color:var(--Mitt)}.anc.geo{background:var(--panel2);color:var(--muted)}
 
 /* Ablage */
@@ -2920,7 +2923,7 @@ function nextWeekCandidate(a){
   return !!S&&(S.cov||0)>0&&(S.cov||0)>(S.prev||0)+(S.next||0);
 }
 function restoreAutoCovered(){
-  [...autoCoveredAids].forEach(aid=>{const i=unplanned.findIndex(a=>a.aid===aid);if(i<0)return;const a=unplanned.splice(i,1)[0],r=getRoute(a.originalRouteId);if(r){r.items.push(a);sortOriginal(r);r.items.forEach((x,j)=>x.currentLoadOrder=j+1)}cancelledAids.delete(aid);cancelReasons.delete(aid)});
+  [...autoCoveredAids].forEach(aid=>{const i=unplanned.findIndex(a=>a.aid===aid);if(i<0)return;const a=unplanned.splice(i,1)[0],r=getRoute(a.originalRouteId);if(r){r.items.push(a);sortOriginal(r);r.items.forEach((x,j)=>x.currentLoadOrder=j+1)}else unplanned.push(a);cancelledAids.delete(aid);cancelReasons.delete(aid)});
   autoCoveredAids.clear();
 }
 function autoResolveCoveredDeliveries(notify=true){
@@ -3525,7 +3528,7 @@ function optimizeDay(day,silent=false){
   cand.filter(r=>r.items.length&&(touched.has(r)||r.manuallyCreated||routeChanged(r))).forEach(r=>{if(r.manualOrder&&!touched.has(r))evaluateRoute(r);else optimizeRouteOrder(r)});
   const kmAfter=dayKm(day);
   LAST_OPT={day,moves,swaps,removed:removed.map(r=>r.tour),kmBefore,kmAfter,ms:Math.round(performance.now()-t0),at:new Date()};
-  if(!silent){document.getElementById('undoBtn').style.display='';renderAll();if(suggOpen())computeSuggestions();
+  if(!silent){{const ub=document.getElementById('undoBtn');ub.textContent='Optimierung rückgängig';ub.style.display=''}renderAll();if(suggOpen())computeSuggestions();
     showInfo('Touren optimiert',`${DAY_LABELS[day]}: ${moves} verschoben · ${swaps} getauscht · ${removed.length} Tour(en) eingespart · ${fmt(kmBefore)} → ${fmt(kmAfter)} km (${fmt(kmBefore-kmAfter)} km weniger)`,'good')}
   return LAST_OPT;
 }
@@ -3536,7 +3539,7 @@ function optimizeTargets(){
   if(!res.length){showInfo('Nichts zu optimieren','Keine geänderten oder neuen Touren an den Zieltagen.','warn');return}
   const sum=k=>res.reduce((s,r)=>s+(Array.isArray(r[k])?r[k].length:r[k]),0);
   LAST_OPT={day:tds.join('+'),moves:sum('moves'),swaps:sum('swaps'),removed:res.flatMap(r=>r.removed),kmBefore:sum('kmBefore'),kmAfter:sum('kmAfter'),ms:sum('ms'),at:new Date()};
-  document.getElementById('undoBtn').style.display='';renderAll();if(suggOpen())computeSuggestions();
+  {const ub=document.getElementById('undoBtn');ub.textContent='Optimierung rückgängig';ub.style.display=''}renderAll();if(suggOpen())computeSuggestions();
   showInfo('Touren optimiert',`${targetLabel()}: ${LAST_OPT.moves} verschoben · ${LAST_OPT.swaps} getauscht · ${LAST_OPT.removed.length} Tour(en) eingespart · ${fmt(LAST_OPT.kmBefore)} → ${fmt(LAST_OPT.kmAfter)} km`,'good');
 }
 
@@ -3613,7 +3616,7 @@ function routeHtml(r){
   return `<section class="route ${chg?'changed':''} ${r.manuallyCreated?'newroute':''} ${over?'overcap':''} ${tc?'timeconflict':''} ${lk?'locked':''} ${open?'':'collapsed'}" data-route="${esc(r.id)}">`+
   `<div class="rhead" data-route-head="${esc(r.id)}" title="${esc(title)}"><button class="rtoggle" type="button" aria-expanded="${open}" aria-label="Tour ${esc(r.tour)} auf-/zuklappen">${ICON.chev}</button>`+
   `<div class="rtop"><span class="rno">${esc(r.tour)}</span>${r.origTour!=null&&String(r.origTour)!==String(r.tour)?`<span class="tag ren" title="umbenannt">vorher ${esc(r.origTour)}</span>`:''}<span class="src">${esc(srcLabel(r.source))}</span>${r.manuallyCreated?'<span class="tag new">neu</span>':''}${lk?`<span class="tag lock" title="Gesperrte Tour: nichts hinzufügen oder herausnehmen">${ICON.lock}gesperrt</span>`:''}${r.familyLabel?`<span class="tag fam" title="Tourfamilie ${esc(r.familyLabel)}">${esc(r.familyLabel)}</span>`:''}${d?`<span class="delta ${d<0?'neg':''}" title="gegenüber Original">${d>0?'+':''}${d}</span>`:''}</div>`+
-  `<div class="ract"><button class="iconbtn" type="button" title="In Google Maps öffnen" aria-label="Google Maps" data-google-maps="${esc(r.id)}">${ICON.pin}</button><button class="iconbtn" type="button" title="Reihenfolge ab Valluhn neu berechnen" aria-label="Neu sortieren" data-seq-route="${esc(r.id)}">${ICON.sort}</button>${r.items.length>1?`<button class="iconbtn" type="button" title="Tour umdrehen – gleiche Kunden, Reihenfolge rückwärts (letzter Kunde zuerst)" aria-label="Tour umdrehen" data-flip-route="${esc(r.id)}">${ICON.flip}</button>`:''}<button class="iconbtn" type="button" title="Tournummer ändern (oder Doppelklick auf die Nummer)" aria-label="Tour umbenennen" data-rename-route="${esc(r.id)}">${ICON.pen}</button>${r.manuallyCreated?`<button class="iconbtn danger" type="button" title="Neue Tour löschen" aria-label="Tour löschen" data-delete-route="${esc(r.id)}">${ICON.del}</button>`:''}</div>`+
+  `<div class="ract"><button class="iconbtn" type="button" title="In Google Maps öffnen" aria-label="Google Maps" data-google-maps="${esc(r.id)}">${ICON.pin}</button><button class="iconbtn" type="button" title="Reihenfolge ab Valluhn neu berechnen" aria-label="Neu sortieren" data-seq-route="${esc(r.id)}">${ICON.sort}</button>${r.items.length>1?`<button class="iconbtn" type="button" title="Tour umdrehen – gleiche Kunden, Reihenfolge rückwärts (letzter Kunde zuerst)" aria-label="Tour umdrehen" data-flip-route="${esc(r.id)}">${ICON.flip}</button>`:''}<button class="iconbtn" type="button" title="Tournummer ändern (oder Doppelklick auf die Nummer)" aria-label="Tour umbenennen" data-rename-route="${esc(r.id)}">${ICON.pen}</button>${lk?'':`<button class="iconbtn danger" type="button" title="Tour löschen – ihre Kunden kommen in die Ablage (bleiben sie dort, entfällt die Lieferung an diesem Tag)" aria-label="Tour löschen" data-delete-route="${esc(r.id)}">${ICON.del}</button>`}</div>`+
   `<div class="rload"><span class="lbar ${lv}"><i style="width:${w}%"></i></span><span class="lcnt ${over?'over':''}">${n}/${cap}</span>${dep?`<span class="ldep">${dep}</span>`:''}${tc&&!open?`<span class="lwarn" title="${tc} voraussichtliche Zeitkonflikte">${ICON.clock}${tc}</span>`:''}</div>`+
   `${meta.length?`<div class="rmeta">${meta.join('')}</div>`:''}</div>`+
   `<div class="dropzone" data-route="${esc(r.id)}">${cards||'<div class="empty">Kunden hierher ziehen</div>'}</div></section>`;
@@ -3930,7 +3933,19 @@ function createNewTour(){
   if(routeByTour(newTourDay,source,tour)){err.textContent='Diese Tour gibt es an diesem Tag bereits.';return}const id=uniqueRouteId(newTourDay,source,tour);
   routes.push({id,day:newTourDay,source,tour,items:[],originalCount:0,manuallyCreated:true,normalStart:start||startLabel(tour)});routes.sort(daySort);scrollToNewDay=newTourDay;closeNewTour();renderAll();
 }
-function deleteNewRoute(id){const r=getRoute(id);if(!r||!r.manuallyCreated)return;if(r.items.length&&!confirm(`Tour ${r.tour} löschen? ${r.items.length} Kunden gehen nach AUSGEPLANT.`))return;unplanned.push(...r.items);routes=routes.filter(x=>x.id!==id);renderAll()}
+/* Tour löschen (jede Tour): Kunden → Ablage; bleiben sie dort, entfällt ihre Lieferung an diesem Tag (Export leert die Zelle) */
+function origRouteIds(){const s=new Set();CUSTOMERS.forEach(c=>DAY_ORDER.forEach(d=>{if(c[d]!=null&&c[d]!=='')s.add(routeId(d,c.Quelle,c[d]))}));return s}
+function deleteNewRoute(id){
+  const r=getRoute(id);if(!r)return;if(isLocked(r)){showBlocked(`Tour ${r.tour} ist gesperrt und kann nicht gelöscht werden.`);return}
+  const n=r.items.length;
+  if(n&&!confirm(`${DAY_LABELS[r.day]} · Tour ${r.tour} löschen?\n\n${n} Kunde${n>1?'n kommen':' kommt'} in die Ablage. Von dort in andere Touren ziehen – wer in der Ablage bleibt, wird an diesem Tag nicht beliefert.\n\nRückgängig über „Löschen rückgängig“ oben.`))return;
+  UNDO=snapshotPlan();
+  r.items.splice(0).forEach(a=>{a.currentDay=null;a.currentTour=null;unplanned.push(a)});
+  routes=routes.filter(x=>x.id!==id);
+  const ub=document.getElementById('undoBtn');if(ub){ub.textContent='Löschen rückgängig';ub.style.display=''}
+  renderAll();if(suggOpen())computeSuggestions();
+  showInfo('Tour gelöscht',`${DAY_LABELS[r.day]} ${r.tour}`+(n?` – ${n} Kunde${n>1?'n':''} in der Ablage.`:' (war leer).'),'ok');
+}
 
 /* ---------- Google Maps ---------- */
 function mapsAddress(a){return [a.Strasse,a.Plz,a.Ort,'Deutschland'].map(v=>String(v??'').trim()).filter(Boolean).join(', ')}
@@ -4201,7 +4216,7 @@ function initControls(){
   $('blockMode').addEventListener('change',()=>{BLOCK_MODE=$('blockMode').checked;if(suggOpen())computeSuggestions()});
   $('autoOver').addEventListener('change',()=>{AUTO_OVER=Math.max(0,Number($('autoOver').value)||0);if(suggOpen())computeSuggestions()});
   $('optimizeBtn').addEventListener('click',()=>{$('optimizeBtn').disabled=true;$('optimizeBtn').textContent='Optimiere …';setTimeout(()=>{try{optimizeTargets()}finally{$('optimizeBtn').disabled=false;$('optimizeBtn').textContent='Touren optimieren'}},20)});
-  $('undoBtn').addEventListener('click',()=>{if(!UNDO)return;restorePlan(UNDO);UNDO=null;LAST_OPT=null;$('undoBtn').style.display='none';renderAll();showInfo('Rückgängig','Stand vor der Optimierung wiederhergestellt.','ok')});
+  $('undoBtn').addEventListener('click',()=>{if(!UNDO)return;restorePlan(UNDO);UNDO=null;LAST_OPT=null;$('undoBtn').style.display='none';renderAll();showInfo('Rückgängig','Vorheriger Stand wiederhergestellt.','ok')});
   $('netHint').textContent=HAS_MATRIX?`LKW-Straßenmatrix mit ${NET.pairs} Verbindungen, sonst Luftlinie × ${ROAD_FACTOR.toFixed(2)}, Ø ${Math.round(AVG_KMH)} km/h`:`Ohne Straßenmatrix: Luftlinie × ${ROAD_FACTOR.toFixed(2)}, Ø ${Math.round(AVG_KMH)} km/h`;
   $('sequenceAllBtn').addEventListener('click',()=>{routes.filter(r=>routeChanged(r)||r.manuallyCreated).forEach(optimizeRouteOrder);renderAll();showInfo('Neu sortiert','Alle geänderten und neuen Touren ab Valluhn neu sortiert.')});
   if(HAS_REF){$('backtestBtn').style.display='';$('backtestBtn').addEventListener('click',openBacktest);$('closeBacktestBtn').addEventListener('click',()=>closeModal('backtestModal'));$('backtestCurrentBtn').addEventListener('click',renderBacktest);$('backtestAutoBtn').addEventListener('click',()=>{if(runAutoplan())renderBacktest()});$('sweepBtn').addEventListener('click',runSweep)}
@@ -4246,7 +4261,7 @@ function planState(){
   return {v:1,plan:PLAN_KEY,source:ORIGINAL_XLSX_NAME,stamp:PLAN_STAMP,savedAt:Date.now(),changes,
     settings:{outage:selectedOutageDays(),toDay:$('toDay').value,inputs,checks,sources},
     routes:routes.map(r=>{const o={id:r.id,day:r.day,source:r.source,tour:r.tour,items:r.items.map(a=>a.aid)};if(r.manuallyCreated||r.origTour!=null){o.m=r.manuallyCreated?1:0;o.ns=r.normalStart||''}if(r.generatedRest)o.gen=1;if(r.familyLabel)o.fl=r.familyLabel;if(r.familyId)o.fid=r.familyId;if(r.familyTypical)o.ft=r.familyTypical;if(r.repLabel)o.rep=r.repLabel;if(r.templateIds?.length)o.tpl=r.templateIds;if(r.capFixed)o.cap=r.capFixed;if(r.manualOrder)o.mo=1;if(r.extraOnly)o.xo=1;return o}),
-    unplanned:unplanned.map(a=>a.aid),cancelled:[...cancelledAids],covered:[...autoCoveredAids],reasons:Object.fromEntries(cancelReasons),notes};
+    deleted:[...origRouteIds()].filter(id=>!getRoute(id)),unplanned:unplanned.map(a=>a.aid),cancelled:[...cancelledAids],covered:[...autoCoveredAids],reasons:Object.fromEntries(cancelReasons),notes};
 }
 function stateSig(s){if(!s)return '';const {savedAt,...rest}=s;return JSON.stringify(rest)}
 function applyState(s){
@@ -4270,7 +4285,8 @@ function applyState(s){
     (sr.items||[]).forEach(aid=>{const a=byAid.get(aid);if(!a||placed.has(aid)){missing++;return}placed.add(aid);r.items.push(a);a.currentDay=r.day;a.currentTour=r.tour});
   });
   (s.unplanned||[]).forEach(aid=>{const a=byAid.get(aid);if(!a||placed.has(aid)){missing++;return}placed.add(aid);unplanned.push(a);a.currentDay=null;a.currentTour=null});
-  assignments.forEach(a=>{if(placed.has(a.aid))return;const r=getRoute(a.originalRouteId);if(r&&!a.extra)r.items.push(a);else unplanned.push(a)});   // im Stand unbekannt → Originalplatz
+  assignments.forEach(a=>{if(placed.has(a.aid))return;const r=getRoute(a.originalRouteId);if(r&&!a.extra&&!(s.deleted||[]).includes(r.id))r.items.push(a);else unplanned.push(a)});
+  if(s.deleted?.length){const del=new Set(s.deleted);routes=routes.filter(r=>!del.has(r.id)||r.items.length)}   // im Stand unbekannt → Originalplatz
   cancelledAids=new Set((s.cancelled||[]).filter(x=>byAid.has(x)));autoCoveredAids=new Set((s.covered||[]).filter(x=>byAid.has(x)));
   cancelReasons=new Map(Object.entries(s.reasons||{}).filter(([k])=>byAid.has(k)));
   Object.entries(s.notes||{}).forEach(([aid,n])=>{const a=byAid.get(aid);if(!a||!Array.isArray(n))return;if(n[0])a.planNote=n[0];if(n[1])a.fixedGroup=n[1]});

@@ -29,6 +29,9 @@ Neu in V30.2 (Umplanung wie im Disponentenplan, Backtest Fr → Do):
   „Löschen rückgängig“, gelöschte Touren bleiben beim Speichern/Wiederherstellen gelöscht
 - Excel-Export: Blatt LADEREIHENFOLGE genau wie geplant – jede Lieferung geänderter/neuer Touren mit Tour, Position, SAP;
   Zusatz-Lieferungen bekommen frei gewordene oder neue Zeilen (Formel Name/Straße/PLZ/Ort wie darüber); Excel rechnet beim Öffnen neu
+- „Alle Kunden“ an zwei Tagen (z. B. Mo + Di): zweiter Tag neben „Alle Kunden am Zieltag“; jeder Kunde bekommt an beiden
+  Tagen genau eine Lieferung, Ausfall-Lieferungen füllen den Tag, an dem sie fehlen, Vorlage/Konstellation je Tag
+- Kunden, die nur in gesperrten Touren fahren (x058), bekommen keine Zusatz-Lieferung (wie im Disponentenplan)
 - Regel „Freie Fahrzeuge/Fahrer je Zieltag“: mehr neue Touren → Warnung in der Vorschau, bei den Vorschlägen, im Status
   („Hinweise prüfen“) und im Prüfbericht
 
@@ -122,7 +125,7 @@ import pandas as pd
 SHEETS = ["DIREKT", "MK"]   # HUPA wird nicht geplant
 DAY_COLUMNS = ["Mo", "Die", "Mitt", "Don", "Fr", "Sam"]
 
-APP_BUILD = "V30.2 · Build 14.10.26 (Tourblöcke wie im Disponentenplan · feste Kundengruppen · Excel-Markierung neuer Touren)"
+APP_BUILD = "V30.3 · Build 15.10.26 (alle Kunden an zwei Tagen · Tour drehen/löschen · Ladereihenfolge wie geplant · Konstellation)"
 DEPOT_LATLON = (53.512501, 10.83948)  # Lüttow-Valluhn, Knoten 0
 # Cache liegt fest im Benutzerordner – unabhängig davon, wo das Skript liegt oder gestartet wird.
 CACHE_DIR = Path.home() / "feiertagsplaner_cache"
@@ -2411,7 +2414,7 @@ body.df-open{overflow:hidden}
 
 <section class="flow" aria-label="Arbeitsablauf">
   <div class="step" id="step1"><div class="sh"><span class="sn">1</span>Welche Tage fallen aus?</div><div class="sc"><div class="days" id="outageDays"></div></div></div>
-  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Wohin?</div><div class="sc"><select id="toDay" aria-label="Zieltag" title="Aufteilen auf Vortag und Folgetag (nach früheren Feiertagen) oder alle Kunden auf einen Tag"></select><div class="allrow"><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten)."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label><span id="tplWrap" class="tplwrap" hidden title="Tourzusammenstellung dieses Tages 1:1 übernehmen – Tournummer der Zieltag-Tour, in der ihre Kunden schon fahren (Fr 5005 → Mo 1006), sonst Ziffer des Zieltags + Endnummer. „eigene Touren“: Zieltag-Touren behalten und Ausfalltouren als Block einplanen.">Touren wie <select id="tplDay" aria-label="Vorlagetag"><option value="">eigene Touren</option><option value="Mo">Montag</option><option value="Die">Dienstag</option><option value="Mitt">Mittwoch</option><option value="Don">Donnerstag</option><option value="Fr" selected>Freitag</option><option value="Sam">Samstag</option></select></span></div><div class="tgthint" id="targetHint" aria-live="polite"></div></div></div>
+  <div class="step" id="step2"><div class="sh"><span class="sn">2</span>Wohin?</div><div class="sc"><select id="toDay" aria-label="Zieltag" title="Aufteilen auf Vortag und Folgetag (nach früheren Feiertagen) oder alle Kunden auf einen Tag"></select><div class="allrow"><label class="chk" title="Jeder Kunde der Woche bekommt am Zieltag eine Lieferung – auch wer sonst an dem Tag nicht beliefert wird (z. B. vor Weihnachten)."><input type="checkbox" id="allOnTarget"> Alle Kunden am Zieltag</label><span id="day2Wrap" class="tplwrap" hidden title="Zweiter Tag, an dem ebenfalls alle Kunden beliefert werden (z. B. Montag + Dienstag)">und <select id="toDay2" aria-label="Zweiter Tag mit allen Kunden"><option value="">kein 2. Tag</option><option value="Mo">Montag</option><option value="Die">Dienstag</option><option value="Mitt">Mittwoch</option><option value="Don">Donnerstag</option><option value="Fr">Freitag</option><option value="Sam">Samstag</option></select></span><span id="tplWrap" class="tplwrap" hidden title="Tourzusammenstellung dieses Tages 1:1 übernehmen – Tournummer der Zieltag-Tour, in der ihre Kunden schon fahren (Fr 5005 → Mo 1006), sonst Ziffer des Zieltags + Endnummer. „eigene Touren“: Zieltag-Touren behalten und Ausfalltouren als Block einplanen.">Touren wie <select id="tplDay" aria-label="Vorlagetag"><option value="">eigene Touren</option><option value="Mo">Montag</option><option value="Die">Dienstag</option><option value="Mitt">Mittwoch</option><option value="Don">Donnerstag</option><option value="Fr" selected>Freitag</option><option value="Sam">Samstag</option></select></span></div><div class="tgthint" id="targetHint" aria-live="polite"></div></div></div>
   <div class="step grow" id="step3"><div class="sh"><span class="sn">3</span>Umplanen</div><div class="sc">
     <button class="btn primary" id="suggestBtn" type="button">Vorschläge berechnen</button>
     <button class="btn" id="optimizeBtn" type="button" title="Reihenfolge je Tour (2-opt/Or-opt) und Kundentausch zwischen Touren am Zieltag">Touren optimieren</button>
@@ -2798,7 +2801,22 @@ function recommendedTarget(){
 }
 function newToursOn(day,withSugg=false){return routes.filter(r=>r.day===day&&r.manuallyCreated&&r.items.length).length+(withSugg?clusters.filter(c=>c.kind==='new'&&c.toDay===day).length:0)}
 function vehicleWarnings(withSugg=false){const lim=freeTours();if(lim==null)return [];return targetDays().map(d=>({d,n:newToursOn(d,withSugg)})).filter(x=>x.n>lim).map(x=>`${DAY_LABELS[x.d]}: ${x.n} neue Touren, aber nur ${lim} Fahrzeuge/Fahrer frei (${x.n-lim} zu viel)`)}
+/* Hinweis bei „alle Kunden an zwei Tagen“: wohin die Ausfall-Lieferungen gehen, wie viele Zusatz-Lieferungen je Tag */
+function allDaysHint(){
+  const tds=targetDays(),active=activeSources(),fill=new Map(tds.map(d=>[d,0])),xt=new Map(tds.map(d=>[d,0])),seen=new Set(),lim=freeTours();let drop=0;
+  CUSTOMERS.forEach(c=>{if(!active.includes(c.Quelle)||excludedSaps.has(sapOf(c)))return;const days=DAY_ORDER.filter(d=>c[d]!=null&&c[d]!=='');if(!days.length||days.every(d=>LOCKED.has(String(c[d]))))return;
+    const f=rowFill(c,tds);f.map.forEach(T=>{if(T)fill.set(T,fill.get(T)+1);else drop++});
+    f.extras.forEach(T=>{const k=sapOf(c)+'|'+T;if(!seen.has(k)){seen.add(k);xt.set(T,xt.get(T)+1)}})});
+  const out=selectedOutageDays().map(d=>DAY_SHORT[d]).join('/');
+  let h=`Alle Kunden am <b>${tds.map(d=>DAY_LABELS[d]).join('</b> und <b>')}</b>`;
+  if(out)h+=`<br>${out}-Lieferungen → `+tds.map(d=>`${DAY_SHORT[d]} ${fill.get(d)}`).join(' · ')+(drop?` · ${drop} entfallen (an beiden Tagen schon da)`:'');
+  h+='<br>Zusatz-Lieferungen: '+tds.map(d=>`${DAY_SHORT[d]} ${xt.get(d)}`).join(' · ');
+  const act=tds.map(d=>[d,newToursOn(d)]).filter(x=>x[1]);
+  if(act.length)h+='<br>eingeplant: '+act.map(([d,n])=>`${DAY_SHORT[d]} ${n} neue`+(lim!=null&&n>lim?` <span class="warnx">(${n-lim} zu viel)</span>`:'')).join(' · ');
+  return h;
+}
 function renderTargetPreview(){
+  {const w=document.getElementById('day2Wrap'),s=document.getElementById('toDay2'),v=document.getElementById('toDay')?.value;if(w)w.hidden=!document.getElementById('allOnTarget')?.checked||!DAY_ORDER.includes(v);if(s)[...s.options].forEach(o=>{if(!o.value)return;o.disabled=o.value===v||outageDays.has(o.value);o.textContent=DAY_LABELS[o.value]+(o.value===v?' (Zieltag)':outageDays.has(o.value)?' (fällt aus)':'')});if(s&&s.value&&(s.value===v||outageDays.has(s.value)))s.value=''}
   {const w=document.getElementById('tplWrap'),s=document.getElementById('tplDay'),T=targetDays()[0]||'';if(w)w.hidden=!document.getElementById('allOnTarget')?.checked;if(s)[...s.options].forEach(o=>{if(!o.value||o.value==='K')return;o.disabled=o.value===T;o.textContent=DAY_LABELS[o.value]+(o.value===T?' (Zieltag)':'')})}
   const sel=document.getElementById('toDay'),hint=document.getElementById('targetHint');if(!sel||!hint)return;
   const lim=freeTours(),rec=recommendedTarget(),nf=v=>Number.isFinite(v)?v:'?';
@@ -2809,6 +2827,7 @@ function renderTargetPreview(){
     o.textContent=base+(two&&rec&&rec.T===o.value&&rec.cov>0?' ★':'')+` · ${p.cov} da · ~${nf(p.neu)} neu`+(lim!=null&&p.neu>lim?' ⚠':'');
   });
   const out=selectedOutageDays(),v=sel.value;
+  if(allDaysMode()&&routes.length){hint.innerHTML=allDaysHint();return}
   if(!out.length||v==='nextweek'||!routes.length){hint.innerHTML='';return}
   const line=p=>`<b>${DAY_SHORT[p.T]}</b>: ${p.cov} von ${p.tot} schon da · ca. ${nf(p.neu)} neue Tour${p.neu===1?'':'en'}`+(lim!=null&&p.neu>lim?` <span class="warnx">⚠ nur ${lim} frei</span>`:'');
   let h='';
@@ -2851,26 +2870,48 @@ function neighborDays(){
 function targetDays(){
   const v=document.getElementById('toDay')?.value;
   if(v==='auto'){if(!outageDays.size)return [];const n=neighborDays(),t=[n.prev,n.next].filter(Boolean);return document.getElementById('allOnTarget')?.checked?t.slice(0,1):t}
-  return v&&DAY_ORDER.includes(v)&&!outageDays.has(v)?[v]:[];
+  const t=v&&DAY_ORDER.includes(v)&&!outageDays.has(v)?[v]:[];
+  const d2=document.getElementById('toDay2')?.value;   // zweiter Tag mit allen Kunden
+  if(t.length&&document.getElementById('allOnTarget')?.checked&&d2&&DAY_ORDER.includes(d2)&&d2!==v&&!outageDays.has(d2))t.push(d2);
+  return t.sort((a,b)=>DAY_ORDER.indexOf(a)-DAY_ORDER.indexOf(b));
+}
+function allDaysMode(){return !!document.getElementById('allOnTarget')?.checked&&targetDays().length>1}
+let SAP_DAYS=null;
+function sapDays(){if(!SAP_DAYS){SAP_DAYS=new Map();CUSTOMERS.forEach(c=>{const s=sapOf(c);if(!SAP_DAYS.has(s))SAP_DAYS.set(s,new Set());DAY_ORDER.forEach(d=>{if(c[d]!=null&&c[d]!=='')SAP_DAYS.get(s).add(d)})})}return SAP_DAYS}
+/* „Alle Kunden am Zieltag“ (auch an zwei Tagen): Zieltage, an denen der Kunde noch nicht beliefert wird; die Ausfall-Lieferungen
+   dieser Kundenzeile füllen sie der Reihe nach, für den Rest gibt es Zusatz-Lieferungen */
+function rowFill(c,tds){
+  const have=sapDays().get(sapOf(c))||new Set(),miss=tds.filter(T=>!have.has(T));
+  const outs=DAY_ORDER.filter(d=>outageDays.has(d)&&c[d]!=null&&c[d]!==''&&!LOCKED.has(String(c[d])));   // gesperrte Touren entfallen
+  const map=new Map();outs.forEach((d,i)=>map.set(d,miss[i]||null));
+  return {miss,outs,map,extras:miss.slice(outs.length)};
+}
+/* Seite je Ausfall-Lieferung bei „alle Kunden an zwei Tagen“: der Zieltag, an dem dem Kunden noch eine Lieferung fehlt */
+function allDaysSide(){
+  const tds=targetDays(),m=new Map(),byUid=new Map(CUSTOMERS.map(c=>[c.uid,c]));
+  routes.filter(r=>outageDays.has(r.day)).forEach(r=>(r.origItems||r.items).forEach(a=>{if(a.originalDay!==r.day)return;
+    const day=rowFill(byUid.get(a.uid)||a,tds).map.get(r.day);const c={day:day||tds[0],why:day?`fehlt am ${DAY_LABELS[day]}`:'an allen Zieltagen schon beliefert'};m.set(a.aid,c);a.sideWhy=c.why}));
+  return m;
 }
 /* „Alle Kunden am Zieltag“: jeder Kunde der Woche ohne Lieferung am Zieltag bekommt eine Zusatz-Lieferung */
 let EXTRA_T=null;
 function removeExtras(){routes.forEach(r=>{if(r.items.some(a=>a.extra)){r.items=r.items.filter(a=>!a.extra);evaluateRoute(r)}});routes=routes.filter(r=>!(r.manuallyCreated&&!r.items.length&&r.extraOnly));unplanned=unplanned.filter(a=>!a.extra);assignments=assignments.filter(a=>!a.extra);EXTRA_T=null}
 function syncExtras(){
-  const on=document.getElementById('allOnTarget')?.checked,tds=targetDays(),T=on&&tds.length?tds[0]:null;
-  if(!T){if(EXTRA_T)removeExtras();return 0}
-  if(EXTRA_T&&EXTRA_T!==T)removeExtras();
-  const active=activeSources(),has=new Set(assignments.filter(a=>a.extra).map(a=>a.uid));let n=0;
-  const onT=new Set(CUSTOMERS.filter(c=>c[T]!=null&&c[T]!=='').map(sapOf));
+  const tds=document.getElementById('allOnTarget')?.checked?targetDays():[],key=tds.length?tds.join('+'):null;
+  if(!key){if(EXTRA_T)removeExtras();return 0}
+  if(EXTRA_T&&EXTRA_T!==key)removeExtras();
+  const active=activeSources(),has=new Set(assignments.filter(a=>a.extra).map(a=>a.aid)),made=new Set();let n=0;
   CUSTOMERS.forEach(c=>{
-    if(has.has(c.uid)||!active.includes(c.Quelle))return;
-    const days=DAY_ORDER.filter(d=>c[d]!=null&&c[d]!=='');if(!days.length)return;
-    if(days.includes(T)||days.some(d=>outageDays.has(d))||onT.has(sapOf(c)))return;           // hat schon Zieltag bzw. wird ohnehin verschoben
-    const ti=DAY_ORDER.indexOf(T),home=days.slice().sort((x,y)=>Math.abs(DAY_ORDER.indexOf(x)-ti)-Math.abs(DAY_ORDER.indexOf(y)-ti)||DAY_ORDER.indexOf(x)-DAY_ORDER.indexOf(y))[0];
-        const a={...c,aid:c.uid+'::+'+T,originalDay:home,originalTour:String(c[home]),currentDay:null,currentTour:null,originalRouteId:routeId(home,c.Quelle,c[home]),originalLoadOrder:null,loadOrderRow:null,extra:true,planNote:'Zusatz-Lieferung'};
-    assignments.push(a);unplanned.push(a);n++;
+    if(!active.includes(c.Quelle))return;
+    const days=DAY_ORDER.filter(d=>c[d]!=null&&c[d]!=='');if(!days.length||days.every(d=>LOCKED.has(String(c[d]))))return;   // nur gesperrte Touren: nichts hinzufügen
+    rowFill(c,tds).extras.forEach(T=>{     // ohne Lieferung an T und keine Ausfall-Lieferung, die T füllt
+      const aid=c.uid+'::+'+T,sk=sapOf(c)+'|'+T;if(days.includes(T)||has.has(aid)||made.has(sk))return;made.add(sk);
+      const ti=DAY_ORDER.indexOf(T),home=days.slice().sort((x,y)=>Math.abs(DAY_ORDER.indexOf(x)-ti)-Math.abs(DAY_ORDER.indexOf(y)-ti)||DAY_ORDER.indexOf(x)-DAY_ORDER.indexOf(y))[0];
+      const a={...c,aid,originalDay:home,originalTour:String(c[home]),currentDay:null,currentTour:null,originalRouteId:routeId(home,c.Quelle,c[home]),originalLoadOrder:null,loadOrderRow:null,extra:true,extraDay:T,planNote:'Zusatz-Lieferung'};
+      assignments.push(a);unplanned.push(a);n++;
+    });
   });
-  EXTRA_T=T;return n;
+  EXTRA_T=key;return n;
 }
 function targetLabel(){const t=targetDays();return t.length?t.map(d=>DAY_LABELS[d]).join(' + '):'–'}
 function chooseSideDay(a){
@@ -2885,6 +2926,7 @@ function chooseSideDay(a){
 }
 /* Seite je Ausfalltour: die Tour bleibt zusammen – Mehrheit der Einzelentscheidungen (Historie Kunde/Tour, sonst Standard) */
 function sideMap(){
+  if(allDaysMode())return allDaysSide();
   const m=new Map(),tds=targetDays();
   routes.filter(r=>outageDays.has(r.day)).forEach(r=>{
     const list=(r.origItems||r.items).filter(a=>a.originalDay===r.day);
@@ -3111,7 +3153,7 @@ function buildClusters(fromDays,toDay,accept=null){
   const daySet=new Set(fromDays),active=activeSources(),model=familyModel(daySet);
   const pool=routes.filter(r=>daySet.has(r.day)&&!isLocked(r)&&active.includes(r.source)).flatMap(r=>r.items.filter(a=>!isExcluded(a)).map(a=>({aid:a.aid,a,from:r}))).filter(x=>!accept||accept(x));
   // Zusatz-Lieferungen („alle Kunden am Zieltag“): Gruppierung nach ihrer Heimattour am nächstgelegenen Tag
-  if(EXTRA_T===toDay){const pseudo=new Map();unplanned.filter(a=>a.extra&&!isExcluded(a)&&active.includes(a.Quelle)).forEach(a=>{const id='X::'+a.originalRouteId;if(!pseudo.has(id)){const hr=getRoute(a.originalRouteId);pseudo.set(id,{id,day:a.originalDay,source:a.Quelle,tour:a.originalTour,origSaps:hr?.origSaps||new Set(),items:[],extra:true})}pool.push({aid:a.aid,a,from:pseudo.get(id)})})}
+  if(EXTRA_T){const pseudo=new Map();unplanned.filter(a=>a.extra&&(a.extraDay||toDay)===toDay&&!isExcluded(a)&&active.includes(a.Quelle)).forEach(a=>{const id='X::'+a.originalRouteId;if(!pseudo.has(id)){const hr=getRoute(a.originalRouteId);pseudo.set(id,{id,day:a.originalDay,source:a.Quelle,tour:a.originalTour,origSaps:hr?.origSaps||new Set(),items:[],extra:true})}pool.push({aid:a.aid,a,from:pseudo.get(id)})})}
   // mehrere Ausfalltage (z. B. Fr + Sa): derselbe Kunde bekommt am Zieltag nur EINE Lieferung – die übrigen werden danach als „zusammengelegt“ gestrichen
   {const seen=new Set();for(let i=0;i<pool.length;i++){const k=pool[i].a.Quelle+'|'+sapOf(pool[i].a);if(seen.has(k)&&allowedDuplicateCap(toDay,sapOf(pool[i].a))<=1){pool.splice(i,1);i--}else seen.add(k)}}
   const reserve=new Map(),used=new Set(routes.filter(r=>r.day===toDay).map(r=>r.source+'::'+r.tour)),out=[];
@@ -3326,7 +3368,7 @@ function defaultTpl(){if(KONST?.rows?.length)return 'K';const T=targetDays()[0]|
 function applyTplDefault(){const s=document.getElementById('tplDay');if(s&&!s.dataset.user)s.value=defaultTpl()}
 function tplName(tour,T){const t=String(tour);return /^[1-6]\d{3,5}$/.test(t)?DAY_DIGIT[T]+t.slice(1):t+'-'+DAY_SHORT[T]}
 function tplRoutesOf(S){const active=activeSources();if(S==='K')return konstRoutes().filter(r=>active.includes(r.source));return routes.filter(r=>r.day===S&&!r.manuallyCreated&&active.includes(r.source)&&(r.origItems||[]).length)}
-function buildTemplateClusters(T,S){
+function buildTemplateClusters(T,S,accept=null){
   const active=activeSources(),key=a=>a.Quelle+'|'+sapOf(a),tpls=tplRoutesOf(S);
   // Zieltour je Vorlagetour: die Zieltag-Tour, in der die meisten ihrer Kunden schon fahren – Tournummer vom Zieltag
   // (Fr 5005 → Mo 1006, wenn die Kunden montags in 1006 fahren); ohne gemeinsame Kunden: Ziffer + Endnummer bzw. nächste freie
@@ -3342,8 +3384,8 @@ function buildTemplateClusters(T,S){
     mk(r,null,name)});
   // alle Lieferungen, die am Zieltag landen: Zieltag selbst, Ausfalltage, Zusatz-Lieferungen
   const items=[];
-  routes.filter(r=>(r.day===T||outageDays.has(r.day))&&active.includes(r.source)&&!isLocked(r)).forEach(r=>r.items.forEach(a=>{if(!isExcluded(a))items.push({a,cur:r})}));
-  unplanned.filter(a=>a.extra&&!isExcluded(a)&&active.includes(a.Quelle)).forEach(a=>items.push({a,cur:null}));
+  routes.filter(r=>(r.day===T||outageDays.has(r.day))&&active.includes(r.source)&&!isLocked(r)).forEach(r=>r.items.forEach(a=>{if(!isExcluded(a)&&(r.day===T||!accept||accept({aid:a.aid,a})))items.push({a,cur:r})}));
+  unplanned.filter(a=>a.extra&&(a.extraDay||T)===T&&!isExcluded(a)&&active.includes(a.Quelle)).forEach(a=>items.push({a,cur:null}));
   const dest=new Map(),keyDest=new Map(),rest=[];
   const put=(x,g)=>{dest.set(x.a.aid,g);g.list.push(x.a);if(!keyDest.has(key(x.a)))keyDest.set(key(x.a),g)};
   items.forEach(x=>{const g=byTpl.get(key(x.a));if(g)put(x,g);else rest.push(x)});
@@ -3384,7 +3426,7 @@ function buildAllClusters(fromDays){
   const tds=targetDays();
   if(tds.length===1&&tplDayOf(tds[0]))return buildTemplateClusters(tds[0],tplDayOf(tds[0]));if(tds.length<=1)return buildClusters(fromDays,tds[0]);
   const side=sideMap();
-  let all=[];tds.forEach(d=>{all=all.concat(buildClusters(fromDays,d,x=>side.get(x.aid)?.day===d))});
+  let all=[];tds.forEach(d=>{const acc=x=>side.get(x.aid)?.day===d,S=tplDayOf(d);all=all.concat(S?buildTemplateClusters(d,S,acc):buildClusters(fromDays,d,acc))});
   all.sort((a,b)=>RANK[a.quality]-RANK[b.quality]||(a.kind==='insert'?0:1)-(b.kind==='insert'?0:1)||b.members.length-a.members.length);
   return all;
 }
@@ -4045,12 +4087,14 @@ function openBacktest(){renderBacktest();document.getElementById('backtestModal'
 /* „alle Kunden am Zieltag“: Ausfalltage komplett leeren – ALLE Kunden (auch gesperrt/ausgeschlossen/über Maximum) auf den Zieltag */
 function clearOutageDays(){
   if(!document.getElementById('allOnTarget')?.checked)return;
-  const T=targetDays()[0];if(!T)return;
+  const tds=targetDays();if(!tds.length)return;
+  const side=tds.length>1?sideMap():null,dayOf=a=>a.extra?(a.extraDay||tds[0]):(side?.get(a.aid)?.day||tds[0]);
   const pool=[];
   routes.filter(r=>outageDays.has(r.day)).forEach(r=>{r.items.splice(0).forEach(a=>pool.push(a));evaluateRoute(r)});
   unplanned.slice().forEach(a=>{if(cancelReasons.get(a.aid)==='Zieltag bereits vorhanden')return;if(a.extra||cancelledAids.has(a.aid)||outageDays.has(a.originalDay)){unplanned.splice(unplanned.indexOf(a),1);pool.push(a)}});
   const touched=new Set();
   pool.forEach(a=>{
+    const T=dayOf(a);
     if(duplicateOnDay(a,T)){cancelledAids.add(a.aid);autoCoveredAids.add(a.aid);cancelReasons.set(a.aid,'Zieltag bereits vorhanden');unplanned.push(a);return}
     if(namingKeep()){   // Original-/Heimattour am Zieltag wieder anlegen (Reihenfolge wie dort)
       let r=routeByTour(T,a.Quelle,a.originalTour);
@@ -4293,7 +4337,7 @@ const PLAN_STAMP='__GENERATED__';
 const PLAN_KEY='fwp30_state_'+(s=>{let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))>>>0;return h.toString(36)})(ORIGINAL_XLSX_NAME+'|'+PLAN_STAMP+'|'+CUSTOMERS.length+'|'+CUSTOMERS.slice(0,5).map(c=>c.uid).join(','));
 const SAVED_EMBED=(()=>{try{const e=document.getElementById('savedState');return e?JSON.parse(e.textContent):null}catch(e){return null}})();
 let AUTOSAVE_ON=false,AS_T=null,LAST_SIG='',FILE_SIG='',LS_FAIL=false,PENDING_LOCAL=null;
-const STATE_INPUTS=['tourNaming','freeTours','tplDay','maxCustomers','excludeSaps','lockedTours','mergeKm','timeTol','timeHard','dnaWeight','tourFixed','autoOver','fixedGroups'],STATE_CHECKS=['allOnTarget','blockMode','mergeSmall','optRegular'];
+const STATE_INPUTS=['tourNaming','freeTours','tplDay','toDay2','maxCustomers','excludeSaps','lockedTours','mergeKm','timeTol','timeHard','dnaWeight','tourFixed','autoOver','fixedGroups'],STATE_CHECKS=['allOnTarget','blockMode','mergeSmall','optRegular'];
 function fmtTs(t){try{return new Date(t).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}
 function planState(){
   const $=id=>document.getElementById(id),inputs={},checks={},sources={},notes={};
@@ -4315,6 +4359,7 @@ function applyState(s){
   Object.entries(set.sources||{}).forEach(([k,v])=>{const e=$('src_'+k);if(e)e.checked=!!v});
   outageDays=new Set((set.outage||[]).filter(d=>DAY_ORDER.includes(d)));renderOutageButtons();syncTargetDayOptions(true);
   if(set.toDay&&(set.toDay==='auto'||set.toDay==='nextweek'||(DAY_ORDER.includes(set.toDay)&&!outageDays.has(set.toDay))))$('toDay').value=set.toDay;syncTargetDayOptions();
+  {const e=$('toDay2'),v=set.inputs?.toDay2;if(e&&v!=null){e.value=v;renderTargetPreview()}}
   clampMax();parseExcluded();parseLocked();parseGroups();readTimeTol();SRC_TYP.clear();
   BLOCK_MODE=$('blockMode').checked;MERGE_SMALL=$('mergeSmall').checked;MERGE_KM=Math.max(1,Number($('mergeKm').value)||5);AUTO_OVER=Math.max(0,Number($('autoOver').value)||0);
   buildOriginalPlan();                                  // Grundplan inkl. Zusatz-Lieferungen für diese Einstellungen
@@ -4397,6 +4442,7 @@ function initPersistence(){
   else{AUTOSAVE_ON=true;LAST_SIG=L&&stateSig(L)===cur?cur:'';autosaveNow();if(LAST_SIG)setSaveState('automatisch gesichert','ok')}
 }
 if(KONST?.rows?.length){const s=document.getElementById('tplDay');if(s){const o=document.createElement('option');o.value='K';o.textContent=`Konstellation ${DAY_SHORT[KONST.day]||''} (${KONST.n})`;o.title=`Alle-Kunden-Konstellation: ${DAY_LABELS[KONST.day]||''} aus ${KONST.name||'Adressdatei'}, ${KONST.n} Kunden`;s.insertBefore(o,s.options[1]||null);s.value='K'}}
+document.getElementById('toDay2')?.addEventListener('change',()=>{renderTargetPreview();autoResolveCoveredDeliveries(true);if(suggOpen())computeSuggestions()});
 document.getElementById('tplDay')?.addEventListener('change',e=>{e.target.dataset.user='1';renderTargetPreview();if(suggOpen())computeSuggestions()});
 document.getElementById('toDay')?.addEventListener('change',()=>{applyTplDefault();renderTargetPreview()});
 document.getElementById('allOnTarget')?.addEventListener('change',()=>renderTargetPreview());
